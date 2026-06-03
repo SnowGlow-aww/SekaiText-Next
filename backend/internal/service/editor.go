@@ -534,10 +534,15 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 		talks[row].Message = msg
 		talks[row].CheckMode = false
 		talks[row].Proofread = nil
-		if talks[row].Baseline != text {
+		// Only diff against a real, non-empty baseline. An empty baseline means
+		// there's no prior version to compare (e.g. a freshly created blank line),
+		// so editing it must NOT mark the whole line green; adopt the new text as
+		// the baseline instead. Mirrors the guard in CompareText.
+		if talks[row].Baseline != "" && talks[row].Baseline != text {
 			talks[row].DiffParts = mergedDiff(talks[row].Baseline, text)
 		} else {
 			talks[row].DiffParts = nil
+			talks[row].Baseline = text
 		}
 		dstidx := talks[row].DstIdx
 		if dstidx >= 0 && dstidx < len(dsttalks) {
