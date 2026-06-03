@@ -30,7 +30,7 @@ backend/downloads/
 backend/sekaitext.exe
 src-tauri/binaries/
 
-resources/
+/resources/
 
 .env
 
