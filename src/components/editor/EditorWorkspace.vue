@@ -1,0 +1,537 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useAppStore } from '../../stores/app'
+import { useStoryStore } from '../../stores/story'
+import { useEditorStore } from '../../stores/editor'
+import { useSettingsStore } from '../../stores/settings'
+import { api } from '../../api/client'
+import { useToast } from '../../composables/useToast'
+import { useUndo } from '../../composables/useUndo'
+import VoicePlayButton from './VoicePlayButton.vue'
+import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
+import type { DstTalk } from '../../types/translation'
+
+const iconErrors = ref<Set<number>>(new Set())
+const workspaceRef = ref<HTMLElement | null>(null)
+
+// Context menu state
+const ctxMenu = ref<{ show: boolean; x: number; y: number; row: number }>({ show: false, x: 0, y: 0, row: -1 })
+function hideCtxMenu() { ctxMenu.value.show = false }
+function ctxReplace(row: number, b: string) { handleBracketsReplace(row, b); hideCtxMenu() }
+const bracketOptions = [
+  { key: '「」', label: '「」 直角引号' },
+  { key: '『』', label: '『』 双层直角' },
+  { key: '（）', label: '（） 全角括号' },
+  { key: '""', label: '"" 双引号' },
+  { key: "''", label: "'' 单引号" },
+]
+
+const app = useAppStore()
+const story = useStoryStore()
+const editor = useEditorStore()
+const settings = useSettingsStore()
+const toast = useToast()
+const undo = useUndo()
+const { visible: fbVisible, tooltipStyle: fbStyle, clueGroups: fbClueGroups, show: fbShow, hide: fbHide } = useFlashbackTooltip()
+
+// ---- Flashback (from SourcePanel) ----
+const talksWithFlashback = computed(() => {
+  if (!app.showFlashback) {
+    return story.sourceTalks.map(t => ({ ...t, isFlashback: false }))
+  }
+
+  const clueCounts = new Map<string, number>()
+  for (const talk of story.sourceTalks) {
+    if (talk.clues) {
+      for (const clue of talk.clues) {
+        clueCounts.set(clue, (clueCounts.get(clue) || 0) + 1)
+      }
+    }
+  }
+
+  let majorClue: string | null = null
+  let maxCount = 0
+  for (const [clue, count] of clueCounts) {
+    if (count > maxCount) {
+      maxCount = count
+      majorClue = clue
+    }
+  }
+
+  return story.sourceTalks.map(talk => {
+    if (!talk.clues || talk.clues.length === 0) {
+      return { ...talk, isFlashback: false }
+    }
+    const isFlashback = talk.clues.some(c => c !== majorClue)
+    return { ...talk, isFlashback }
+  })
+})
+
+// ---- Helpers ----
+function srcIdx(talk: DstTalk): number {
+  return talk.idx - 1
+}
+
+function srcTalk(talk: DstTalk) {
+  return story.sourceTalks[srcIdx(talk)]
+}
+
+function flashbackItem(talk: DstTalk) {
+  return talksWithFlashback.value[srcIdx(talk)]
+}
+
+function srcTalkCharIndex(talk: DstTalk) {
+  return srcTalk(talk)?.charIndex ?? -1
+}
+
+// Group consecutive dest lines sharing the same source idx
+const talkGroups = computed(() => {
+  const groups: { srcIdx: number; items: { talk: DstTalk; globalIdx: number }[] }[] = []
+  for (let i = 0; i < editor.talks.length; i++) {
+    const talk = editor.talks[i]
+    const last = groups[groups.length - 1]
+    if (last && last.srcIdx === talk.idx) {
+      last.items.push({ talk, globalIdx: i })
+    } else {
+      groups.push({ srcIdx: talk.idx, items: [{ talk, globalIdx: i }] })
+    }
+  }
+  return groups
+})
+
+// ---- Editing (from DestPanel) ----
+let editTimeout: ReturnType<typeof setTimeout> | null = null
+
+// Stable per-row key. With the Baseline model each data row maps to a fixed
+// position, so idx+dstidx is unique. The compare baseline is a *derived* visual
+// row, keyed with a suffix so it never collides with its edit row.
+function rowKey(talk: DstTalk, role: 'base' | 'edit' = 'edit'): string {
+  return `${talk.idx}-${talk.dstidx}-${role}`
+}
+
+const MAX_LINES_PER_SRC = 10
+
+// A row is "changed" iff it carries a real diff (computed by the backend against
+// its baseline). Using the diff as the single source of truth keeps the baseline
+// row, the green background and the green inline text perfectly in sync — they can
+// no longer disagree (the cause of "green text but no baseline row").
+function isChanged(talk: DstTalk): boolean {
+  return app.editorMode >= 1 && !!talk.diff && talk.diff.length > 0
+}
+
+// Whether to render the read-only baseline row above the edit row.
+// Driven solely by isChanged (diff presence) so it always matches the green
+// highlight; renderBaseline falls back to '' if baseline is somehow missing.
+function showBaselineRow(talk: DstTalk): boolean {
+  return app.showCompare && isChanged(talk)
+}
+
+// Edit row (the one the user types into).
+function getEditBg(talk: DstTalk): string {
+  if (app.showCompare && isChanged(talk)) return 'bg-green-400/8'
+  if (!talk.checked && talk.save) return 'bg-red-400/8'
+  return ''
+}
+function getEditBorder(talk: DstTalk): string {
+  if (app.showCompare && isChanged(talk)) return 'border-l-green-400'
+  if (!talk.checked && talk.save) return 'border-l-red-400'
+  return ''
+}
+
+async function handleTextChange(row: number, newText: string) {
+  if (editTimeout) clearTimeout(editTimeout)
+  editTimeout = setTimeout(async () => {
+    undo.pushSnapshot(editor.talks, editor.dstTalks)
+    try {
+      const result = await api.changeText({
+        row,
+        text: newText,
+        editorMode: app.editorMode,
+        talks: editor.talks,
+        dstTalks: editor.dstTalks,
+        referTalks: editor.referTalks,
+      })
+      editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+      editor.markUnsaved()
+    } catch (e: any) {
+      console.error('[Editor] text change API failed', { row, error: e?.message || e })
+      toast.show('Text save failed: ' + (e?.message || 'unknown error'), 'error')
+    }
+  }, 300)
+}
+
+function onBlur(e: Event, idx: number) {
+  const newText = (e.target as HTMLElement).innerText
+  // Real-change guard: blurring without an actual edit must not mark the
+  // document dirty or trigger a diff recompute.
+  if (editor.talks[idx]?.text === newText) return
+  handleTextChange(idx, newText)
+}
+
+async function handleAddLine(row: number) {
+  const currentIdx = editor.talks[row]?.idx
+  if (currentIdx && editor.talks.filter(t => t.idx === currentIdx).length >= MAX_LINES_PER_SRC) {
+    toast.show(`每个原文行最多添加 ${MAX_LINES_PER_SRC} 行`, 'warn')
+    return
+  }
+  undo.pushSnapshot(editor.talks, editor.dstTalks)
+  try {
+    const result = await api.addLine({
+      row,
+      talks: editor.talks,
+      dstTalks: editor.dstTalks,
+      isProofreading: app.editorMode !== 0,
+    })
+    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+    editor.markUnsaved()
+  } catch (e: any) {
+    console.error('[Editor] add line failed', { row, error: e?.message || e })
+    toast.show('Add line failed: ' + (e?.message || 'unknown error'), 'error')
+  }
+}
+
+async function handleRemoveLine(row: number) {
+  undo.pushSnapshot(editor.talks, editor.dstTalks)
+  try {
+    const result = await api.removeLine({
+      row,
+      talks: editor.talks,
+      dstTalks: editor.dstTalks,
+    })
+    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+    editor.markUnsaved()
+  } catch (e: any) {
+    console.error('[Editor] remove line failed', { row, error: e?.message || e })
+    toast.show('Remove line failed: ' + (e?.message || 'unknown error'), 'error')
+  }
+}
+
+// Render the read-only baseline row: shows baseline text with removed chars in red.
+function renderBaseline(talk: DstTalk): string {
+  if (!talk.diff || talk.diff.length === 0) return escapeHtml(talk.baseline ?? '')
+  return talk.diff
+    .filter(p => p.type === 'same' || p.type === 'remove')
+    .map(p => {
+      const esc = escapeHtml(p.text)
+      return p.type === 'remove' ? `<span class="bg-red-400/30">${esc}</span>` : esc
+    })
+    .join('')
+}
+
+// Render the edit row: shows current text. Added chars are highlighted green when
+// comparing, or when compare is off but the user opted to keep highlights.
+function renderHighlight(talk: DstTalk): string {
+  const highlight = app.editorMode >= 1 &&
+    (app.showCompare || settings.settings.keepHighlightWhenCompareOff)
+  let html: string
+  if (!talk.diff || talk.diff.length === 0 || !highlight) {
+    html = escapeHtml(talk.text)
+  } else {
+    html = talk.diff
+      .filter(p => p.type === 'same' || p.type === 'add')
+      .map(p => {
+        const esc = escapeHtml(p.text)
+        return p.type === 'add' ? `<span class="bg-green-400/30">${esc}</span>` : esc
+      })
+      .join('')
+  }
+  return markQuery(html)
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// ---- Search highlight (query state lives in app store; navigation/replace in EditorPage) ----
+function markQuery(html: string): string {
+  const q = app.searchQuery.trim()
+  if (!q) return html
+  // Highlight occurrences in already-escaped html, skipping inside tags.
+  const escQ = escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return html.replace(new RegExp(`(${escQ})(?![^<]*>)`, 'gi'), '<mark class="bg-yellow-300 text-black rounded-sm">$1</mark>')
+}
+
+function highlightSpeaker(speaker: string): string {
+  return markQuery(escapeHtml(speaker))
+}
+
+// Match list across source text, dest text and speaker, in group order. Owns
+// app.searchTotal; the toolbar (EditorPage) steps app.searchActiveIndex.
+const searchMatches = computed(() => {
+  const q = app.searchQuery.trim().toLowerCase()
+  const out: number[] = []
+  if (!q) return out
+  talkGroups.value.forEach((group, gi) => {
+    const first = group.items[0].talk
+    const src = srcTalk(first)
+    const inSrc = !!src?.text && src.text.toLowerCase().includes(q)
+    const inSpeaker = !!first.speaker && first.speaker.toLowerCase().includes(q)
+    const inDst = group.items.some(it => it.talk.text && it.talk.text.toLowerCase().includes(q))
+    if (inSrc || inSpeaker || inDst) out.push(gi)
+  })
+  return out
+})
+
+watch(searchMatches, (m) => {
+  app.searchTotal = m.length
+  if (app.searchActiveIndex >= m.length) app.searchActiveIndex = 0
+}, { immediate: true })
+
+watch(() => app.searchActiveIndex, () => {
+  const gi = searchMatches.value[app.searchActiveIndex]
+  if (gi === undefined) return
+  const el = workspaceRef.value?.querySelector(`[data-group="${gi}"]`) as HTMLElement | null
+  el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+})
+
+function handleBracketsReplace(row: number, brackets: string) {
+  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+  undo.pushSnapshot(editor.talks, editor.dstTalks)
+  api.replaceBrackets({ row, brackets, talks: editor.talks, dstTalks: editor.dstTalks }).then(({ talks, dstTalks }) => {
+    editor.talks = talks
+    editor.dstTalks = dstTalks
+    editor.markUnsaved()
+  }).catch((e: any) => {
+    console.error('[Editor] bracket replace failed', { row, brackets, error: e?.message || e })
+    toast.show('Bracket replace failed: ' + (e?.message || 'unknown error'), 'error')
+  })
+}
+
+function handleContextMenu(e: MouseEvent, row: number) {
+  e.preventDefault()
+  ctxMenu.value = { show: true, x: e.clientX, y: e.clientY, row }
+}
+
+function focusNext(e: KeyboardEvent) {
+  e.preventDefault()
+  const container = workspaceRef.value
+  if (!container) return
+  const editables = container.querySelectorAll<HTMLElement>('[contenteditable="true"]')
+  const idx = Array.from(editables).indexOf(e.target as HTMLElement)
+  const next = editables[idx + 1]
+  if (next) {
+    next.focus()
+    const range = document.createRange()
+    range.selectNodeContents(next)
+    range.collapse(false)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+  }
+}
+
+function onSourceEnter(e: MouseEvent, talk: DstTalk) {
+  const fb = flashbackItem(talk)
+  if (fb?.isFlashback && fb?.clues) {
+    fbShow(e, fb.clues.filter((c: string) => !!c))
+  }
+}
+</script>
+
+<template>
+  <div class="flex h-full">
+    <div
+      ref="workspaceRef"
+      class="flex-1 overflow-y-auto border border-[var(--color-border)] rounded-lg bg-[var(--color-surface)]"
+    >
+      <!-- Column headers -->
+      <div class="grid grid-cols-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] sticky top-0 z-10">
+        <div class="flex items-center justify-between px-3 py-2">
+          <span class="font-semibold text-sm text-[var(--color-text-secondary)]">原文</span>
+          <span v-if="story.scenarioId" class="text-xs text-[var(--color-text-secondary)]">{{ story.scenarioId }}</span>
+        </div>
+        <div class="flex items-center px-3 py-2 border-l border-[var(--color-border)]">
+          <span class="font-semibold text-sm text-[var(--color-text-secondary)]">译文</span>
+          <input
+            v-model="editor.currentFilePath"
+            type="text"
+            placeholder="标题/路径..."
+            class="ml-2 flex-1 text-sm px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)]"
+          />
+        </div>
+      </div>
+
+      <template v-if="story.sourceTalks.length === 0">
+        <div class="p-8 text-center text-[var(--color-text-secondary)] text-sm">
+          选择故事并载入以查看原文
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="flex flex-col gap-1.5 px-2 py-1">
+          <template v-for="(group, gi) in talkGroups" :key="gi">
+            <div class="grid grid-cols-2 gap-2" :data-group="gi">
+              <!-- ===== Source Side (merged for group) ===== -->
+              <div
+                class="flex flex-col justify-center p-3 rounded-lg border border-[var(--color-border)] transition-colors"
+                :class="{ 'bg-[var(--color-flashback)]': flashbackItem(group.items[0].talk)?.isFlashback }"
+                @mouseenter="onSourceEnter($event, group.items[0].talk)"
+                @mouseleave="fbHide()"
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-[var(--color-surface)] border border-[var(--color-border)]"
+                  >
+                    <img
+                      v-if="srcTalkCharIndex(group.items[0].talk) >= 0 && !iconErrors.has(srcTalkCharIndex(group.items[0].talk)) && !['场景', '左上场景', '选项', ''].includes(srcTalk(group.items[0].talk)?.speaker)"
+                      :src="api.characterIconUrl(srcTalkCharIndex(group.items[0].talk) + 1)"
+                      :alt="srcTalk(group.items[0].talk)?.speaker"
+                      class="w-full h-full object-cover"
+                      @error="iconErrors.add(srcTalkCharIndex(group.items[0].talk))"
+                    />
+                    <div
+                      v-else
+                      class="w-full h-full flex items-center justify-center text-white text-xs font-medium select-none"
+                      style="background-color: #9ca3af"
+                    >
+                      {{ srcTalk(group.items[0].talk)?.speaker?.charAt(0) || '' }}
+                    </div>
+                  </div>
+
+                  <div class="flex-1 min-w-0">
+                    <div class="text-xs font-medium text-[var(--color-text-secondary)] mb-0.5" v-html="highlightSpeaker(srcTalk(group.items[0].talk)?.speaker ?? '')">
+                    </div>
+                    <div v-if="srcTalk(group.items[0].talk)?.text" class="leading-relaxed whitespace-pre-wrap break-words" style="font-size: var(--editor-font-size)" v-html="markQuery(escapeHtml(srcTalk(group.items[0].talk)?.text ?? ''))">
+                    </div>
+                    <div v-else class="flex items-center gap-3" style="font-size: var(--editor-font-size)">
+                      <span class="flex-1 border-t border-[var(--color-border)] opacity-40" />
+                      <span class="text-[var(--color-text-secondary)] text-xs opacity-50 select-none">空</span>
+                      <span class="flex-1 border-t border-[var(--color-border)] opacity-40" />
+                    </div>
+                  </div>
+
+                  <VoicePlayButton
+                    v-if="(srcTalk(group.items[0].talk)?.voices?.length ?? 0) > 0"
+                    :scenario-id="story.scenarioId"
+                    :voice-ids="(srcTalk(group.items[0].talk)?.voices ?? []) as string[]"
+                    :volume="srcTalk(group.items[0].talk).volume"
+                    :source="story.selectedSource"
+                  />
+                </div>
+              </div>
+
+              <!-- ===== Dest Side (stacked per sub-line) ===== -->
+              <div class="flex flex-col gap-1 h-full">
+                <template v-for="item in group.items" :key="rowKey(item.talk, 'edit')">
+                  <!-- Baseline row (read-only): shown under compare when baseline differs -->
+                  <div
+                    v-if="showBaselineRow(item.talk)"
+                    :key="rowKey(item.talk, 'base')"
+                    class="p-2 rounded-lg border border-[var(--color-border)] border-l-4 border-l-yellow-400 bg-yellow-400/8 select-none"
+                  >
+                    <div class="flex items-start gap-2">
+                      <div class="w-8 flex-shrink-0" />
+                      <div style="min-width:3rem;max-width:8rem" class="flex-shrink-0 text-xs text-[var(--color-text-secondary)] pt-1">原</div>
+                      <div
+                        class="flex-1 min-w-0 leading-relaxed px-1 -mx-1 text-[var(--color-text-secondary)]"
+                        style="font-size: var(--editor-font-size)"
+                        v-html="renderBaseline(item.talk)"
+                      ></div>
+                    </div>
+                  </div>
+
+                  <!-- Edit row -->
+                  <div
+                    :class="['p-2 rounded-lg border border-[var(--color-border)] transition-colors hover:bg-[var(--color-primary)]/[0.04]', group.items.length === 1 && !showBaselineRow(item.talk) ? 'flex-1 flex flex-col justify-center' : '', getEditBorder(item.talk) ? `border-l-4 ${getEditBorder(item.talk)}` : '', getEditBg(item.talk)]"
+                  >
+                    <div class="flex items-start gap-2">
+                      <div class="w-8 flex-shrink-0 text-xs text-[var(--color-text-secondary)] pt-1">
+                        <span v-if="item.talk.start" class="font-mono">{{ item.talk.idx }}</span>
+                      </div>
+
+                      <div v-if="item.talk.start" class="flex-shrink-0 text-xs text-[var(--color-text-secondary)] pt-1 truncate" style="min-width:3rem;max-width:8rem" :title="item.talk.speaker">
+                        {{ item.talk.speaker }}
+                      </div>
+                      <div v-else style="min-width:3rem;max-width:8rem" class="flex-shrink-0" />
+
+                      <div
+                        class="flex-1 min-w-0"
+                        @contextmenu="handleContextMenu($event, item.globalIdx)"
+                      >
+                        <div
+                          :contenteditable="item.talk.save && ![''].includes(item.talk.speaker)"
+                          class="leading-relaxed outline-none rounded px-1 -mx-1"
+                          style="font-size: var(--editor-font-size)"
+                          :class="{ 'cursor-text': item.talk.save && ![''].includes(item.talk.speaker) }"
+                          @blur="onBlur($event, item.globalIdx)"
+                          @keydown.enter.prevent="focusNext"
+                          v-html="renderHighlight(item.talk)"
+                        ></div>
+                        <div v-if="item.talk.message" class="text-xs text-red-400 mt-0.5">
+                          {{ item.talk.message }}
+                        </div>
+                      </div>
+
+                      <div class="flex items-center gap-1 flex-shrink-0">
+                        <span v-if="!item.talk.end && item.talk.save" class="text-xs text-[var(--color-text-secondary)] font-mono">\N</span>
+                        <button
+                          v-if="item.talk.end && ![''].includes(item.talk.speaker) && item.talk.save"
+                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:text-[var(--color-primary)]"
+                          title="添加行"
+                          @click="handleAddLine(item.globalIdx)"
+                        >+</button>
+                        <button
+                          v-if="!item.talk.start"
+                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:bg-red-50 dark:hover:bg-red-900/30"
+                          title="删除行"
+                          @click="handleRemoveLine(item.globalIdx)"
+                        >−</button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <Teleport to="body">
+    <div
+      v-if="fbVisible && fbClueGroups.length > 0"
+      :style="fbStyle"
+      class="flashback-tooltip rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-xs pointer-events-none"
+    >
+      <div class="font-semibold text-[var(--color-primary)] mb-1.5">闪回来源</div>
+      <template v-for="(group, gi) in fbClueGroups" :key="gi">
+        <div
+          v-if="gi > 0"
+          class="border-t border-[var(--color-border)] my-1.5"
+        />
+        <div
+          v-for="(hint, hi) in group.hints"
+          :key="hi"
+          class="text-[var(--color-text-secondary)] leading-relaxed"
+          :class="hi === 0 ? 'font-medium' : 'text-xs opacity-80'"
+        >
+          {{ hint }}
+        </div>
+      </template>
+    </div>
+  </Teleport>
+
+  <!-- Context Menu -->
+  <Teleport to="body">
+    <div
+      v-if="ctxMenu.show"
+      class="fixed inset-0 z-[100]"
+      @click="hideCtxMenu"
+    >
+      <div
+        class="absolute bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-lg py-1 text-sm min-w-[160px]"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+      >
+        <div class="px-3 py-0.5 text-xs text-[var(--color-text-secondary)]">替换括号</div>
+        <div class="border-t border-[var(--color-border)] my-1" />
+        <button
+          v-for="opt in bracketOptions" :key="opt.key"
+          class="w-full text-left px-3 py-1.5 hover:bg-[var(--color-primary)]/10 transition-colors"
+          @click="ctxReplace(ctxMenu.row, opt.key)"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+  </Teleport>
+</template>
