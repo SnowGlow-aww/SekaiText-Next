@@ -24,6 +24,14 @@ async function handleRestore() {
     const result = await api.recoveryLoad()
     if (result.exists && result.content) {
       const { talks } = await api.translationLoadContent(result.content)
+      // Baseline fallback (same as EditorPage.handleOpen): seed every row's
+      // baseline to its current text in 校对/合意 modes before anything else, so
+      // edits always produce a diff even when the source story fails to re-load
+      // (empty index, missing catalog, etc.). Without this, recovered files show
+      // no reaction when edited under compare.
+      if ((result.editorMode ?? 0) >= 1) {
+        for (const t of talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
+      }
       editor.setTalks(talks, talks, [])
       editor.markUnsaved()
       if (result.filePath) editor.currentFilePath = result.filePath

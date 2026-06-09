@@ -121,6 +121,16 @@ async function handleOpen() {
     const result = await fileDialog.openTranslation()
     if (!result) return
     console.log('[Open] loaded file', { path: result.filePath || result.fileName, talkCount: result.talks.length, hasMeta: !!result.meta, mode: app.editorMode, fileMode: result.meta?.mode })
+    // Baseline fallback: in 校对/合意 modes, seed every row's baseline to its
+    // current text up front. The .txt format does not persist baseline, and the
+    // story-load block below only sets it when the source story resolves — which
+    // silently fails for files with an empty index (caught + skipped). Without a
+    // baseline, editing a line computes no diff, so the compare view shows
+    // nothing ("我改了没反应"). Seeding here guarantees edits always diff against
+    // the text as it was on open, independent of whether the source story loads.
+    if (app.editorMode >= 1) {
+      for (const t of result.talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
+    }
     editor.setTalks(result.talks, result.talks, [])
 
     // Mode isolation: a file whose saved mode differs from the current editor
