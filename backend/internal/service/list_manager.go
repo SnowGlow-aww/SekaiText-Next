@@ -23,6 +23,12 @@ type ListManager struct {
 	Specials   []SpecialEntry
 	Catalog    map[string]interface{}
 
+	// voiceClues maps every inferred voice prefix -> event array index. Unlike
+	// the per-event InferredVoiceIDs.prefix (single value), this allows one
+	// event to be reachable by multiple voice prefixes (e.g. a WL event known
+	// both as wl_shuffle_03 via area talks and wl_3rd_group3 via its assetName).
+	voiceClues map[string]int
+
 	catalogDir string
 	DBurl      string
 
@@ -857,13 +863,23 @@ func (lm *ListManager) findEventByID(id int) *EventEntry {
 
 // --- Voice Clue Inference ---
 
-// BuildVoiceIDClues builds a map of voiceID prefix -> event info.
+// BuildVoiceIDClues builds a map of voiceID prefix -> event info. It uses the
+// full multi-prefix map collected by InferVoiceEventID (so a single event can
+// be matched by several voice prefixes), falling back to the per-event
+// InferredVoiceIDs.prefix for any event not covered there.
 func (lm *ListManager) BuildVoiceIDClues() map[string]EventEntry {
 	clues := make(map[string]EventEntry)
+	for prefix, ei := range lm.voiceClues {
+		if ei >= 0 && ei < len(lm.Events) {
+			clues[prefix] = lm.Events[ei]
+		}
+	}
 	for _, ev := range lm.Events {
 		if iv, ok := ev.InferredVoiceIDs["prefix"]; ok {
 			if prefix, ok := iv.(string); ok {
-				clues[prefix] = ev
+				if _, exists := clues[prefix]; !exists {
+					clues[prefix] = ev
+				}
 			}
 		}
 	}
@@ -907,6 +923,26 @@ func (lm *ListManager) InferVoiceEventID() {
 		clues["shuffle_03"] = ei
 	}
 
+	// Fallback from chapter assetName. Area talks don't cover World Link events
+	// (wl_3rd_group1/2/3, wl_<unit>_NN, etc.), so their voice prefixes never get
+	// a clue and they render "未知活动". The first chapter's assetName with its
+	// trailing episode number stripped (e.g. "wl_3rd_group3_01" -> "wl_3rd_group3")
+	// equals the voice clue, so use it as a clue source. Only fill gaps — never
+	// overwrite an area-talk-derived clue (those carry the correct choffset).
+	assetEpRe := regexp.MustCompile(`_\d+$`)
+	for ei, ev := range lm.Events {
+		if len(ev.Chapters) == 0 {
+			continue
+		}
+		prefix := assetEpRe.ReplaceAllString(ev.Chapters[0].AssetName, "")
+		if prefix == "" {
+			continue
+		}
+		if _, exists := clues[prefix]; !exists {
+			clues[prefix] = ei
+		}
+	}
+
 	for clue, ei := range clues {
 		chOffset := 0
 		if lm.Events[ei].ID == 9 {
@@ -917,4 +953,8 @@ func (lm *ListManager) InferVoiceEventID() {
 			"choffset": chOffset,
 		}
 	}
+
+	// Keep the full multi-prefix map so BuildVoiceIDClues can expose EVERY clue,
+	// not just the single one that survived in each event's InferredVoiceIDs.
+	lm.voiceClues = clues
 }

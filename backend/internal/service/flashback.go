@@ -46,6 +46,11 @@ func (fb *FlashbackAnalyzer) updateClues() {
 	for _, ms := range fb.lm.MainStory {
 		fb.mainstory[ms.Unit] = ms
 	}
+	// Populate each event's InferredVoiceIDs (voice-prefix -> event) from the
+	// area-talk scenario IDs BEFORE building the clue dict. Without this call
+	// InferredVoiceIDs stays nil for every event, so BuildVoiceIDClues returns
+	// an empty map and every event flashback renders "未知活动".
+	fb.lm.InferVoiceEventID()
 	fb.clueDict = fb.lm.BuildVoiceIDClues()
 }
 
