@@ -33,6 +33,10 @@ export const useEditorStore = defineStore('editor', () => {
   const sourceTalks = ref<SourceTalk[]>([])
 
   const currentFilePath = ref('')
+  // User-editable title segment shown in the 译文 header input. Replaces ONLY
+  // the chapter-title part of the saved filename (the 【模式】<saveTitle> prefix
+  // and .txt suffix stay fixed). Empty = fall back to the story's chapterTitle.
+  const titleOverride = ref('')
   const hasUnsavedChanges = ref(false)
   const majorClue = ref<string | null>(null)
 
@@ -63,6 +67,7 @@ export const useEditorStore = defineStore('editor', () => {
     referTalks.value = []
     sourceTalks.value = []
     currentFilePath.value = ''
+    titleOverride.value = ''
     hasUnsavedChanges.value = false
     majorClue.value = null
     modeCache.clear()
@@ -103,7 +108,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   return {
     talks, dstTalks, referTalks, sourceTalks,
-    currentFilePath, hasUnsavedChanges, majorClue,
+    currentFilePath, titleOverride, hasUnsavedChanges, majorClue,
     currentMode,
     setSourceTalks, setTalks, markUnsaved, markSaved, clearAll,
     saveModeState, loadModeState, switchMode,

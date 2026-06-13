@@ -188,20 +188,28 @@ func (e *EditorService) LoadContent(content string) ([]model.DstTalk, *model.Sav
 		talks = talks[:len(talks)-1]
 	}
 
+	// Assign each row its own DstIdx = position in the slice. Without this every
+	// row keeps the zero value 0, so when the editor maps talks[row] -> the
+	// matching dstTalks entry via DstIdx, EVERY edit writes to dstTalks[0] —
+	// editing any line silently overwrites the FIRST line on save. (talks and
+	// dstTalks are the same array on open until a compare/align runs, which makes
+	// the collapse to row 0 invisible until export.)
+	for i := range talks {
+		talks[i].DstIdx = i
+	}
+
 	return talks, meta, nil
 }
 
-// SerializeWithMeta prepends a metadata header to the serialized content.
+// SerializeWithMeta serializes dstTalks to translation text. The proofread /
+// agreement output must be byte-for-byte the same format as the translation
+// file (plain text, CRLF, no header) — proofread edits overwrite the original
+// lines in place rather than being annotated. The #SekaiText metadata header is
+// therefore NOT written; meta is accepted only for backward compatibility and
+// ignored. (Re-opening such a file requires picking the story/mode manually,
+// which matches how the translation files already work.)
 func (e *EditorService) SerializeWithMeta(dsttalks []model.DstTalk, saveN bool, meta *model.SaveMetadata) string {
-	content := e.SerializeContent(dsttalks, saveN)
-	if meta == nil {
-		return content
-	}
-	b, err := json.Marshal(meta)
-	if err != nil {
-		return content
-	}
-	return "#SekaiText " + string(b) + "\n" + content
+	return e.SerializeContent(dsttalks, saveN)
 }
 
 // SerializeContent serializes dstTalks to translation text format and returns the string.
@@ -238,30 +246,62 @@ func (e *EditorService) SerializeContent(dsttalks []model.DstTalk, saveN bool) s
 		}
 	}
 
-	return strings.TrimRight(out.String(), "\n")
+	result := strings.TrimRight(out.String(), "\n")
+	// Normalize line endings to CRLF so saved files match the translation files
+	// the team works with (Windows line endings). The serializer builds with
+	// "\n"; collapse any pre-existing "\r\n" first to avoid doubling, then
+	// convert every "\n" to "\r\n".
+	result = strings.ReplaceAll(result, "\r\n", "\n")
+	result = strings.ReplaceAll(result, "\n", "\r\n")
+	return result
 }
 
 // CheckLines aligns loaded talks with source talks (handles line mismatches).
 func (e *EditorService) CheckLines(srctalks []model.SourceTalk, loadtalks []model.DstTalk) []model.DstTalk {
-	// Trim leading scene/option lines that exceed source
-	srcCount := 0
-	for _, st := range srctalks {
-		if st.Speaker == "场景" || st.Speaker == "左上场景" || st.Speaker == "选项" {
-			srcCount++
-		} else if st.Speaker != "" {
-			break
-		}
-	}
-	count := 0
+	// Reconcile the LEADING run of scene/option lines with the source.
+	//
+	// The translator sometimes rewrites the opening narration and splits one
+	// source scene line into several lines (e.g. source "ストリートのセカイ"
+	// becomes "我们跟这家店…" + "才获准…"). The old code blindly trimmed the
+	// excess lines off the HEAD, which deleted real first-line content and
+	// shifted every following row up — the "首行被覆盖" bug.
+	//
+	// Correct handling: look only at the first contiguous block of non-empty
+	// scene/option lines (up to the first blank / dialogue line) on each side.
+	// If the loaded block has MORE lines than the source block, the extra lines
+	// are a translator split: merge them back into a single entry joined by
+	// "\n". On save, scene lines write their text verbatim with the embedded
+	// "\n", so both lines round-trip to the file unchanged — no content lost,
+	// and alignment to the single source slot is restored. Empty placeholder
+	// lines in the block are dropped (template padding).
+	srcLead := leadingSceneRun(srctalks)
+	dstLead := 0
 	for _, lt := range loadtalks {
 		if lt.Speaker == "场景" || lt.Speaker == "左上场景" || lt.Speaker == "选项" {
-			count++
-		} else if lt.Speaker != "" {
+			dstLead++
+		} else {
 			break
 		}
 	}
-	if count > srcCount {
-		loadtalks = loadtalks[count-srcCount:]
+	if dstLead > srcLead && srcLead > 0 {
+		// Merge the leading dstLead lines down to srcLead entries: keep the
+		// first (srcLead-1) as-is, fold the rest into the srcLead-th, joining
+		// non-empty texts with "\n".
+		var merged []model.DstTalk
+		merged = append(merged, loadtalks[:srcLead-1]...)
+		tail := loadtalks[srcLead-1 : dstLead]
+		base := tail[0]
+		var texts []string
+		for _, t := range tail {
+			if strings.TrimSpace(t.Text) != "" {
+				texts = append(texts, t.Text)
+			}
+		}
+		base.Text = strings.Join(texts, "\n")
+		base.End = true
+		merged = append(merged, base)
+		merged = append(merged, loadtalks[dstLead:]...)
+		loadtalks = merged
 	}
 	for len(loadtalks) > 0 && loadtalks[0].Text == "" {
 		loadtalks = loadtalks[1:]
@@ -389,6 +429,13 @@ func (e *EditorService) CheckLines(srctalks []model.SourceTalk, loadtalks []mode
 		}
 	}
 
+	// Assign DstIdx = slice position so the editor can map each aligned row to
+	// its dstTalks counterpart. Without this all rows share DstIdx 0 and every
+	// edit overwrites the first line on export (same bug as LoadContent).
+	for i := range newtalks {
+		newtalks[i].DstIdx = i
+	}
+
 	return newtalks
 }
 
@@ -479,6 +526,22 @@ func (e *EditorService) CompareText(refertalks, checktalks []model.DstTalk, edit
 	}
 
 	return newtalks
+}
+
+// leadingSceneRun counts the first contiguous block of scene/option lines in
+// the source, stopping at the first line that is neither (a dialogue line or a
+// blank line). Mirrors the dstLead count in CheckLines so the two sides are
+// compared on the same footing.
+func leadingSceneRun(srctalks []model.SourceTalk) int {
+	n := 0
+	for _, st := range srctalks {
+		if st.Speaker == "场景" || st.Speaker == "左上场景" || st.Speaker == "选项" {
+			n++
+		} else {
+			break
+		}
+	}
+	return n
 }
 
 // groupByIdx collects rows with the same source idx into slices.
@@ -680,12 +743,21 @@ func (e *EditorService) checkText(speaker, text string) (string, bool, string) {
 		return text, false, msg
 	}
 
-	text = strings.TrimSpace(strings.Split(text, "\n")[0])
-	if text == "" {
-		return text, true, ""
+	// Scene / 左上场景 / blank lines may legitimately contain multiple lines
+	// joined by "\n" — e.g. the opening narration that a translator split across
+	// several lines and CheckLines merged back into one entry. They need no
+	// sentence-end / length checks, so trim each line but KEEP the "\n"s; the
+	// "[0]"-only split below would silently drop everything after the first line.
+	if speaker == "场景" || speaker == "左上场景" || speaker == "" {
+		parts := strings.Split(text, "\n")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return strings.Join(parts, "\n"), true, ""
 	}
 
-	if speaker == "场景" || speaker == "左上场景" || speaker == "" {
+	text = strings.TrimSpace(strings.Split(text, "\n")[0])
+	if text == "" {
 		return text, true, ""
 	}
 

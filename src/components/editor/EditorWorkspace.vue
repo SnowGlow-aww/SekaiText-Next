@@ -102,12 +102,11 @@ const talkGroups = computed(() => {
 // ---- Editing (from DestPanel) ----
 let editTimeout: ReturnType<typeof setTimeout> | null = null
 
-// Stable per-row key. With the Baseline model each data row maps to a fixed
-// position, so idx+dstidx is unique. The compare baseline is a *derived* visual
-// row, keyed with a suffix so it never collides with its edit row.
-function rowKey(talk: DstTalk, role: 'base' | 'edit' = 'edit'): string {
-  return `${talk.idx}-${talk.dstidx}-${role}`
-}
+// Per-row v-for keys use the talk's globalIdx (its index in editor.talks), which
+// is unique across the whole list. The old idx+dstidx key could collide between a
+// scene line and a sub-line, making Vue reuse the wrong DOM node — editing one
+// row then overwrote another (e.g. the first scene line was clobbered by a later
+// line's text). globalIdx keys eliminate that aliasing.
 
 const MAX_LINES_PER_SRC = 10
 
@@ -161,10 +160,23 @@ async function handleTextChange(row: number, newText: string) {
 }
 
 function onBlur(e: Event, idx: number) {
-  const newText = (e.target as HTMLElement).innerText
+  // Use textContent, not innerText: innerText reflects *rendered* layout and can
+  // pull in text from adjacent inline elements (e.g. the row-number "0" shown
+  // beside the field) or inject newlines from the diff <span>s. textContent
+  // returns exactly the concatenated text of this field's nodes — the line text.
+  const newText = (e.target as HTMLElement).textContent ?? ''
   // Real-change guard: blurring without an actual edit must not mark the
   // document dirty or trigger a diff recompute.
   if (editor.talks[idx]?.text === newText) return
+  // Commit the edit to the talks array SYNCHRONOUSLY before the debounced API
+  // call. Previously the text only reached editor.talks when changeText
+  // returned; but handleTextChange debounces on a single shared timer, so
+  // editing a second row within 300ms cleared the first row's pending save and
+  // its edit (which lived only in the DOM) was lost — and a later setTalks
+  // re-render wiped it from the DOM too. Committing here guarantees every
+  // blurred edit is in the array, so saving and subsequent recomputes always
+  // carry it, regardless of debounce cancellation.
+  if (editor.talks[idx]) editor.talks[idx].text = newText
   handleTextChange(idx, newText)
 }
 
@@ -343,9 +355,10 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
         <div class="flex items-center px-3 py-2 border-l border-[var(--color-border)]">
           <span class="font-semibold text-sm text-[var(--color-text-secondary)]">译文</span>
           <input
-            v-model="editor.currentFilePath"
+            v-model="editor.titleOverride"
             type="text"
-            placeholder="标题/路径..."
+            :placeholder="story.chapterTitle || story.saveTitle || '标题...'"
+            title="仅替换文件名中的标题部分（【模式】前缀与路径自动保留）"
             class="ml-2 flex-1 text-sm px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)]"
           />
         </div>
@@ -412,11 +425,10 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 
               <!-- ===== Dest Side (stacked per sub-line) ===== -->
               <div class="flex flex-col gap-1 h-full">
-                <template v-for="item in group.items" :key="rowKey(item.talk, 'edit')">
+                <template v-for="item in group.items" :key="item.globalIdx">
                   <!-- Baseline row (read-only): shown under compare when baseline differs -->
                   <div
                     v-if="showBaselineRow(item.talk)"
-                    :key="rowKey(item.talk, 'base')"
                     class="p-2 rounded-lg border border-[var(--color-border)] border-l-4 border-l-yellow-400 bg-yellow-400/8 select-none"
                   >
                     <div class="flex items-start gap-2">

@@ -132,6 +132,10 @@ async function handleOpen() {
       for (const t of result.talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
     }
     editor.setTalks(result.talks, result.talks, [])
+    // Reset the title override so the header input falls back to the freshly
+    // loaded story's chapterTitle (shown as placeholder) instead of carrying a
+    // stale title from a previous file.
+    editor.titleOverride = ''
 
     // Mode isolation: a file whose saved mode differs from the current editor
     // mode is treated as a *baseline to derive from*, not a file to edit in
@@ -177,23 +181,22 @@ async function handleOpen() {
 async function handleSave() {
   if (editor.talks.length === 0) return
   const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
-  // Always derive the suggested name from the CURRENT mode. Reusing
-  // currentFilePath verbatim would keep a stale 【翻译】 prefix when saving
-  // from 校对/合意 mode, so only reuse it when its prefix already matches.
-  let defaultName = editor.currentFilePath
-  const matchesMode = defaultName.includes('【' + modeLabel + '】')
-  if (!defaultName || !matchesMode) {
-    let fileName = '【' + modeLabel + '】' + (story.saveTitle || 'untitled')
-    if (story.chapterTitle) fileName += ' ' + story.chapterTitle
-    fileName += '.txt'
-    // Layered output: <saveBaseDir>/<故事类型>/<索引名>/<【模式】标题.txt>
-    const base = settings.settings.saveBaseDir
-    if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
-      const sep = (s: string) => s.replace(/[/\\]/g, '_')
-      defaultName = `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}/${fileName}`
-    } else {
-      defaultName = fileName
-    }
+  // The 译文 header input (editor.titleOverride) owns the title segment. The
+  // filename is always rebuilt as 【模式】<saveTitle> <title>.txt — the prefix
+  // and .txt suffix are fixed, only the title part is user-editable. Empty
+  // override falls back to the story's chapterTitle.
+  const title = (editor.titleOverride || story.chapterTitle || '').trim()
+  let fileName = '【' + modeLabel + '】' + (story.saveTitle || 'untitled')
+  if (title) fileName += ' ' + title
+  fileName += '.txt'
+  // Layered output: <saveBaseDir>/<故事类型>/<索引名>/<【模式】标题.txt>
+  let defaultName: string
+  const base = settings.settings.saveBaseDir
+  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
+    const sep = (s: string) => s.replace(/[/\\]/g, '_')
+    defaultName = `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}/${fileName}`
+  } else {
+    defaultName = fileName
   }
   const meta: SaveMetadata | undefined = story.selectedType ? {
     type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex,
@@ -253,8 +256,21 @@ async function handleImportBaseline() {
     const result = await fileDialog.openTranslation()
     if (!result) return
     undo.pushSnapshot(editor.talks, editor.dstTalks)
+    // Align the imported 校对稿 to the source story BEFORE comparing. The current
+    // 合意 rows were aligned to the source on open (idx = source line). A freshly
+    // parsed .txt instead carries positional idx, so when the two files differ in
+    // line count (e.g. the 校对稿 has an extra intro line) every row pairs against
+    // the wrong baseline — the whole compare view shifts by one. Re-aligning the
+    // imported file to the same source restores a stable idx so compareText pairs
+    // matching source lines. Fall back to raw talks only if no source is loaded.
+    let referTalks = result.talks
+    if (story.sourceTalks.length > 0) {
+      referTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
+    } else {
+      toast.show('未加载原文，对比可能错位，请先选择剧情', 'warn')
+    }
     const compared = await api.compareText({
-      referTalks: result.talks,
+      referTalks,
       checkTalks: editor.talks,
       editorMode: 2,
     })
