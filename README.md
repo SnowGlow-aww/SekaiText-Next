@@ -5,11 +5,6 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 <!-- markdownlint-disable-next-line MD036 -->
 
 <p align="center">
-  <a href="https://github.com/Is14w/SekaiText/blob/master/README.md">简体中文</a> |
-  <a href="https://github.com/Is14w/SekaiText/blob/master/README.en.md">English</a>
-</p>
-
-<p align="center">
   <img alt="SekaiText" src="public/app-icon.png" width="128" height="128" />
 </p>
 
