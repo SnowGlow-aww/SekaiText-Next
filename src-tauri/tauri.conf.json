@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "sekaitext",
-  "version": "0.1.8",
-  "identifier": "com.is14w.sekaitext",
+  "productName": "SekaiText Next",
+  "version": "1.0.0-preview",
+  "identifier": "com.snowglow-aww.sekaitext-next",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "SekaiText",
+        "title": "SekaiText Next",
         "width": 1400,
         "height": 900,
         "resizable": true,
@@ -31,7 +31,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
     "externalBin": [
       "binaries/sekaitext-backend"
     ],
@@ -54,7 +54,6 @@
       "minimumSystemVersion": "10.15"
     },
     "windows": {
-      "wix": {},
       "nsis": {}
     }
   }

@@ -387,6 +387,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                 class="flex flex-col justify-center p-3 rounded-lg border border-[var(--color-border)] transition-colors"
                 :class="{ 'bg-[var(--color-flashback)]': flashbackItem(group.items[0].talk)?.isFlashback }"
                 @mouseenter="onSourceEnter($event, group.items[0].talk)"
+                @mousemove="onSourceEnter($event, group.items[0].talk)"
                 @mouseleave="fbHide()"
               >
                 <div class="flex items-center gap-3">

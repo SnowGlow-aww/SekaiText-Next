@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useEditorStore } from '../stores/editor'
 import { useStoryStore } from '../stores/story'
@@ -10,6 +10,7 @@ import { useToast } from '../composables/useToast'
 import { useFileDialog } from '../composables/useFileDialog'
 import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
+import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -29,34 +30,53 @@ const undo = useUndo()
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
+function doUndo() {
+  const snap = undo.undo(editor.talks, editor.dstTalks)
+  if (snap) { editor.talks = snap.talks; editor.dstTalks = snap.dstTalks; editor.markUnsaved() }
+}
+function doRedo() {
+  const snap = undo.redo(editor.talks, editor.dstTalks)
+  if (snap) { editor.talks = snap.talks; editor.dstTalks = snap.dstTalks; editor.markUnsaved() }
+}
+
 function onKeyDown(e: KeyboardEvent) {
-  // Let browser handle native undo/redo inside contenteditable
   const el = document.activeElement
+  const inEditable = el instanceof HTMLElement &&
+    (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+  // Inside contenteditable, let the browser handle native undo/redo.
   if (el instanceof HTMLElement && el.isContentEditable) return
 
-  if (e.ctrlKey && e.key === 'z') {
-    e.preventDefault()
-    const snap = undo.undo(editor.talks, editor.dstTalks)
-    if (snap) {
-      editor.talks = snap.talks
-      editor.dstTalks = snap.dstTalks
-      editor.markUnsaved()
-    }
+  const sc = settings.settings.shortcuts
+  const hit = (id: string) => matchEvent(e, resolveCombo(sc, id))
+
+  if (hit('open')) { e.preventDefault(); handleOpen(); return }
+  if (hit('save')) { e.preventDefault(); handleSave(); return }
+  if (hit('search')) { e.preventDefault(); app.searchOpen = true; return }
+  if (hit('importBaseline')) {
+    if (app.editorMode === 2) { e.preventDefault(); handleImportBaseline() }
+    return
   }
-  if (e.ctrlKey && e.key === 'y') {
-    e.preventDefault()
-    const snap = undo.redo(editor.talks, editor.dstTalks)
-    if (snap) {
-      editor.talks = snap.talks
-      editor.dstTalks = snap.dstTalks
-      editor.markUnsaved()
-    }
+  if (hit('replaceAll')) {
+    if (app.searchOpen) { e.preventDefault(); handleReplaceAll() }
+    return
   }
+  if (hit('prevMatch')) {
+    if (app.searchOpen && !inEditable) { e.preventDefault(); searchPrev() }
+    return
+  }
+  if (hit('nextMatch')) {
+    if (app.searchOpen && !inEditable) { e.preventDefault(); searchNext() }
+    return
+  }
+  if (hit('undo')) { e.preventDefault(); doUndo(); return }
+  if (hit('redo')) { e.preventDefault(); doRedo(); return }
 }
 
 onMounted(async () => {
   autoSave.start()
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('resize', measureSearchAlign)
+  nextTick(measureSearchAlign)
   if (!isTauri) return
   try {
     const win = getCurrentWindow()
@@ -106,6 +126,28 @@ const showCloseConfirm = ref(false)
 const forceClose = ref(false)
 const sidebarOpen = ref(true)
 
+// Align the search bar's divider directly under the toolbar's "搜索"-right
+// divider. Measured at runtime (not a hardcoded px) so it stays correct across
+// fonts/themes/locales. searchLeftWidth = toolbar divider's left offset minus
+// the shared container's left edge.
+const toolbarSearchSep = ref<HTMLElement | null>(null)
+const searchBarRow = ref<HTMLElement | null>(null)
+const searchLeftWidth = ref(360)
+function measureSearchAlign() {
+  const sep = toolbarSearchSep.value
+  const row = searchBarRow.value
+  if (!sep || !row) return
+  // The divider sits AFTER the left group, separated by the row's flex gap
+  // (gap-2 = 8px). So the left group width must be the toolbar divider's offset
+  // minus that gap for the search divider to land exactly under it.
+  const gap = 8
+  const w = sep.getBoundingClientRect().left - row.getBoundingClientRect().left - gap
+  if (w > 80) searchLeftWidth.value = Math.round(w)
+}
+watch(() => app.searchOpen, (open) => {
+  if (open) nextTick(measureSearchAlign)
+})
+
 function setMode(key: number) {
   editor.switchMode(key as 0 | 1 | 2)
   app.setEditorMode(key as 0 | 1 | 2)
@@ -132,10 +174,16 @@ async function handleOpen() {
       for (const t of result.talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
     }
     editor.setTalks(result.talks, result.talks, [])
-    // Reset the title override so the header input falls back to the freshly
-    // loaded story's chapterTitle (shown as placeholder) instead of carrying a
-    // stale title from a previous file.
-    editor.titleOverride = ''
+    // Pre-fill the 译文 header title input from the filename. The name looks like
+    // "【翻译】3rd-group3-01 思いがけない出会い.txt": strip the 【…】 prefix and
+    // .txt, the first token is the label (story id), the rest is the (already
+    // translated) chapter title — show it as the actual input value, not just a
+    // placeholder, so the translator sees/keeps their title.
+    const rawName = (result.filePath || result.fileName || '').split(/[/\\]/).pop() || ''
+    const baseName = rawName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
+    const label = baseName.split(/\s+/)[0] || ''
+    const titlePart = baseName.slice(label.length).trim()
+    editor.titleOverride = titlePart
 
     // Mode isolation: a file whose saved mode differs from the current editor
     // mode is treated as a *baseline to derive from*, not a file to edit in
@@ -146,35 +194,45 @@ async function handleOpen() {
     editor.currentFilePath = deriving ? '' : (result.filePath || result.fileName || '')
     editor.markSaved()
     undo.clear()
-    if (result.meta) {
+
+    // Auto-load the source scenario from the filename label (see above). Resolve
+    // it to story coordinates and load + align the source (fixed Haruki Neo
+    // source). On any failure we silently keep manual selection.
+    if (label) {
       try {
-        const m = result.meta
-        story.selectedType = m.type
-        story.selectedSort = m.sort || ''
-        story.selectedIndex = m.index
-        story.selectedChapter = m.chapter
-        story.selectedSource = m.source
-        await story.loadStory()
-        if (story.sourceTalks.length > 0) {
-          const aligned = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
-          if (deriving) {
-            // Build refer(baseline, read-only) + check(editable copy) for diff.
-            const compared = await api.compareText({ referTalks: aligned, checkTalks: aligned, editorMode: app.editorMode })
-            editor.setTalks(compared.talks, compared.dstTalks, aligned)
-          } else {
-            // Resuming a 校对/合意 file in its own mode: seed each row's baseline
-            // to its current text so compare shows nothing changed until edited,
-            // and edits diff against the saved-on-open text. Restoring the diff
-            // vs the original translation is a separate explicit action.
+        const r = await api.resolveLabel(label)
+        if (r.ok) {
+          story.selectedSource = 'haruki'
+          // Populate the navigator dropdowns so they SHOW the resolved story,
+          // not just load it. Setting selectedType triggers a watcher that
+          // resets the child selections and refetches lists, so we sequence:
+          // set type -> let its cascade settle -> fetch the index/chapter lists
+          // -> set index/chapter LAST so they stick and the <select>s display.
+          story.selectedType = r.storyType
+          story.selectedSort = ''
+          await story.fetchSorts(r.storyType)
+          await story.fetchIndex(r.storyType, '')
+          await nextTick()
+          story.selectedIndex = r.index
+          story.selectedIndexLabel = story.indices.find(i => i.value === r.index)?.label || r.index
+          await story.fetchChapters(r.storyType, '', r.index)
+          await nextTick()
+          story.selectedChapter = r.chapter
+          await story.loadStory()
+          if (story.sourceTalks.length > 0) {
+            const aligned = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
             if (app.editorMode >= 1) {
-              for (const t of aligned) t.baseline = t.text
+              // Derive baseline rows for compare (校对/合意).
+              const compared = await api.compareText({ referTalks: aligned, checkTalks: aligned, editorMode: app.editorMode })
+              editor.setTalks(compared.talks, compared.dstTalks, aligned)
+            } else {
+              editor.setTalks(aligned, aligned, [])
             }
-            editor.setTalks(aligned, aligned, [])
           }
         }
-      } catch { /* skip */ }
+      } catch { /* keep manual selection */ }
     }
-    toast.show(deriving ? '已载入为' + EditorModeLabel[app.editorMode as 0|1|2] + '基线（请另存为新文件）' : '已打开: ' + editor.currentFilePath, 'success')
+    toast.show('已打开: ' + (label || rawName), 'success')
   } catch (e: any) { toast.show('Open failed: ' + (e.message || String(e)), 'error') }
 }
 
@@ -251,7 +309,7 @@ function handleConfirm() {
 // sub-line position, sets each row's baseline and recomputes the diff so the
 // comparison shows 校对稿(baseline, red deletions) vs current text(green adds).
 async function handleImportBaseline() {
-  if (editor.talks.length === 0) { toast.show('请先载入合意稿', 'warn'); return }
+  if (editor.talks.length === 0) { toast.show('请先载入翻译稿', 'warn'); return }
   try {
     const result = await fileDialog.openTranslation()
     if (!result) return
@@ -276,6 +334,13 @@ async function handleImportBaseline() {
     })
     editor.setTalks(compared.talks, compared.dstTalks, editor.referTalks)
     app.showCompare = true
+    // Adopt the imported 校对稿's title as the displayed 译文 title: in 合意 the
+    // agreed text derives from the proofread draft, so its title is the relevant
+    // version. Parse it from the filename (strip 【…】 prefix + .txt + label).
+    const impName = (result.filePath || result.fileName || '').split(/[/\\]/).pop() || ''
+    const impBase = impName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
+    const impTitle = impBase.slice((impBase.split(/\s+/)[0] || '').length).trim()
+    if (impTitle) editor.titleOverride = impTitle
     editor.markUnsaved()
     toast.show('已导入校对稿作为对比基准', 'success')
   } catch (e: any) {
@@ -353,6 +418,7 @@ async function handleFullCheck() {
 }
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('resize', measureSearchAlign)
 })
 </script>
 
@@ -388,23 +454,27 @@ onUnmounted(() => {
             <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showFlashback" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />闪回</label>
             <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.syncScroll" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />同步</label>
             <button @click="app.searchOpen = !app.searchOpen" :class="['px-2.5 py-1 rounded transition-colors', app.searchOpen ? 'text-[var(--color-primary)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]']">搜索</button>
-            <div class="w-px h-4 bg-[var(--color-border)]" />
+            <div ref="toolbarSearchSep" class="w-px h-4 bg-[var(--color-border)]" />
             <button @click="showSpeakerCheck = true" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">说话人</button>
             <button @click="handleFullCheck" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">检查</button>
             <button @click="showSpeakerCount = true" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">统计</button>
             <template v-if="app.editorMode >= 1">
               <div class="w-px h-4 bg-[var(--color-border)]" />
               <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showCompare" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />对比</label>
-              <button v-if="app.editorMode === 2" @click="handleImportBaseline" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors font-medium">导入校对稿</button>
+              <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors font-medium">导入校对稿</button>
               <button v-if="app.editorMode === 2" @click="handleConfirm" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors font-medium">确认</button>
             </template>
           </div>
-          <!-- Search / replace bar -->
-          <div v-if="app.searchOpen" class="flex items-center gap-2 mt-1.5 text-sm">
-            <input v-model="app.searchQuery" type="text" placeholder="查找(原文/译文/说话人)" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-xs w-56" @keydown.enter="searchNext" />
-            <span class="text-xs text-[var(--color-text-secondary)] w-16">{{ searchCount }}</span>
-            <button @click="searchPrev" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">上一个</button>
-            <button @click="searchNext" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">下一个</button>
+          <!-- Search / replace bar. The left group is width-matched to the
+               toolbar so the divider sits directly under the toolbar's
+               "搜索"-right divider. -->
+          <div v-if="app.searchOpen" ref="searchBarRow" class="flex items-center gap-2 mt-1.5 text-sm">
+            <div class="flex items-center gap-2" :style="{ width: searchLeftWidth + 'px' }">
+              <input v-model="app.searchQuery" type="text" placeholder="查找(原文/译文/说话人)" class="flex-1 min-w-0 px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-xs" @keydown.enter="searchNext" />
+              <span class="text-xs text-[var(--color-text-secondary)]">{{ searchCount }}</span>
+              <button @click="searchPrev" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">上一个</button>
+              <button @click="searchNext" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">下一个</button>
+            </div>
             <div class="w-px h-4 bg-[var(--color-border)]" />
             <input v-model="app.searchReplace" type="text" placeholder="替换为(仅译文)" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-xs w-56" />
             <button @click="handleReplaceAll" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">全部替换</button>

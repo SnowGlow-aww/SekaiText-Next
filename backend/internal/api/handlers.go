@@ -145,6 +145,26 @@ func (h *Handler) StoryLoadLocal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ResolveLabel reverse-maps a filename label (e.g. "3rd-group3-01") to the story
+// coordinates needed to auto-load its source. ok=false when the label can't be
+// resolved (caller then keeps manual selection).
+func (h *Handler) ResolveLabel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	storyType, index, chapter, ok := h.lm.ResolveLabel(req.Label)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        ok,
+		"storyType": storyType,
+		"index":     index,
+		"chapter":   chapter,
+	})
+}
+
 // --- Translation ---
 
 func (h *Handler) TranslationCreate(w http.ResponseWriter, r *http.Request) {

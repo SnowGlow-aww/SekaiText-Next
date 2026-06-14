@@ -156,6 +156,10 @@ type Settings struct {
 	UndoDepth                 int    `json:"undoDepth"`
 	KeepHighlightWhenCompareOff bool `json:"keepHighlightWhenCompareOff"`
 
+	// Shortcuts maps a shortcut action id to a combo string (e.g. "mod+o").
+	// Empty/absent entries fall back to the frontend registry defaults.
+	Shortcuts map[string]string `json:"shortcuts,omitempty"`
+
 	LastStoryType   string `json:"lastStoryType,omitempty"`
 	LastStorySort   string `json:"lastStorySort,omitempty"`
 	LastStoryIndex  string `json:"lastStoryIndex,omitempty"`

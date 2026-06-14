@@ -87,6 +87,12 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ content }) },
     ),
 
+  resolveLabel: (label: string) =>
+    request<{ ok: boolean; storyType: string; index: string; chapter: number }>(
+      '/story/resolve-label',
+      { method: 'POST', body: JSON.stringify({ label }) },
+    ),
+
   // Translation
   translationLoadContent: (content: string) =>
     request<{

@@ -1,13 +1,17 @@
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
 import { useToast } from '../composables/useToast'
+import { SHORTCUT_ACTIONS, resolveCombo, formatCombo, comboFromEvent } from '../constants/shortcuts'
 const router = useRouter()
 const app = useAppStore()
 const settings = useSettingsStore()
 const toast = useToast()
+
+const appVersion = __APP_VERSION__
 
 function saveAndBack() {
   settings.saveSettings().then(() => {
@@ -17,7 +21,53 @@ function saveAndBack() {
     toast.show('保存失败', 'error')
   })
 }
+
+// ---- Shortcut customization ----
+const recordingId = ref<string | null>(null)
+function comboFor(id: string): string {
+  return resolveCombo(settings.settings.shortcuts, id)
+}
+// combo -> list of action ids, to flag conflicts (same combo bound twice).
+const comboCounts = computed(() => {
+  const m: Record<string, number> = {}
+  for (const a of SHORTCUT_ACTIONS) {
+    const c = comboFor(a.id)
+    m[c] = (m[c] || 0) + 1
+  }
+  return m
+})
+function isConflict(id: string): boolean {
+  return comboCounts.value[comboFor(id)] > 1
+}
+function startRecord(id: string) {
+  recordingId.value = id
+}
+function onRecordKey(e: KeyboardEvent) {
+  if (!recordingId.value) return
+  e.preventDefault()
+  if (e.key === 'Escape') { recordingId.value = null; return }
+  const combo = comboFromEvent(e)
+  if (!combo) return // pure modifier; keep waiting
+  if (!settings.settings.shortcuts) settings.settings.shortcuts = {}
+  settings.settings.shortcuts[recordingId.value] = combo
+  recordingId.value = null
+}
+function resetShortcut(id: string) {
+  if (settings.settings.shortcuts) delete settings.settings.shortcuts[id]
+}
+function resetAllShortcuts() {
+  settings.settings.shortcuts = {}
+}
+
+// Capture the next keystroke globally while recording.
+import { watch, onUnmounted } from 'vue'
+watch(recordingId, (id) => {
+  if (id) window.addEventListener('keydown', onRecordKey, true)
+  else window.removeEventListener('keydown', onRecordKey, true)
+})
+onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
 </script>
+
 
 <template>
   <div class="min-h-screen bg-[var(--color-bg)]">
@@ -180,7 +230,7 @@ function saveAndBack() {
                 <div class="text-sm font-medium">下载源</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">故事 JSON 数据来源</div>
               </div>
-              <span class="text-sm text-[var(--color-text-secondary)]">harukineo</span>
+              <span class="text-sm text-[var(--color-text-secondary)]">Haruki Neo</span>
             </div>
 
             <label class="flex items-center justify-between cursor-pointer">
@@ -199,6 +249,41 @@ function saveAndBack() {
               <input v-model="settings.settings.debugEnabled" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
             </label>
           </div>
+        </div>
+      </section>
+
+      <section class="mb-6">
+        <div class="flex items-center justify-between mb-3 px-1">
+          <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">快捷键</h2>
+          <button @click="resetAllShortcuts" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">全部恢复默认</button>
+        </div>
+        <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-2.5">
+          <div v-for="a in SHORTCUT_ACTIONS" :key="a.id" class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-sm font-medium">{{ a.label }}</div>
+              <div v-if="a.note" class="text-xs text-[var(--color-text-secondary)] mt-0.5">{{ a.note }}</div>
+            </div>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <span v-if="isConflict(a.id)" class="text-xs text-red-500">冲突</span>
+              <button
+                @click="startRecord(a.id)"
+                class="min-w-[72px] px-2.5 py-1 rounded border text-xs font-mono transition-colors"
+                :class="recordingId === a.id
+                  ? 'border-[var(--color-primary)] text-[var(--color-primary)] animate-pulse'
+                  : 'border-[var(--color-border)] text-[var(--color-text)] hover:border-[var(--color-primary)]'"
+              >{{ recordingId === a.id ? '按下按键…' : formatCombo(comboFor(a.id)) }}</button>
+              <button @click="resetShortcut(a.id)" title="恢复默认" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">↺</button>
+            </div>
+          </div>
+          <div class="text-xs text-[var(--color-text-secondary)] pt-1">点击键位按钮后按下新组合键录制，Esc 取消。mod = macOS ⌘ / Windows Ctrl。</div>
+        </div>
+      </section>
+
+      <section class="mb-6">
+        <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">关于</h2>
+        <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-left">
+          <div class="text-sm font-medium">SekaiText Next by 雪莹ちゃん</div>
+          <div class="text-xs text-[var(--color-text-secondary)] mt-1 font-mono">v{{ appVersion }}</div>
         </div>
       </section>
 

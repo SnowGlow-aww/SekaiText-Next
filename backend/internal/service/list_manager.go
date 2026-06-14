@@ -809,6 +809,50 @@ func (lm *ListManager) eventReverseIndex(ev *EventEntry) int {
 	return 0
 }
 
+// ResolveLabel reverse-maps a filename label (the SaveTitle segment, e.g.
+// "3rd-group3-01" or "198-06") back to the story coordinates GetJsonPath needs.
+// Returns storyType, index (event ID as string), chapterIdx (0-based) and ok.
+// Only event stories are resolved; other label shapes return ok=false so the
+// caller falls back to manual selection.
+func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chapterIdx int, ok bool) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "", "", 0, false
+	}
+
+	// Strategy 1: reconstruct the chapter assetName and match it directly.
+	// SaveTitle for events is the assetName tail joined by "-". WL events keep
+	// the "wl_" prefix stripped (assetName wl_3rd_group3_01 -> label 3rd-group3-01),
+	// so try both "wl_"+underscored and the plain underscored form.
+	underscored := strings.ReplaceAll(label, "-", "_")
+	candidates := []string{"wl_" + underscored, underscored, "event_" + underscored}
+	for _, cand := range candidates {
+		for ei := range lm.Events {
+			for ci, ch := range lm.Events[ei].Chapters {
+				if ch.AssetName == cand {
+					return StoryLabelEvent, strconv.Itoa(lm.Events[ei].ID), ci, true
+				}
+			}
+		}
+	}
+
+	// Strategy 2: "<eventReverseIndex>-<episode>" (ordinary events). Both parts
+	// numeric: the Nth event in list order, Mth chapter (1-based).
+	parts := strings.Split(label, "-")
+	if len(parts) == 2 {
+		rev, err1 := strconv.Atoi(parts[0])
+		ep, err2 := strconv.Atoi(parts[1])
+		if err1 == nil && err2 == nil && rev >= 1 && rev <= len(lm.Events) && ep >= 1 {
+			ev := &lm.Events[rev-1]
+			if ep <= len(ev.Chapters) {
+				return StoryLabelEvent, strconv.Itoa(ev.ID), ep - 1, true
+			}
+		}
+	}
+
+	return "", "", 0, false
+}
+
 // processChapterID replaces the internal kdyicr_id in chapter asset name parts
 // with the display event index, matching the Python reference logic.
 func (lm *ListManager) processChapterID(eventIndex int, chapterIDs []string) []string {

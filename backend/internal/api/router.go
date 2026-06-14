@@ -54,6 +54,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/json-path", h.JsonPath)
 			r.Post("/load", h.StoryLoad)
 			r.Post("/load-local", h.StoryLoadLocal)
+			r.Post("/resolve-label", h.ResolveLabel)
 			r.Post("/download-json", h.DownloadStoryJSON)
 			r.Get("/download-progress", h.DownloadProgress)
 		})

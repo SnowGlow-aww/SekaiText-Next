@@ -6,6 +6,7 @@ import { join } from 'path'
 // Map target triple (TAURI_TARGET env) -> Go GOOS/GOARCH
 const TARGET_MAP = {
   'x86_64-pc-windows-msvc':    { goos: 'windows', goarch: 'amd64', ext: '.exe' },
+  'aarch64-pc-windows-msvc':   { goos: 'windows', goarch: 'arm64', ext: '.exe' },
   'x86_64-unknown-linux-gnu':  { goos: 'linux',   goarch: 'amd64', ext: '' },
   'x86_64-apple-darwin':       { goos: 'darwin',  goarch: 'amd64', ext: '' },
   'aarch64-apple-darwin':      { goos: 'darwin',  goarch: 'arm64', ext: '' },

@@ -18,6 +18,7 @@ export const useSettingsStore = defineStore('settings', () => {
     keepHighlightWhenCompareOff: true,
 
     indexOrder: 'asc',
+    shortcuts: {},
   })
   const loading = ref(false)
 

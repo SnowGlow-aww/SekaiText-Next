@@ -14,6 +14,7 @@ export interface Settings {
   preserveStoryOnModeSwitch: boolean
   undoDepth: number
   keepHighlightWhenCompareOff: boolean
+  shortcuts?: Record<string, string>
 
   lastStoryType?: string
   lastStorySort?: string
