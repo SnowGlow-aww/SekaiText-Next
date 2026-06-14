@@ -9,7 +9,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 </p>
 
 <p align="center">
-  <img alt="License" src="https://img.shields.io/github/license/Is14w/SekaiText?style=flat-square&color=ff69b4" />
+  <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
   <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
