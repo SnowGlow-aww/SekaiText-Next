@@ -15,7 +15,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/Is14w/SekaiText?style=flat-square&color=ff69b4" />
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.8-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
@@ -26,8 +26,6 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 </p>
 
 <!-- prettier-ignore-end -->
-
-> **注意**：本项目是一个 **Vibe Coding 产物**，目前处于早期 alpha 阶段。欢迎贡献和反馈！
 
 SekaiText 是一款桌面应用程序，用于浏览、翻译和校对《世界计划 彩色舞台 feat. 初音未来》的剧情文本。它结合了 Vue 3 前端与 Go 后端，打包为 Tauri 桌面应用。
 
@@ -120,10 +118,12 @@ npm run build:tauri
 
 ## 版本
 
-当前版本：**0.1.1** (alpha)
+当前版本：**0.1.8** (beta)
 
 ## 开源协议
 
 本项目采用 [MIT License](LICENSE) 协议。
+- 原项目地址 https://github.com/Is14w/SekaiText
+- 现项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
 
 *《世界计划 彩色舞台 feat. 初音未来》是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。*
