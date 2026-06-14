@@ -5,6 +5,7 @@ export interface SourceTalk {
   volume?: number[]
   charIndex: number
   clues?: string[]
+  flashbackLines?: number[]
 }
 
 export interface DstTalk {

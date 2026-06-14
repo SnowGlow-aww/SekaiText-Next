@@ -46,11 +46,30 @@ type SpecialEffectData struct {
 // JsonLoaderService parses Unity story JSON into SourceTalk entries.
 type JsonLoaderService struct {
 	fb *FlashbackAnalyzer
+
+	// Source-line locator (optional): when set, checkFlashback resolves each
+	// flashback clue to its 1-based line in the source scenario by downloading
+	// and re-parsing that scenario. lineCache memoizes voiceID -> line so the
+	// same flashback voice isn't re-fetched.
+	dl        *Downloader
+	dataDir   string
+	source    string
+	lineCache map[string]int
+	locating  bool // true while re-parsing a source scenario just to count lines
 }
 
 // NewJsonLoaderService creates a new JsonLoaderService.
 func NewJsonLoaderService(fb *FlashbackAnalyzer) *JsonLoaderService {
 	return &JsonLoaderService{fb: fb}
+}
+
+// SetSourceLocator enables flashback source-line lookup. source selects the CDN
+// mirror (defaults to "haruki" when empty).
+func (j *JsonLoaderService) SetSourceLocator(dl *Downloader, dataDir string) {
+	j.dl = dl
+	j.dataDir = dataDir
+	j.source = "haruki"
+	j.lineCache = make(map[string]int)
 }
 
 // ParseFile loads and parses a Unity story JSON file.
@@ -161,8 +180,12 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 		talks = talks[:len(talks)-1]
 	}
 
-	// Flashback analysis
-	talks = j.checkFlashback(talks)
+	// Flashback analysis. Skipped while locating a flashback's source line: that
+	// path re-parses a source scenario only to count lines, and running flashback
+	// analysis there would recursively download yet more scenarios.
+	if !j.locating {
+		talks = j.checkFlashback(talks)
+	}
 
 	return &model.LoadResponse{
 		ScenarioID:  story.ScenarioID,
@@ -180,22 +203,75 @@ func (j *JsonLoaderService) checkFlashback(talks []model.SourceTalk) []model.Sou
 		if len(talk.Voices) == 0 {
 			continue
 		}
-		clueSet := make(map[string]struct{})
+		// Map clue -> a representative voiceID that produced it, so we can later
+		// locate that voice's physical line in its source scenario.
+		clueVoice := make(map[string]string)
+		clueOrder := make([]string, 0)
 		for _, voiceID := range talk.Voices {
 			clue, ignore := j.fb.GetClueFromVoiceID(voiceID)
-			if ignore {
+			if ignore || clue == "" {
 				continue
 			}
-			if clue != "" {
-				clueSet[clue] = struct{}{}
+			if _, seen := clueVoice[clue]; !seen {
+				clueVoice[clue] = voiceID
+				clueOrder = append(clueOrder, clue)
 			}
 		}
-		for clue := range clueSet {
+		for _, clue := range clueOrder {
 			talks[i].Clues = append(talks[i].Clues, clue)
+			talks[i].FlashbackLines = append(talks[i].FlashbackLines, j.locateVoiceLine(clueVoice[clue]))
 		}
 	}
 
 	return talks
+}
+
+// locateVoiceLine returns the 1-based physical line where voiceID appears in its
+// source scenario, downloading + parsing that scenario as needed. Returns 0 when
+// the locator isn't configured, the source can't be resolved, or anything fails
+// (so flashback hints degrade gracefully to "no line number").
+func (j *JsonLoaderService) locateVoiceLine(voiceID string) int {
+	if j.dl == nil || j.fb == nil {
+		return 0
+	}
+	if line, ok := j.lineCache[voiceID]; ok {
+		return line
+	}
+	line := j.locateVoiceLineUncached(voiceID)
+	j.lineCache[voiceID] = line
+	return line
+}
+
+func (j *JsonLoaderService) locateVoiceLineUncached(voiceID string) int {
+	url, fileName, _, ok := j.fb.ResolveVoiceSourceURL(voiceID, j.source)
+	if !ok {
+		return 0
+	}
+	path, err := j.dl.DownloadJSON(url, fileName)
+	if err != nil {
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var story UnityStoryData
+	if err := json.Unmarshal(data, &story); err != nil {
+		return 0
+	}
+	// Reuse the real parser so line counting matches exactly what the translator
+	// sees when loading this source scenario.
+	j.locating = true
+	resp := j.parse(&story)
+	j.locating = false
+	for idx, t := range resp.SourceTalks {
+		for _, v := range t.Voices {
+			if v == voiceID {
+				return idx + 1
+			}
+		}
+	}
+	return 0
 }
 
 // splitSpeaker extracts the speaker name from WindowDisplayName (strip _ suffix).

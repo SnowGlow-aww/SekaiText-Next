@@ -42,6 +42,67 @@ func NewFlashbackAnalyzer(lm *ListManager) *FlashbackAnalyzer {
 	return fb
 }
 
+// ResolveVoiceSourceURL maps a flashback voice ID to the source scenario it came
+// from: returns the CDN URL, a cache filename, and the source scenario's asset
+// name. ok=false when the event/episode can't be resolved (e.g. mainstory/card
+// flashbacks, which aren't covered yet). source selects the CDN mirror.
+func (fb *FlashbackAnalyzer) ResolveVoiceSourceURL(voiceID, source string) (url, fileName, assetName string, ok bool) {
+	clue, ignore := fb.GetClueFromVoiceID(voiceID)
+	if ignore || clue == "" {
+		return "", "", "", false
+	}
+	// Strip a leading "sc_" the same way GetClueHints does.
+	words := strings.Split(clue, "_")
+	if len(words) > 0 && words[0] == "sc" {
+		words = words[1:]
+	}
+	// Only event ("ev") flashbacks are resolved to a source file for now.
+	if len(words) < 2 || words[0] != "ev" {
+		return "", "", "", false
+	}
+	body := words[1:]
+	// Trailing number = episode.
+	ep := -1
+	if v, err := strconv.Atoi(body[len(body)-1]); err == nil {
+		ep = v
+		body = body[:len(body)-1]
+	}
+	if ep < 0 {
+		return "", "", "", false
+	}
+	clueKey := strings.Join(body, "_")
+	ev, found := fb.clueDict[clueKey]
+	if !found {
+		return "", "", "", false
+	}
+	if chOff, ok := ev.InferredVoiceIDs["choffset"]; ok {
+		if v, ok := chOff.(float64); ok {
+			ep += int(v)
+		}
+	}
+	if ep < 1 || ep > len(ev.Chapters) {
+		return "", "", "", false
+	}
+	asset := ev.Chapters[ep-1].AssetName
+	base := fb.lm.baseUrls["haruki"]
+	prefix := "ondemand/"
+	if source == "sekai.best" || source == "moesekai-jp" || source == "moesekai-cn" {
+		prefix = ""
+		switch source {
+		case "sekai.best":
+			base = fb.lm.baseUrls["best"]
+		case "moesekai-jp":
+			base = fb.lm.baseUrls["moesekai-jp"]
+		case "moesekai-cn":
+			base = fb.lm.baseUrls["moesekai-cn"]
+		}
+	} else if source == "unipjsk" {
+		base = fb.lm.baseUrls["uni"]
+	}
+	url = base + prefix + "event_story/" + ev.Name + "/scenario/" + asset + ".json"
+	return url, asset + ".json", asset, true
+}
+
 func (fb *FlashbackAnalyzer) updateClues() {
 	for _, ms := range fb.lm.MainStory {
 		fb.mainstory[ms.Unit] = ms

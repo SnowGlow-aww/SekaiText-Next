@@ -8,6 +8,10 @@ type SourceTalk struct {
 	Volume   []int    `json:"volume,omitempty"`
 	CharIdx  int      `json:"charIndex"`
 	Clues    []string `json:"clues,omitempty"`
+	// FlashbackLines is parallel to Clues: FlashbackLines[k] is the 1-based
+	// physical line where Clues[k]'s flashback sentence appears in its source
+	// scenario file (0 = could not locate / not resolved).
+	FlashbackLines []int `json:"flashbackLines,omitempty"`
 }
 
 // DstTalk represents a translation entry in the editor.

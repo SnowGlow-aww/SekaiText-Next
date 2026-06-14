@@ -335,7 +335,15 @@ function focusNext(e: KeyboardEvent) {
 function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   const fb = flashbackItem(talk)
   if (fb?.isFlashback && fb?.clues) {
-    fbShow(e, fb.clues.filter((c: string) => !!c))
+    // Keep clues and their source-line numbers aligned while dropping empties.
+    const clues: string[] = []
+    const lines: number[] = []
+    fb.clues.forEach((c: string, i: number) => {
+      if (!c) return
+      clues.push(c)
+      lines.push(fb.flashbackLines?.[i] ?? 0)
+    })
+    fbShow(e, clues, lines)
   }
 }
 </script>

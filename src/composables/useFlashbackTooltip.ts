@@ -10,23 +10,29 @@ export function useFlashbackTooltip() {
 
   let showTimer: ReturnType<typeof setTimeout> | null = null
 
-  async function show(e: MouseEvent, clues: string[]) {
+  async function show(e: MouseEvent, clues: string[], lines?: number[]) {
     if (!clues || clues.length === 0) return
 
     const newHints: Record<string, string[]> = {}
-    for (const clue of clues) {
+    for (let i = 0; i < clues.length; i++) {
+      const clue = clues[i]
       if (!clue) continue
-      if (hintCache.has(clue)) {
-        newHints[clue] = hintCache.get(clue)!
+      const line = lines?.[i] ?? 0
+      // Cache key includes the line so the same clue at different source lines
+      // doesn't collide.
+      const cacheKey = line > 0 ? `${clue}#${line}` : clue
+      if (hintCache.has(cacheKey)) {
+        newHints[clue] = hintCache.get(cacheKey)!
         continue
       }
       try {
         const res = await api.clueHints(clue)
-        const hints = res.hints?.length ? res.hints : [clue]
-        hintCache.set(clue, hints)
+        let hints = res.hints?.length ? res.hints : [clue]
+        if (line > 0) hints = [...hints, `源剧情第 ${line} 行`]
+        hintCache.set(cacheKey, hints)
         newHints[clue] = hints
       } catch {
-        newHints[clue] = [clue]
+        newHints[clue] = line > 0 ? [clue, `源剧情第 ${line} 行`] : [clue]
       }
     }
 

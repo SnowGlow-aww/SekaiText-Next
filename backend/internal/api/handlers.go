@@ -34,13 +34,16 @@ type Handler struct {
 func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 	lm := service.NewListManager(cfg.CatalogDir)
 	fb := service.NewFlashbackAnalyzer(lm)
+	dl := service.NewDownloader(cfg.DataDir)
+	jsonLoader := service.NewJsonLoaderService(fb)
+	jsonLoader.SetSourceLocator(dl, cfg.DataDir)
 	return &Handler{
 		cfg:        cfg,
 		lm:         lm,
 		editor:     service.NewEditorService(),
-		jsonLoader: service.NewJsonLoaderService(fb),
+		jsonLoader: jsonLoader,
 		fb:         fb,
-		dl:         service.NewDownloader(cfg.DataDir),
+		dl:         dl,
 		progress:   service.NewProgressTracker(),
 		logBuf:     logBuf,
 	}
