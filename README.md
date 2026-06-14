@@ -27,7 +27,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <!-- prettier-ignore-end -->
 
-SekaiText 是一款桌面应用程序，用于浏览、翻译和校对《世界计划 彩色舞台 feat. 初音未来》的剧情文本。它结合了 Vue 3 前端与 Go 后端，打包为 Tauri 桌面应用。
+SekaiText Next 是一款桌面应用程序，用于浏览、翻译和校对《世界计划 彩色舞台 feat. 初音未来》的剧情文本。它结合了 Vue 3 前端与 Go 后端，打包为 Tauri 桌面应用。
 
 ## 技术栈
 
