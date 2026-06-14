@@ -19,6 +19,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
     indexOrder: 'asc',
     shortcuts: {},
+    hideAgreementImportHint: false,
   })
   const loading = ref(false)
 

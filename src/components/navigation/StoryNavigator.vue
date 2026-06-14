@@ -8,6 +8,9 @@ import { useToast } from '../../composables/useToast'
 import { useDebugLog } from '../../composables/useDebugLog'
 import { useDownloadFloat } from '../../composables/useDownloadFloat'
 
+// App-lifetime guard: auto-pull metadata once on first mount only.
+let autoPulledOnce = false
+
 const story = useStoryStore()
 const editor = useEditorStore()
 const settingsStore = useSettingsStore()
@@ -55,6 +58,11 @@ onMounted(() => {
     debug.log('无法加载故事类型', 'error')
   }
   doFetch()
+  // Auto-pull metadata once per app launch so the catalog is fresh on startup.
+  if (!autoPulledOnce) {
+    autoPulledOnce = true
+    handleRefresh()
+  }
 })
 
 
@@ -97,7 +105,7 @@ watch(() => story.selectedIndex, (idx) => {
 
 async function handleRefresh() {
   refreshing.value = true
-  const taskId = dlFloat.add('刷新元数据')
+  const taskId = dlFloat.add('拉取元数据')
   dlFloat.start(taskId)
   try {
     await api.update()
@@ -110,9 +118,9 @@ async function handleRefresh() {
       }
       done = progress.done
     }
-    dlFloat.done(taskId, '元数据已刷新')
+    dlFloat.done(taskId, '元数据已拉取')
   } catch (e: any) {
-    dlFloat.fail(taskId, e.message || '刷新失败')
+    dlFloat.fail(taskId, e.message || '拉取失败')
   } finally {
     refreshing.value = false
   }
@@ -202,7 +210,7 @@ async function handleLoad() {
       style="background-color: var(--color-primary)"
       :disabled="refreshing"
     >
-      {{ refreshing ? '刷新中...' : '刷新' }}
+      {{ refreshing ? '拉取中...' : '拉取' }}
     </button>
 
     <button

@@ -160,6 +160,10 @@ type Settings struct {
 	// Empty/absent entries fall back to the frontend registry defaults.
 	Shortcuts map[string]string `json:"shortcuts,omitempty"`
 
+	// HideAgreementImportHint suppresses the "请先导入翻译稿再导入校对稿" dialog
+	// shown when entering 合意 mode.
+	HideAgreementImportHint bool `json:"hideAgreementImportHint,omitempty"`
+
 	LastStoryType   string `json:"lastStoryType,omitempty"`
 	LastStorySort   string `json:"lastStorySort,omitempty"`
 	LastStoryIndex  string `json:"lastStoryIndex,omitempty"`

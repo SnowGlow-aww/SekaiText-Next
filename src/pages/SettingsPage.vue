@@ -146,6 +146,14 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
               </div>
               <input v-model="settings.settings.keepHighlightWhenCompareOff" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
             </label>
+
+            <label class="flex items-center justify-between cursor-pointer">
+              <div>
+                <div class="text-sm font-medium">进入合意模式时提示导入顺序</div>
+                <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">提醒先导入翻译稿再导入校对稿</div>
+              </div>
+              <input :checked="!settings.settings.hideAgreementImportHint" @change="settings.settings.hideAgreementImportHint = !($event.target as HTMLInputElement).checked" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+            </label>
           </div>
         </div>
       </section>

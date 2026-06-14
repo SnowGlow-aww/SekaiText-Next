@@ -153,6 +153,21 @@ function setMode(key: number) {
   app.setEditorMode(key as 0 | 1 | 2)
   // 校对/合意 default to compare-on (baseline rows visible); 翻译 has no compare.
   app.showCompare = key >= 1
+  // Entering 合意: remind the workflow (translation first, then proofread draft).
+  if (key === 2 && !settings.settings.hideAgreementImportHint) {
+    agreementHintDontShow.value = false
+    showAgreementHint.value = true
+  }
+}
+
+const showAgreementHint = ref(false)
+const agreementHintDontShow = ref(false)
+function confirmAgreementHint() {
+  if (agreementHintDontShow.value) {
+    settings.settings.hideAgreementImportHint = true
+    settings.saveSettings().catch(() => {})
+  }
+  showAgreementHint.value = false
 }
 
 const modes = [ { key: 0, label: '翻译' }, { key: 1, label: '校对' }, { key: 2, label: '合意' } ]
@@ -304,10 +319,10 @@ function handleConfirm() {
   toast.show('合意已确认', 'success')
 }
 
-// 合意: import a 校对稿 as the comparison baseline. compareText pairs the
-// proofread rows (refer/baseline) with the current 合意 rows (check) by idx +
-// sub-line position, sets each row's baseline and recomputes the diff so the
-// comparison shows 校对稿(baseline, red deletions) vs current text(green adds).
+// 合意: import a 校对稿 as the editable text, comparing it against the already
+// loaded 翻译稿 (baseline). compareText pairs them by idx + sub-line position;
+// the baseline row (yellow) shows the 翻译稿, the editable row (green) shows the
+// 校对稿 — so the agreed edits are made on top of the proofread draft.
 async function handleImportBaseline() {
   if (editor.talks.length === 0) { toast.show('请先载入翻译稿', 'warn'); return }
   try {
@@ -315,21 +330,22 @@ async function handleImportBaseline() {
     if (!result) return
     undo.pushSnapshot(editor.talks, editor.dstTalks)
     // Align the imported 校对稿 to the source story BEFORE comparing. The current
-    // 合意 rows were aligned to the source on open (idx = source line). A freshly
+    // 翻译稿 rows were aligned to the source on open (idx = source line). A freshly
     // parsed .txt instead carries positional idx, so when the two files differ in
     // line count (e.g. the 校对稿 has an extra intro line) every row pairs against
-    // the wrong baseline — the whole compare view shifts by one. Re-aligning the
-    // imported file to the same source restores a stable idx so compareText pairs
-    // matching source lines. Fall back to raw talks only if no source is loaded.
-    let referTalks = result.talks
+    // the wrong counterpart — the whole compare view shifts by one. Re-aligning the
+    // imported file to the same source restores a stable idx. Fall back to raw
+    // talks only if no source is loaded.
+    let checkTalks = result.talks
     if (story.sourceTalks.length > 0) {
-      referTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
+      checkTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
     } else {
       toast.show('未加载原文，对比可能错位，请先选择剧情', 'warn')
     }
+    // Baseline (yellow) = 翻译稿 (current editor.talks); editable (green) = 校对稿.
     const compared = await api.compareText({
-      referTalks,
-      checkTalks: editor.talks,
+      referTalks: editor.talks,
+      checkTalks,
       editorMode: 2,
     })
     editor.setTalks(compared.talks, compared.dstTalks, editor.referTalks)
@@ -342,7 +358,7 @@ async function handleImportBaseline() {
     const impTitle = impBase.slice((impBase.split(/\s+/)[0] || '').length).trim()
     if (impTitle) editor.titleOverride = impTitle
     editor.markUnsaved()
-    toast.show('已导入校对稿作为对比基准', 'success')
+    toast.show('已导入校对稿', 'success')
   } catch (e: any) {
     toast.show('导入校对稿失败: ' + (e.message || '未知错误'), 'error')
   }
@@ -447,7 +463,7 @@ onUnmounted(() => {
         <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2"><StoryNavigator/></header>
         <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
           <div class="flex items-center gap-2 flex-wrap text-sm">
-            <button @click="handleOpen" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">打开</button>
+            <button @click="handleOpen" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
             <button @click="handleSave" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">保存</button>
             <button @click="handleClear" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">清空</button>
             <div class="w-px h-4 bg-[var(--color-border)]" />
@@ -493,6 +509,20 @@ onUnmounted(() => {
           <button @click="handleCloseCancel" class="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">取消</button>
           <button @click="handleCloseDiscard" class="px-4 py-2 text-sm rounded-lg border border-red-400 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">不保存</button>
           <button @click="handleCloseSave" class="px-4 py-2 text-sm rounded-lg bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity">保存并退出</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showAgreementHint" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-2xl shadow-black/60 w-96 max-w-[90vw] p-6">
+        <h3 class="font-semibold text-[var(--color-text)] text-center mb-3" style="font-size: 25px">注意</h3>
+        <p class="text-[var(--color-text)] text-center mb-6" style="font-size: 15px">请先导入翻译稿再导入校对稿</p>
+        <div class="flex items-center justify-between gap-3">
+          <label class="flex items-center gap-2 cursor-pointer select-none" style="color: #FFFFFF80; font-size: 12px">
+            <input v-model="agreementHintDontShow" type="checkbox" class="accent-[var(--color-primary)] w-3.5 h-3.5 cursor-pointer opacity-80" />
+            不再弹出此窗口（可随时在设置里调整）
+          </label>
+          <button @click="confirmAgreementHint" class="px-5 py-1.5 rounded-lg text-sm bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity flex-shrink-0">确认</button>
         </div>
       </div>
     </div>

@@ -15,6 +15,7 @@ export interface Settings {
   undoDepth: number
   keepHighlightWhenCompareOff: boolean
   shortcuts?: Record<string, string>
+  hideAgreementImportHint?: boolean
 
   lastStoryType?: string
   lastStorySort?: string
