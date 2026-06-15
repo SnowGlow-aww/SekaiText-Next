@@ -264,14 +264,36 @@ func (j *JsonLoaderService) locateVoiceLineUncached(voiceID string) int {
 	j.locating = true
 	resp := j.parse(&story)
 	j.locating = false
+	target := normalizeVoiceID(voiceID)
 	for idx, t := range resp.SourceTalks {
 		for _, v := range t.Voices {
-			if v == voiceID {
+			if v == voiceID || normalizeVoiceID(v) == target {
 				return idx + 1
 			}
 		}
 	}
 	return 0
+}
+
+// normalizeVoiceID makes a flashback voice ID comparable to its source-scenario
+// counterpart. A line referenced as a flashback in one episode can carry a
+// variant suffix on its line-number segment (e.g. the source has
+// "..._03_03_34_9999" while the flashback reuse is "..._03_03_34b_9999"), and
+// the trailing segment is a per-clip character/voice id that also differs. We
+// drop that trailing segment and strip any trailing letters from the (now last)
+// line-number segment, so both forms reduce to "...wl_shuffle_03_03_34".
+func normalizeVoiceID(v string) string {
+	parts := strings.Split(v, "_")
+	if len(parts) < 2 {
+		return v
+	}
+	// Drop the trailing character/voice id segment.
+	parts = parts[:len(parts)-1]
+	// Strip trailing letters from the line-number segment (e.g. "34b" -> "34").
+	last := parts[len(parts)-1]
+	last = strings.TrimRight(last, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	parts[len(parts)-1] = last
+	return strings.Join(parts, "_")
 }
 
 // splitSpeaker extracts the speaker name from WindowDisplayName (strip _ suffix).
