@@ -820,13 +820,17 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chap
 		return "", "", 0, false
 	}
 
-	// Strategy 1: reconstruct the chapter assetName and match it directly.
-	// SaveTitle for events is the assetName tail joined by "-". WL events keep
-	// the "wl_" prefix stripped (assetName wl_3rd_group3_01 -> label 3rd-group3-01),
-	// so try both "wl_"+underscored and the plain underscored form.
+	// Strategy 1: WL events keep an assetName-derived label (assetName
+	// wl_3rd_group3_01 -> label 3rd-group3-01), so reconstruct "wl_<underscored>"
+	// and match the chapter assetName directly. NOTE: we must NOT try an
+	// "event_<underscored>" candidate here — ordinary-event assetNames are named
+	// by the internal kdyicr id (event_204_01 belongs to the event whose
+	// kdyicr=204, i.e. list position 202), while the numeric label encodes the
+	// 1-based list position. Matching event_<label> would cross-wire the two
+	// numbering schemes (e.g. label "204-01" wrongly loading event 202). Ordinary
+	// events are handled by Strategy 2 instead.
 	underscored := strings.ReplaceAll(label, "-", "_")
-	candidates := []string{"wl_" + underscored, underscored, "event_" + underscored}
-	for _, cand := range candidates {
+	for _, cand := range []string{"wl_" + underscored, underscored} {
 		for ei := range lm.Events {
 			for ci, ch := range lm.Events[ei].Chapters {
 				if ch.AssetName == cand {
