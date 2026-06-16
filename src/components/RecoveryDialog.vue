@@ -85,32 +85,32 @@ async function handleDiscard() {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-xl w-96 max-w-[90vw] p-6">
+  <div class="modal modal-open">
+    <div class="modal-box w-96 max-w-[90vw]">
       <div class="flex items-center gap-3 mb-4">
-        <div class="w-10 h-10 rounded-full bg-yellow-500/10 flex items-center justify-center">
-          <AlertTriangle class="text-yellow-500" :size="20" />
+        <div class="w-10 h-10 rounded-full bg-warning/10 flex items-center justify-center shrink-0">
+          <AlertTriangle class="text-warning" :size="20" />
         </div>
         <div>
-          <h3 class="font-semibold text-sm text-[var(--color-text)]">恢复未保存的更改</h3>
-          <p class="text-xs text-[var(--color-text-secondary)] mt-0.5">
+          <h3 class="font-semibold text-sm">恢复未保存的更改</h3>
+          <p class="text-xs opacity-60 mt-0.5">
             检测到上次编辑的自动保存内容，可能由于程序意外退出导致。
           </p>
         </div>
       </div>
 
-      <div class="flex justify-end gap-2 mt-6">
+      <div class="modal-action">
         <button
           @click="handleDiscard"
           :disabled="loading"
-          class="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors disabled:opacity-40"
+          class="btn btn-ghost btn-sm"
         >
           丢弃
         </button>
         <button
           @click="handleRestore"
           :disabled="loading"
-          class="px-4 py-2 text-sm rounded-lg bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+          class="btn btn-primary btn-sm"
         >
           {{ loading ? '恢复中...' : '恢复' }}
         </button>

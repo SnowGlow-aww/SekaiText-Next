@@ -27,32 +27,32 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="emit('close')">
-    <div class="bg-[var(--color-surface)] rounded-xl shadow-xl border border-[var(--color-border)] w-full max-w-md p-6">
+  <div class="modal modal-open" @click.self="emit('close')">
+    <div class="modal-box max-w-md">
       <h2 class="text-lg font-semibold mb-4">说话人统计</h2>
 
-      <div v-if="loading" class="text-center py-8 text-sm text-[var(--color-text-secondary)]">加载中...</div>
+      <div v-if="loading" class="text-center py-8 text-sm opacity-60">加载中...</div>
 
       <div v-else class="max-h-80 overflow-y-auto">
-        <table class="w-full text-sm">
+        <table class="table table-sm">
           <thead>
-            <tr class="border-b border-[var(--color-border)]">
-              <th class="text-left py-2 font-medium">说话人</th>
-              <th class="text-right py-2 font-medium">台词数</th>
+            <tr>
+              <th class="text-left font-medium">说话人</th>
+              <th class="text-right font-medium">台词数</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in speakers" :key="s.japanese" class="border-b border-[var(--color-border)]">
-              <td class="py-1.5">{{ s.japanese }}</td>
-              <td class="text-right py-1.5">{{ s.count }}</td>
+            <tr v-for="s in speakers" :key="s.japanese">
+              <td>{{ s.japanese }}</td>
+              <td class="text-right">{{ s.count }}</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <div class="flex justify-end mt-4">
+      <div class="modal-action">
         <button
-          class="px-4 py-1.5 rounded text-sm border border-[var(--color-border)] hover:text-[var(--color-primary)]"
+          class="btn btn-ghost btn-sm"
           @click="emit('close')"
         >
           关闭

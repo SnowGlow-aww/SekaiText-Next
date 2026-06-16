@@ -84,8 +84,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </div>
       <button
         @click="saveAndBack()"
-        class="px-4 py-1.5 rounded-lg text-sm text-white transition-opacity hover:opacity-90"
-        style="background-color: var(--color-primary)"
+        class="btn btn-primary btn-sm"
       >
         保存并返回
       </button>
@@ -104,7 +103,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">编辑器文本显示大小</div>
               </div>
               <div class="flex items-center gap-2">
-                <input v-model.number="settings.settings.fontSize" type="range" min="10" max="48" step="1" class="w-28 accent-[var(--color-primary)]" />
+                <input v-model.number="settings.settings.fontSize" type="range" min="10" max="48" step="1" class="range range-primary range-xs w-28" />
                 <span class="text-sm w-8 text-center font-mono">{{ settings.settings.fontSize }}</span>
               </div>
             </div>
@@ -115,7 +114,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">Ctrl+Z/Y 可撤销/重做的最大次数</div>
               </div>
               <div class="flex items-center gap-2">
-                <input v-model.number="settings.settings.undoDepth" type="range" min="1" max="100" step="1" class="w-28 accent-[var(--color-primary)]" />
+                <input v-model.number="settings.settings.undoDepth" type="range" min="1" max="100" step="1" class="range range-primary range-xs w-28" />
                 <span class="text-sm w-8 text-center font-mono">{{ settings.settings.undoDepth }}</span>
               </div>
             </div>
@@ -125,7 +124,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">索引排序</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">故事索引下拉列表的显示顺序</div>
               </div>
-              <select v-model="settings.settings.indexOrder" class="px-3 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm">
+              <select v-model="settings.settings.indexOrder" class="select select-bordered select-sm w-44">
                 <option value="desc">降序（最新的在底部）</option>
                 <option value="asc">升序（最新的在顶部）</option>
               </select>
@@ -136,7 +135,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">切模式保留剧情</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">切换翻/校/合时保留当前译文</div>
               </div>
-              <input v-model="settings.settings.preserveStoryOnModeSwitch" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.preserveStoryOnModeSwitch" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
 
             <label class="flex items-center justify-between cursor-pointer">
@@ -144,7 +143,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">关闭对比时保留高亮</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">关闭对比后，校对/合意的改动处仍以绿色标出</div>
               </div>
-              <input v-model="settings.settings.keepHighlightWhenCompareOff" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.keepHighlightWhenCompareOff" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
 
             <label class="flex items-center justify-between cursor-pointer">
@@ -152,7 +151,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">进入合意模式时提示导入顺序</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">提醒先导入翻译稿再导入校对稿</div>
               </div>
-              <input :checked="!settings.settings.hideAgreementImportHint" @change="settings.settings.hideAgreementImportHint = !($event.target as HTMLInputElement).checked" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input :checked="!settings.settings.hideAgreementImportHint" @change="settings.settings.hideAgreementImportHint = !($event.target as HTMLInputElement).checked" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
           </div>
         </div>
@@ -168,7 +167,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             v-model="settings.settings.jsonDownloadDir"
             type="text"
             placeholder="./downloads/json"
-            class="w-full px-3 py-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm"
+            class="input input-bordered input-sm w-full"
           />
         </div>
       </section>
@@ -183,7 +182,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">保存 \N 换行符</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">翻译文件中保留 \N 换行标记</div>
               </div>
-              <input v-model="settings.settings.saveN" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
 
             <label class="flex items-center justify-between cursor-pointer">
@@ -191,7 +190,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">保存语音文件</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">下载并保存语音文件到本地</div>
               </div>
-              <input v-model="settings.settings.saveVoice" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.saveVoice" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
 
             <div class="col-span-2">
@@ -200,7 +199,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 v-model="settings.settings.voiceOutputDir"
                 type="text"
                 placeholder="留空使用默认目录"
-                class="w-full px-3 py-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm"
+                class="input input-bordered input-sm w-full"
               />
             </div>
           </div>
@@ -218,7 +217,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             </div>
             <select
               v-model="app.themeMode"
-              class="px-3 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm"
+              class="select select-bordered select-sm w-44"
             >
               <option value="system">跟随系统</option>
               <option value="light">浅色</option>
@@ -246,7 +245,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">SSL 验证</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">禁用 SSL 证书验证（某些网络环境需要）</div>
               </div>
-              <input v-model="settings.settings.disableSSL" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.disableSSL" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
 
             <label class="flex items-center justify-between cursor-pointer">
@@ -254,7 +253,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 <div class="text-sm font-medium">调试日志</div>
                 <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">在底部显示调试日志窗口</div>
               </div>
-              <input v-model="settings.settings.debugEnabled" type="checkbox" class="accent-[var(--color-primary)] w-4 h-4" />
+              <input v-model="settings.settings.debugEnabled" type="checkbox" class="toggle toggle-primary toggle-sm" />
             </label>
           </div>
         </div>
@@ -296,8 +295,8 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <div class="flex justify-end gap-2 border-t border-[var(--color-border)] pt-4">
-        <button @click="router.push('/')" class="px-4 py-1.5 rounded-lg text-sm border border-[var(--color-border)] hover:bg-black/5 dark:hover:bg-white/10 transition-colors">取消</button>
-        <button @click="saveAndBack()" class="px-4 py-1.5 rounded-lg text-sm text-white transition-opacity hover:opacity-90" style="background-color: var(--color-primary)">保存设置</button>
+        <button @click="router.push('/')" class="btn btn-ghost btn-sm">取消</button>
+        <button @click="saveAndBack()" class="btn btn-primary btn-sm">保存设置</button>
       </div>
     </main>
   </div>

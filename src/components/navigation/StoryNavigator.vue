@@ -178,27 +178,27 @@ async function handleLoad() {
 
 <template>
   <div class="flex items-center gap-3 flex-wrap">
-    <select v-model="story.selectedType" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
+    <select v-model="story.selectedType" class="select select-bordered select-sm">
       <option value="" disabled>故事类型</option>
       <option v-for="t in story.storyTypes" :key="t" :value="t">{{ unitName(t) }}</option>
     </select>
 
-    <select v-if="story.sorts?.length" v-model="story.selectedSort" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
+    <select v-if="story.sorts?.length" v-model="story.selectedSort" class="select select-bordered select-sm">
       <option value="" disabled>排序</option>
       <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
     </select>
 
-    <select v-model="story.selectedIndex" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
+    <select v-model="story.selectedIndex" class="select select-bordered select-sm">
       <option value="" disabled>索引</option>
       <option v-for="i in displayIndices" :key="i.value" :value="i.value" v-text="i.label" />
     </select>
 
-    <select v-model="story.selectedChapter" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
+    <select v-model="story.selectedChapter" class="select select-bordered select-sm">
       <option :value="-1" disabled>章节</option>
       <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
     </select>
 
-    <select v-model="story.selectedSource" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
+    <select v-model="story.selectedSource" class="select select-bordered select-sm">
       <option value="haruki">HarukiBot NEO</option>
       <option value="moesekai-jp">Moesekai (JP)</option>
       <option value="moesekai-cn">Moesekai (CN)</option>
@@ -206,8 +206,7 @@ async function handleLoad() {
 
     <button
       @click="handleRefresh"
-      class="px-3 py-1 rounded text-white text-sm transition-all hover:brightness-110 disabled:opacity-50"
-      style="background-color: var(--color-primary)"
+      class="btn btn-primary btn-sm"
       :disabled="refreshing"
     >
       {{ refreshing ? '拉取中...' : '拉取' }}
@@ -215,8 +214,7 @@ async function handleLoad() {
 
     <button
       @click="handleLoad"
-      class="px-3 py-1 rounded text-white text-sm transition-all hover:brightness-110 disabled:opacity-50"
-      style="background-color: var(--color-secondary)"
+      class="btn btn-secondary btn-sm"
       :disabled="story.loading || !story.selectedType || story.selectedChapter < 0"
     >
       {{ story.loading ? '载入中...' : '载入' }}
@@ -231,7 +229,7 @@ async function handleLoad() {
     />
     <button
       @click="fileInput?.click()"
-      class="px-3 py-1 rounded text-sm transition-colors border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"
+      class="btn btn-outline btn-sm"
       :disabled="story.loading"
     >
       本地

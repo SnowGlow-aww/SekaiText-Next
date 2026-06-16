@@ -29,7 +29,11 @@ export const useAppStore = defineStore('app', () => {
   const isDark = computed(() => themeMode.value === 'dark' || (themeMode.value === 'system' && isSystemDark.value))
 
   function applyTheme(dark: boolean) {
+    // Keep the legacy .dark class for existing `dark:` utility classes, and set
+    // daisyUI's data-theme so its components (and the bridged --color-* vars)
+    // switch between the light and dracula (dark) themes.
     document.documentElement.classList.toggle('dark', dark)
+    document.documentElement.setAttribute('data-theme', dark ? 'dracula' : 'light')
   }
 
   watch(isDark, applyTheme, { immediate: true })

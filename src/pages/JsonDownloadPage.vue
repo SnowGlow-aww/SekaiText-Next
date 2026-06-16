@@ -116,7 +116,7 @@ async function handleDownload() {
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="block text-xs text-[var(--color-text-secondary)] mb-1">故事类型</label>
-            <select v-model="story.selectedType" class="w-full px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm">
+            <select v-model="story.selectedType" class="select select-bordered select-sm w-full">
               <option value="" disabled>选择类型</option>
               <option v-for="t in story.storyTypes" :key="t" :value="t">{{ t }}</option>
             </select>
@@ -124,7 +124,7 @@ async function handleDownload() {
 
           <div v-if="story.sorts.length">
             <label class="block text-xs text-[var(--color-text-secondary)] mb-1">排序</label>
-            <select v-model="story.selectedSort" class="w-full px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm">
+            <select v-model="story.selectedSort" class="select select-bordered select-sm w-full">
               <option value="" disabled>选择排序</option>
               <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
@@ -132,7 +132,7 @@ async function handleDownload() {
 
           <div>
             <label class="block text-xs text-[var(--color-text-secondary)] mb-1">索引</label>
-            <select v-model="story.selectedIndex" class="w-full px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm">
+            <select v-model="story.selectedIndex" class="select select-bordered select-sm w-full">
               <option value="" disabled>选择索引</option>
               <option v-for="i in displayIndices" :key="i.value" :value="i.value">{{ i.label }}</option>
             </select>
@@ -140,7 +140,7 @@ async function handleDownload() {
 
           <div>
             <label class="block text-xs text-[var(--color-text-secondary)] mb-1">章节</label>
-            <select v-model="story.selectedChapter" class="w-full px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm">
+            <select v-model="story.selectedChapter" class="select select-bordered select-sm w-full">
               <option :value="-1" disabled>选择章节</option>
               <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
             </select>
@@ -158,12 +158,11 @@ async function handleDownload() {
               v-model="outputDir"
               type="text"
               placeholder="输入保存目录路径..."
-              class="flex-1 px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-sm"
+              class="input input-bordered input-sm flex-1"
             />
             <button
               @click="handleDownload"
-              class="px-6 py-1.5 rounded-lg text-sm text-white transition-opacity hover:opacity-90"
-              style="background-color: var(--color-primary)"
+              class="btn btn-primary btn-sm"
             >
               下载
             </button>
