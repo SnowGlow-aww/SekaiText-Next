@@ -26,12 +26,19 @@ async function play() {
       const audio = new Audio(result.url)
       audio.volume = props.volume?.[0] ? props.volume[0] / 100 : 1
       audio.onended = () => { playing.value = false }
+      audio.onerror = () => {
+        console.error('[VoicePlayButton] 音频加载失败:', result.url)
+        playing.value = false
+        audioRef.value = null
+      }
       audioRef.value = audio
-      audio.play()
+      await audio.play()
       playing.value = true
     }
-  } catch {
-    // Silent fail
+  } catch (e) {
+    console.error('[VoicePlayButton] 播放失败:', e)
+    playing.value = false
+    audioRef.value = null
   }
 }
 </script>

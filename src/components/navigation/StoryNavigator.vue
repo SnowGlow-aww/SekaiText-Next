@@ -199,7 +199,7 @@ async function handleLoad() {
     </select>
 
     <select v-model="story.selectedSource" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-sm">
-      <option value="haruki">Haruki Neo</option>
+      <option value="haruki">HarukiBot NEO</option>
       <option value="moesekai-jp">Moesekai (JP)</option>
       <option value="moesekai-cn">Moesekai (CN)</option>
     </select>

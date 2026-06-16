@@ -408,22 +408,14 @@ func (h *Handler) VoiceClues(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	scenarioID := r.URL.Query().Get("scenarioId")
 	voiceID := r.URL.Query().Get("voiceId")
-	source := r.URL.Query().Get("source")
 
-	if source == "" {
-		source = "sekai.best"
-	}
+	// Voice audio is always served from the moesekai-jp mirror regardless of the
+	// story's selected source. The default source (HarukiBot NEO) and unipjsk do
+	// not host voice clips at all, and moesekai-jp is a full JP mirror, so routing
+	// every voice request here is the only reliable option.
+	baseURL := "https://storage.exmeaning.com/sekai-jp-assets/"
 
-	baseURL := "https://storage.sekai.best/sekai-jp-assets/"
-	if source == "unipjsk" {
-		baseURL = "https://assets.unipjsk.com/"
-	} else if source == "moesekai-jp" {
-		baseURL = "https://storage.exmeaning.com/sekai-jp-assets/"
-	} else if source == "moesekai-cn" {
-		baseURL = "https://storage.exmeaning.com/sekai-cn-assets/"
-	}
-
-	url := baseURL + "voice/" + scenarioID + "/" + voiceID + ".mp3"
+	url := baseURL + "sound/scenario/voice/" + scenarioID + "/" + voiceID + ".mp3"
 	writeJSON(w, http.StatusOK, model.VoiceURLResponse{URL: url})
 }
 

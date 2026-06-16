@@ -66,7 +66,7 @@ async function save() {
             <div class="text-sm font-medium">下载源</div>
             <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">故事 JSON 数据来源</div>
           </div>
-          <span class="text-sm text-[var(--color-text-secondary)]">Haruki Neo</span>
+          <span class="text-sm text-[var(--color-text-secondary)]">HarukiBot NEO</span>
         </div>
 
         <div class="border-t border-[var(--color-border)]" />

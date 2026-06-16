@@ -36,7 +36,7 @@ This is the certificate type used for distributing macOS apps outside the Mac Ap
 The app bundle identifier is currently configured in `src-tauri/tauri.conf.json`:
 
 ```json
-"identifier": "com.is14w.sekaitext"
+"identifier": "com.snowglow-aww.sekaitext-next"
 ```
 
 Make sure this identifier is available under the Apple Developer team used for signing.

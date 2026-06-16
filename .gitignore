@@ -39,3 +39,16 @@ src-tauri/target/
 
 backend/server.exe
 backend/*.exe
+
+# Signing certificates & private keys (never commit to a public repo)
+*.p12
+*.cer
+*.pem
+*.key
+*.keystore
+*.jks
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+
