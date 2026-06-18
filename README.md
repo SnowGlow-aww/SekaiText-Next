@@ -117,7 +117,7 @@ npm run build:tauri
 
 ## 开源协议
 
-本项目采用 [AGPL v3](LICENSE) 协议。
+本项目采用 [MIT](LICENSE) 协议。
 - 原项目地址 https://github.com/Is14w/SekaiText
 - 现项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
 
