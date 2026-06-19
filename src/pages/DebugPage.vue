@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
+import { BASE_URL } from '../api/client'
 
 const router = useRouter()
 const { logs, clear: clearFrontend } = useDebugLog()
@@ -42,7 +43,7 @@ function mergeLogs() {
 
 async function fetchServerLogs() {
   try {
-    const res = await fetch('/api/v1/debug/logs')
+    const res = await fetch(`${BASE_URL}/debug/logs`)
     if (res.ok) {
       serverLogs.value = await res.json()
       mergeLogs()
@@ -82,7 +83,7 @@ async function saveLogs() {
     return `[${e.ts}] [${tag}] ${e.msg}`
   }).join('\n')
   try {
-    const res = await fetch('/api/v1/debug/save', { method: 'POST' })
+    const res = await fetch(`${BASE_URL}/debug/save`, { method: 'POST' })
     if (res.ok) {
       const data = await res.json()
       addLogLine(`日志已保存 (${data.lines} 行 → debug.log)`, 'info')

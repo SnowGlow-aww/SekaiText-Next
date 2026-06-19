@@ -17,7 +17,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useSettingsStore } from './stores/settings'
 import { useDebugLog } from './composables/useDebugLog'
-import { api } from './api/client'
+import { api, BASE_URL } from './api/client'
 import Toast from './components/Toast.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
 import RecoveryDialog from './components/RecoveryDialog.vue'
@@ -38,9 +38,11 @@ watch(() => settings.settings.fontSize, applyFontSize, { immediate: true })
 watch(() => settings.settings.debugEnabled, (v) => { enabled.value = v; applyDebug(v) })
 
 onMounted(async () => {
-  // Clear recovery file on normal exit so only crashes leave it behind
+  // Clear recovery file on normal exit so only crashes leave it behind.
+  // Use the absolute backend origin: in the packaged Tauri app a relative
+  // /api path resolves against tauri://localhost and the beacon never arrives.
   window.addEventListener('beforeunload', () => {
-    navigator.sendBeacon('/api/v1/recovery/clear', '')
+    navigator.sendBeacon(`${BASE_URL}/recovery/clear`, '')
   })
 
   try {

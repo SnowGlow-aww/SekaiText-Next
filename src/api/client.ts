@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:9800/api/v1'
+export const BASE_URL = 'http://localhost:9800/api/v1'
 
 class ApiError extends Error {
   status: number
@@ -134,6 +134,12 @@ export const api = {
     request<{ status: string }>('/translation/save', {
       method: 'POST',
       body: JSON.stringify({ filePath, talks, saveN, meta }),
+    }),
+
+  ensureDir: (path: string) =>
+    request<{ dir: string }>('/translation/ensure-dir', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
     }),
 
   checkLines: (data: {
@@ -282,6 +288,15 @@ export const api = {
     request<import('../types/api').Settings>('/settings', {
       method: 'PUT',
       body: JSON.stringify(settings),
+    }),
+
+  openDataDir: () =>
+    request<{ dir: string }>('/open-data-dir', { method: 'POST' }),
+
+  importLive2D: (srcDir: string) =>
+    request<{ dir: string; moved: number }>('/live2d/import', {
+      method: 'POST',
+      body: JSON.stringify({ srcDir }),
     }),
 
   // Update (CDN refresh)

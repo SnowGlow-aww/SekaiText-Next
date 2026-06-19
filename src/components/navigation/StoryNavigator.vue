@@ -11,6 +11,11 @@ import { useDownloadFloat } from '../../composables/useDownloadFloat'
 // App-lifetime guard: auto-pull metadata once on first mount only.
 let autoPulledOnce = false
 
+// Only the editor opts into auto-pulling catalog metadata on mount. The Live2D
+// player reuses this navigator but doesn't need a fresh catalog pull, so it
+// leaves autoPull at its default (false) and just uses whatever is cached.
+const props = withDefaults(defineProps<{ autoPull?: boolean }>(), { autoPull: false })
+
 const story = useStoryStore()
 const editor = useEditorStore()
 const settingsStore = useSettingsStore()
@@ -58,8 +63,9 @@ onMounted(() => {
     debug.log('无法加载故事类型', 'error')
   }
   doFetch()
-  // Auto-pull metadata once per app launch so the catalog is fresh on startup.
-  if (!autoPulledOnce) {
+  // Auto-pull metadata once per app launch so the catalog is fresh on startup —
+  // but only when the host page opts in (editor). The Live2D player skips this.
+  if (props.autoPull && !autoPulledOnce) {
     autoPulledOnce = true
     handleRefresh()
   }

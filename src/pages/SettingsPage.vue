@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-vue-next'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
 import { useToast } from '../composables/useToast'
+import { api } from '../api/client'
 import { SHORTCUT_ACTIONS, resolveCombo, formatCombo, comboFromEvent } from '../constants/shortcuts'
 const router = useRouter()
 const app = useAppStore()
@@ -12,6 +13,37 @@ const settings = useSettingsStore()
 const toast = useToast()
 
 const appVersion = __APP_VERSION__
+
+// Open the app's writable data directory in Finder/Explorer (downloaded JSON,
+// Live2D asset mirror, recovery files, etc. all live under it).
+async function openDataDir() {
+  try {
+    await api.openDataDir()
+  } catch {
+    toast.show('打开失败', 'error')
+  }
+}
+
+// Import a folder of Live2D assets (model/ + motion/ + model_list.json) into the
+// app data dir. Picks a folder via the native dialog, then MOVES it into the
+// local mirror so playback serves models/motions from disk (offline, no CDN).
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+const importingLive2D = ref(false)
+async function importLive2D() {
+  if (!isTauri) { toast.show('仅桌面版可用', 'warn'); return }
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const path = await open({ directory: true, title: '选择 Live2D 素材文件夹' })
+    if (!path) return
+    importingLive2D.value = true
+    const res = await api.importLive2D(path as string)
+    toast.show(`已导入 ${res.moved} 项到本地`, 'success')
+  } catch (e: any) {
+    toast.show('导入失败: ' + (e?.message || '未知错误'), 'error')
+  } finally {
+    importingLive2D.value = false
+  }
+}
 
 function saveAndBack() {
   settings.saveSettings().then(() => {
@@ -157,20 +189,42 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
         </div>
       </section>
 
-      <!-- ====== 下载 ====== -->
-      <section class="mb-6">
-        <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">下载</h2>
-        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6 max-w-lg">
-          <h3 class="text-sm font-semibold mb-1">下载页默认目录</h3>
-          <p class="text-xs text-[var(--color-text-secondary)] mb-3">专用下载页面 (/download) 的默认保存位置</p>
-          <input
-            v-model="settings.settings.jsonDownloadDir"
-            type="text"
-            placeholder="./downloads/json"
-            class="input input-bordered input-sm w-full"
-          />
-        </div>
-      </section>
+      <!-- ====== 下载 + 外观 (左右各半, 等高) ====== -->
+      <div class="grid grid-cols-2 gap-6 mb-6 items-stretch">
+        <section class="flex flex-col">
+          <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">下载</h2>
+          <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6 flex-1">
+            <h3 class="text-sm font-semibold mb-1">下载页默认目录</h3>
+            <p class="text-xs text-[var(--color-text-secondary)] mb-3">专用下载页面 (/download) 的默认保存位置</p>
+            <input
+              v-model="settings.settings.jsonDownloadDir"
+              type="text"
+              placeholder="./downloads/json"
+              class="input input-bordered input-sm w-full"
+            />
+          </div>
+        </section>
+
+        <section class="flex flex-col">
+          <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">外观</h2>
+          <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6 flex-1 flex items-center">
+            <div class="flex items-center justify-between w-full">
+              <div>
+                <div class="text-sm font-medium">外观模式</div>
+                <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">跟随系统或手动指定亮暗色</div>
+              </div>
+              <select
+                v-model="app.themeMode"
+                class="select select-bordered select-sm w-44"
+              >
+                <option value="system">跟随系统</option>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <!-- ====== 文件保存 ====== -->
       <section class="mb-6">
@@ -202,27 +256,6 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
                 class="input input-bordered input-sm w-full"
               />
             </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ====== 外观 ====== -->
-      <section class="mb-6">
-        <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">外观</h2>
-        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
-          <div class="flex items-center justify-between max-w-sm">
-            <div>
-              <div class="text-sm font-medium">外观模式</div>
-              <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">跟随系统或手动指定亮暗色</div>
-            </div>
-            <select
-              v-model="app.themeMode"
-              class="select select-bordered select-sm w-44"
-            >
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
           </div>
         </div>
       </section>
@@ -282,7 +315,29 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
               <button @click="resetShortcut(a.id)" title="恢复默认" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">↺</button>
             </div>
           </div>
-          <div class="text-xs text-[var(--color-text-secondary)] pt-1">点击键位按钮后按下新组合键录制，Esc 取消。mod = macOS ⌘ / Windows Ctrl。</div>
+          <div class="text-xs text-[var(--color-text-secondary)] pt-1">点击键位按钮后按下新组合键录制</div>
+        </div>
+      </section>
+
+      <section class="mb-6">
+        <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">本地文件</h2>
+        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-sm font-medium">应用数据文件夹</div>
+              <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">下载的剧情 JSON、Live2D 本地素材库、自动恢复文件都在此处</div>
+            </div>
+            <button @click="openDataDir" class="btn btn-outline btn-sm">打开文件夹</button>
+          </div>
+          <div class="border-t border-[var(--color-border)] mt-4 pt-4 flex items-center justify-between">
+            <div>
+              <div class="text-sm font-medium">Live2D 依赖文件</div>
+              <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">把模型 / 动作素材文件夹移动到应用数据目录，此后剧情播放将优先走本地加载</div>
+            </div>
+            <button @click="importLive2D" :disabled="importingLive2D" class="btn btn-outline btn-sm whitespace-nowrap">
+              {{ importingLive2D ? '导入中…' : '导入文件夹' }}
+            </button>
+          </div>
         </div>
       </section>
 

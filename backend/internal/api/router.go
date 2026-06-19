@@ -65,6 +65,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/load", h.TranslationLoad)
 			r.Post("/load-content", h.TranslationLoadContent)
 			r.Post("/save", h.TranslationSave)
+			r.Post("/ensure-dir", h.EnsureDir)
 			r.Post("/serialize", h.TranslationSerialize)
 			r.Post("/check-lines", h.CheckLines)
 		})
@@ -91,12 +92,21 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		// Voice
 		r.Get("/voice/url", h.VoiceURL)
 
+		// Live2D asset proxy
+		r.Get("/live2d/proxy", h.Live2DProxy)
+
 		// Speaker
 		r.Post("/speaker/count", h.SpeakerCount)
 
 		// Settings
 		r.Get("/settings", h.GetSettings)
 		r.Put("/settings", h.PutSettings)
+
+		// Reveal the app data directory in the OS file manager
+		r.Post("/open-data-dir", h.OpenDataDir)
+
+		// Import a folder of Live2D assets into the local mirror
+		r.Post("/live2d/import", h.ImportLive2D)
 
 		// Recovery (autosave)
 		r.Route("/recovery", func(r chi.Router) {

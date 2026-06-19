@@ -12,7 +12,7 @@ import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug } from 'lucide-vue-next'
+import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Drama } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -435,6 +435,7 @@ async function handleFullCheck() {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('resize', measureSearchAlign)
+  autoSave.stop() // stop the recovery interval when leaving the editor
 })
 </script>
 
@@ -455,12 +456,13 @@ onUnmounted(() => {
         <div class="flex-1" />
         <div class="border-t border-[var(--color-border)] p-1.5 space-y-0.5">
           <router-link to="/download" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Download :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">下载</span></router-link>
+          <router-link to="/live2d" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Drama :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">Live2D</span></router-link>
           <router-link v-if="settings.settings.debugEnabled" to="/debug" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Bug :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">调试</span></router-link>
           <router-link to="/settings" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Cog :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">设置</span></router-link>
         </div>
       </aside>
       <div class="flex-1 flex flex-col min-w-0">
-        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2"><StoryNavigator/></header>
+        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2"><StoryNavigator :auto-pull="true"/></header>
         <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
           <div class="flex items-center gap-2 flex-wrap text-sm">
             <button @click="handleOpen" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>

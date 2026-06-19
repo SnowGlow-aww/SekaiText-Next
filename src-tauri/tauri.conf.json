@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SekaiText Next",
-  "version": "1.0.3",
+  "version": "2.0.0-alpha-live2d",
   "identifier": "com.snowglow-aww.sekaitext-next",
   "build": {
     "frontendDist": "../dist",
