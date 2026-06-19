@@ -3,11 +3,15 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,6 +220,34 @@ func (h *Handler) TranslationLoadContent(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// EnsureDir creates the directory (and parents) for a path so the native save
+// dialog can default to it without macOS NSSavePanel rejecting a non-existent
+// parent. Returns the directory that now exists.
+func (h *Handler) EnsureDir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	dir := req.Path
+	// If the path looks like a file (has an extension), use its parent dir.
+	if filepath.Ext(dir) != "" {
+		dir = filepath.Dir(dir)
+	}
+	if dir == "" || dir == "." {
+		writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
+		return
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[ensure-dir] mkdir error: %v", err)
+		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
+}
+
 func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 	var req model.TranslationSaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -403,6 +435,128 @@ func (h *Handler) VoiceClues(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, clues)
 }
 
+// --- Live2D ---
+
+var live2dAllowedHosts = []string{
+	"https://storage2.exmeaning.com/",
+	"https://storage.exmeaning.com/",
+	"https://storage.sekai.best/",
+	"https://assets.unipjsk.com/",
+	"https://sekai-assets-bdf29c81.seiunx.net/",
+}
+
+// live2dLocalPath maps an upstream CDN asset URL to its path inside the local
+// mirror (config.Live2DLocalDir), mirroring the layout the downloader script
+// writes. Returns "" if the URL isn't a mirrorable Live2D asset.
+//
+// Layout:
+//   exmeaning  .../live2d/model/{rest}        -> {root}/model/{rest}
+//   sekai.best .../live2d/motion/{rest}       -> {root}/motion/{rest}
+//   either     .../live2d/model_list.json     -> {root}/model_list.json
+func live2dLocalPath(root, url string) string {
+	if root == "" {
+		return ""
+	}
+	// Strip protocol+host, keep the path.
+	noScheme := url
+	if i := strings.Index(noScheme, "://"); i >= 0 {
+		noScheme = noScheme[i+3:]
+	}
+	slash := strings.IndexByte(noScheme, '/')
+	if slash < 0 {
+		return ""
+	}
+	path := noScheme[slash+1:] // e.g. sekai-live2d-assets/live2d/model/...
+	// Find the "live2d/" segment and take everything after it.
+	marker := "live2d/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+len(marker):] // model/... | motion/... | model_list.json
+	if rest == "" || strings.Contains(rest, "..") {
+		return ""
+	}
+	if rest == "model_list.json" || strings.HasPrefix(rest, "model/") || strings.HasPrefix(rest, "motion/") {
+		return filepath.Join(root, filepath.FromSlash(rest))
+	}
+	return ""
+}
+
+// Live2DProxy streams a Live2D asset (model3.json / moc3 / textures / motions)
+// from the upstream CDN through the local backend. The frontend cannot fetch
+// some CDNs directly (CORS / webview sandbox network rules) but the backend can,
+// so all Live2D asset requests are proxied here. live2dAllowedHosts restricts
+// targets to known asset hosts (anti-SSRF).
+//
+// Local-first: if the asset exists in the local mirror (config.Live2DLocalDir),
+// it is served from disk and the CDN is not contacted at all.
+func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
+	url := r.URL.Query().Get("url")
+	if url == "" {
+		writeError(w, http.StatusBadRequest, "missing url")
+		return
+	}
+	allowed := false
+	for _, host := range live2dAllowedHosts {
+		if strings.HasPrefix(url, host) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "url host not allowed")
+		return
+	}
+
+	// Try the local mirror first.
+	if local := live2dLocalPath(h.cfg.Live2DLocalDir, url); local != "" {
+		if info, err := os.Stat(local); err == nil && !info.IsDir() && info.Size() > 0 {
+			if f, err := os.Open(local); err == nil {
+				defer f.Close()
+				w.Header().Set("Content-Type", live2dContentType(local))
+				w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+				w.Header().Set("X-Live2D-Source", "local")
+				w.WriteHeader(http.StatusOK)
+				io.Copy(w, f)
+				return
+			}
+		}
+	}
+
+	resp, err := h.dl.Get(url)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.Header().Set("X-Live2D-Source", "cdn")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// live2dContentType picks a Content-Type for a locally-served Live2D asset.
+func live2dContentType(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".json"), strings.HasSuffix(path, ".model3"),
+		strings.HasSuffix(path, ".motion3.json"), strings.HasSuffix(path, ".physics3"):
+		return "application/json"
+	case strings.HasSuffix(path, ".png"):
+		return "image/png"
+	case strings.HasSuffix(path, ".moc3"):
+		return "application/octet-stream"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // --- Voice ---
 
 func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
@@ -488,6 +642,166 @@ func (h *Handler) saveSettings(s model.Settings) error {
 		return err
 	}
 	return os.WriteFile(h.settingsPath(), data, 0644)
+}
+
+// ImportLive2D moves a user-picked folder of Live2D assets (model/ + motion/ +
+// model_list.json, as produced by the downloader) into the app's local mirror
+// (config.Live2DLocalDir). After import, scenario playback serves these from
+// disk instead of the CDN. The source is MOVED (removed after) and merged into
+// any existing local library (same-named files overwritten, dirs merged).
+func (h *Handler) ImportLive2D(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SrcDir string `json:"srcDir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	src := strings.TrimSpace(req.SrcDir)
+	if src == "" {
+		writeError(w, http.StatusBadRequest, "missing srcDir")
+		return
+	}
+	if abs, err := filepath.Abs(src); err == nil {
+		src = abs
+	}
+	info, err := os.Stat(src)
+	if err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "source folder not found")
+		return
+	}
+	dst := h.cfg.Live2DLocalDir
+	if dst == "" {
+		writeError(w, http.StatusInternalServerError, "live2d local dir not configured")
+		return
+	}
+	if absDst, err := filepath.Abs(dst); err == nil {
+		dst = absDst
+	}
+	// Guard against importing the target into itself, or a parent of the target.
+	if src == dst || strings.HasPrefix(dst+string(os.PathSeparator), src+string(os.PathSeparator)) {
+		writeError(w, http.StatusBadRequest, "cannot import this folder into itself")
+		return
+	}
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "create target failed: "+err.Error())
+		return
+	}
+
+	base := filepath.Base(src)
+	moved := 0
+	// If the user picked a `model` or `motion` folder directly, move it under the
+	// matching subdir; otherwise move every top-level entry into the target root
+	// (covers both the asset root containing model/motion/model_list.json and any
+	// loose layout).
+	if base == "model" || base == "motion" {
+		if err := mergeMove(src, filepath.Join(dst, base)); err != nil {
+			writeError(w, http.StatusInternalServerError, "import failed: "+err.Error())
+			return
+		}
+		moved = 1
+	} else {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "read source failed: "+err.Error())
+			return
+		}
+		for _, e := range entries {
+			if err := mergeMove(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				writeError(w, http.StatusInternalServerError, "import failed at "+e.Name()+": "+err.Error())
+				return
+			}
+			moved++
+		}
+		// The now-empty source folder is removed for the "move" semantics.
+		os.Remove(src)
+	}
+	log.Printf("[live2d-import] moved %d entries from %s into %s", moved, src, dst)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"dir": dst, "moved": moved})
+}
+
+// mergeMove moves src to dst, merging into an existing dst (files overwritten,
+// directories merged recursively). Tries a fast os.Rename first; on failure
+// (e.g. cross-volume EXDEV, or dst exists) falls back to copy + remove.
+func mergeMove(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	si, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if si.IsDir() {
+		if err := os.MkdirAll(dst, si.Mode().Perm()|0o700); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := mergeMove(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return os.Remove(src) // now empty
+	}
+	// File: copy then remove the source.
+	if err := copyFile(src, dst, si.Mode()); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// OpenDataDir reveals the app's writable data directory (DataBaseDir) in the OS
+// file manager, so users can reach downloaded JSON, the Live2D asset mirror, etc.
+func (h *Handler) OpenDataDir(w http.ResponseWriter, r *http.Request) {
+	dir := h.cfg.DataBaseDir
+	if dir == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err == nil {
+		dir = abs
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[open-data-dir] mkdir error: %v", err)
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("[open-data-dir] launch error: %v", err)
+		writeError(w, http.StatusInternalServerError, "open failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
 }
 
 func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {

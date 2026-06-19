@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onActivated, nextTick } from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -13,6 +13,22 @@ import type { DstTalk } from '../../types/translation'
 
 const iconErrors = ref<Set<number>>(new Set())
 const workspaceRef = ref<HTMLElement | null>(null)
+
+// Preserve the editor scroll position when navigating away (settings, Live2D,
+// etc.) and back. The scroll offset is captured LIVE on every scroll — by the
+// time onDeactivated fires the route transition has already reset scrollTop to
+// 0, so reading it there is too late. Restore on activate (after the DOM is
+// re-attached and rows re-rendered).
+let savedScrollTop = 0
+function onWorkspaceScroll() {
+  const top = workspaceRef.value?.scrollTop ?? 0
+  if (top > 0) savedScrollTop = top
+}
+onActivated(() => {
+  nextTick(() => {
+    if (workspaceRef.value && savedScrollTop > 0) workspaceRef.value.scrollTop = savedScrollTop
+  })
+})
 
 // Context menu state
 const ctxMenu = ref<{ show: boolean; x: number; y: number; row: number }>({ show: false, x: 0, y: 0, row: -1 })
@@ -352,6 +368,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   <div class="flex h-full">
     <div
       ref="workspaceRef"
+      @scroll="onWorkspaceScroll"
       class="flex-1 overflow-y-auto border border-[var(--color-border)] rounded-lg bg-[var(--color-surface)]"
     >
       <!-- Column headers -->

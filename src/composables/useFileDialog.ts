@@ -49,9 +49,24 @@ export function useFileDialog() {
   ): Promise<string | null> {
     if (isTauri) {
       const { save } = await import('@tauri-apps/plugin-dialog')
+      // macOS NSSavePanel rejects a defaultPath whose parent directory does not
+      // exist ("The string did not match the expected pattern"). When the name
+      // is a layered path (<base>/<type>/<index>/<file>.txt), create the parent
+      // dirs first so the dialog can default into them. Best-effort: if it fails
+      // we fall back to passing just the bare filename.
+      let defaultPath = defaultName
+      const isLayered = /[/\\]/.test(defaultName)
+      if (isLayered) {
+        try {
+          await api.ensureDir(defaultName)
+        } catch (e) {
+          console.warn('[Save] ensureDir failed, falling back to bare filename', e)
+          defaultPath = defaultName.split(/[/\\]/).pop() || defaultName
+        }
+      }
       const path = await save({
         title: '保存翻译文件',
-        defaultPath: defaultName,
+        defaultPath,
         filters: [{ name: '翻译文件', extensions: ['txt'] }],
       })
       if (!path) return null

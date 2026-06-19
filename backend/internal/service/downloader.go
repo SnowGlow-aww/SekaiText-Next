@@ -205,6 +205,14 @@ func (d *Downloader) DownloadAndParseJSON(url, fileName string, target interface
 	return json.Unmarshal(data, target)
 }
 
+// Get performs a streaming GET against url and returns the live response. The
+// caller owns resp.Body and must close it. Used by the Live2D asset proxy so the
+// frontend (which cannot reach some CDNs directly due to CORS/sandbox network
+// rules) can fetch model/texture/motion files through the local backend.
+func (d *Downloader) Get(url string) (*http.Response, error) {
+	return d.client.Get(url)
+}
+
 // UpdateAll performs a full metadata update from CDN.
 func (lm *ListManager) UpdateAll(catalogDir string, pt *ProgressTracker) {
 	lm.UpdateAllFromCDN(catalogDir, pt)
