@@ -4,6 +4,7 @@ import { useStoryStore } from '../../stores/story'
 import { useAppStore } from '../../stores/app'
 import { api } from '../../api/client'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
+import { annotateFlashbacks } from '../../utils/flashback'
 import VoicePlayButton from './VoicePlayButton.vue'
 
 const iconErrors = ref<Set<number>>(new Set())
@@ -16,52 +17,8 @@ const talksWithFlashback = computed(() => {
   if (!app.showFlashback) {
     return story.sourceTalks.map(t => ({ ...t, isFlashback: false }))
   }
-
-  const clueCounts = new Map<string, number>()
-  for (const talk of story.sourceTalks) {
-    if (talk.clues) {
-      for (const clue of talk.clues) {
-        clueCounts.set(clue, (clueCounts.get(clue) || 0) + 1)
-      }
-    }
-  }
-
-  let majorClue: string | null = null
-  let maxCount = 0
-  for (const [clue, count] of clueCounts) {
-    if (count > maxCount) {
-      maxCount = count
-      majorClue = clue
-    }
-  }
-
-  return story.sourceTalks.map(talk => {
-    if (!talk.clues || talk.clues.length === 0) {
-      return { ...talk, isFlashback: false }
-    }
-    const isFlashback = talk.clues.some(c => c !== majorClue && isBackReference(c, majorClue))
-    return { ...talk, isFlashback }
-  })
+  return annotateFlashbacks(story.sourceTalks)
 })
-
-// A flashback points BACKWARD (an earlier scene), not forward. When a clue is in
-// the same series as the current episode's majorClue (same prefix, e.g.
-// "ev_wl_shuffle_03_NN") but encodes a LATER episode, it's a forward reference /
-// teaser — not a flashback — so it must not be flagged. Clues from a different
-// series (other event / mainstory / card) are always treated as flashbacks.
-function isBackReference(clue: string, major: string | null): boolean {
-  if (!major) return true
-  const cp = clue.split('_')
-  const mp = major.split('_')
-  const sameSeries =
-    cp.length === mp.length &&
-    cp.slice(0, -1).join('_') === mp.slice(0, -1).join('_')
-  if (!sameSeries) return true
-  const cEp = parseInt(cp[cp.length - 1], 10)
-  const mEp = parseInt(mp[mp.length - 1], 10)
-  if (Number.isNaN(cEp) || Number.isNaN(mEp)) return true
-  return cEp < mEp // earlier episode = real flashback; later = forward teaser
-}
 
 function onEnter(e: MouseEvent, talk: typeof talksWithFlashback.value[0]) {
   if (talk.isFlashback && talk.clues) {

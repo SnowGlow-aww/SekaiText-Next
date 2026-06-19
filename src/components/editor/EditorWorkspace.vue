@@ -9,6 +9,7 @@ import { useToast } from '../../composables/useToast'
 import { useUndo } from '../../composables/useUndo'
 import VoicePlayButton from './VoicePlayButton.vue'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
+import { annotateFlashbacks } from '../../utils/flashback'
 import type { DstTalk } from '../../types/translation'
 
 const iconErrors = ref<Set<number>>(new Set())
@@ -55,32 +56,7 @@ const talksWithFlashback = computed(() => {
   if (!app.showFlashback) {
     return story.sourceTalks.map(t => ({ ...t, isFlashback: false }))
   }
-
-  const clueCounts = new Map<string, number>()
-  for (const talk of story.sourceTalks) {
-    if (talk.clues) {
-      for (const clue of talk.clues) {
-        clueCounts.set(clue, (clueCounts.get(clue) || 0) + 1)
-      }
-    }
-  }
-
-  let majorClue: string | null = null
-  let maxCount = 0
-  for (const [clue, count] of clueCounts) {
-    if (count > maxCount) {
-      maxCount = count
-      majorClue = clue
-    }
-  }
-
-  return story.sourceTalks.map(talk => {
-    if (!talk.clues || talk.clues.length === 0) {
-      return { ...talk, isFlashback: false }
-    }
-    const isFlashback = talk.clues.some(c => c !== majorClue)
-    return { ...talk, isFlashback }
-  })
+  return annotateFlashbacks(story.sourceTalks)
 })
 
 // ---- Helpers ----
