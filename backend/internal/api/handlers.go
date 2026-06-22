@@ -23,14 +23,18 @@ import (
 
 // Handler holds shared dependencies for all HTTP handlers.
 type Handler struct {
-	cfg          *config.AppConfig
-	lm           *service.ListManager
-	editor       *service.EditorService
-	jsonLoader   *service.JsonLoaderService
-	fb           *service.FlashbackAnalyzer
-	dl           *service.Downloader
-	progress     *service.ProgressTracker
-	logBuf       *service.LogBuffer
+	cfg           *config.AppConfig
+	lm            *service.ListManager
+	editor        *service.EditorService
+	jsonLoader    *service.JsonLoaderService
+	fb            *service.FlashbackAnalyzer
+	dl            *service.Downloader
+	progress      *service.ProgressTracker
+	logBuf        *service.LogBuffer
+	glossary      *service.GlossaryStore
+	plugins       *service.PluginStore
+	market        *service.MarketService
+	team          *service.TeamService
 	downloadTasks sync.Map // map[string]*model.DownloadTaskProgress
 }
 
@@ -41,6 +45,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 	dl := service.NewDownloader(cfg.DataDir)
 	jsonLoader := service.NewJsonLoaderService(fb)
 	jsonLoader.SetSourceLocator(dl, cfg.DataDir)
+	pluginStore := service.NewPluginStore(cfg.PluginsDir)
 	return &Handler{
 		cfg:        cfg,
 		lm:         lm,
@@ -50,6 +55,10 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		dl:         dl,
 		progress:   service.NewProgressTracker(),
 		logBuf:     logBuf,
+		glossary:   service.NewGlossaryStore(cfg.DataDir),
+		plugins:    pluginStore,
+		market:     service.NewMarketService(pluginStore),
+		team:       service.NewTeamService(cfg.DataDir),
 	}
 }
 
@@ -276,8 +285,8 @@ func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) TranslationSerialize(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Talks []model.DstTalk    `json:"talks"`
-		SaveN bool               `json:"saveN"`
+		Talks []model.DstTalk     `json:"talks"`
+		SaveN bool                `json:"saveN"`
 		Meta  *model.SaveMetadata `json:"meta,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -450,9 +459,10 @@ var live2dAllowedHosts = []string{
 // writes. Returns "" if the URL isn't a mirrorable Live2D asset.
 //
 // Layout:
-//   exmeaning  .../live2d/model/{rest}        -> {root}/model/{rest}
-//   sekai.best .../live2d/motion/{rest}       -> {root}/motion/{rest}
-//   either     .../live2d/model_list.json     -> {root}/model_list.json
+//
+//	exmeaning  .../live2d/model/{rest}        -> {root}/model/{rest}
+//	sekai.best .../live2d/motion/{rest}       -> {root}/motion/{rest}
+//	either     .../live2d/model_list.json     -> {root}/model_list.json
 func live2dLocalPath(root, url string) string {
 	if root == "" {
 		return ""

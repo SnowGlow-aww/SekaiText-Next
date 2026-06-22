@@ -1,0 +1,116 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+import { api } from '../api/client'
+import type {
+  GlossaryEntry,
+  CategoryCount,
+  ImportReport,
+  AppellationResult,
+  GrammarUsage,
+} from '../types/glossary'
+
+export const useGlossaryStore = defineStore('glossary', () => {
+  const results = ref<GlossaryEntry[]>([])
+  const categories = ref<CategoryCount[]>([])
+  const searching = ref(false)
+  const lastReport = ref<ImportReport | null>(null)
+
+  // appellation lookup state
+  const speakers = ref<string[]>([])
+  const targets = ref<string[]>([])
+
+  async function search(q: string, category = '', limit = 50) {
+    searching.value = true
+    try {
+      results.value = q.trim() ? await api.glossarySearch(q, category, limit) : []
+    } finally {
+      searching.value = false
+    }
+  }
+
+  async function fetchCategories() {
+    categories.value = await api.glossaryCategories()
+  }
+
+  async function addEntry(entry: Partial<GlossaryEntry>) {
+    const saved = await api.glossaryAddEntry(entry)
+    await fetchCategories()
+    return saved
+  }
+
+  async function updateEntry(id: string, entry: Partial<GlossaryEntry>) {
+    return api.glossaryUpdateEntry(id, entry)
+  }
+
+  async function deleteEntry(id: string) {
+    await api.glossaryDeleteEntry(id)
+    results.value = results.value.filter((e) => e.id !== id)
+    await fetchCategories()
+  }
+
+  async function importExcel(srcPath: string) {
+    const report = await api.glossaryImport(srcPath)
+    lastReport.value = report
+    await fetchCategories()
+    await loadSpeakers()
+    await loadAllEntries(true) // refresh matcher cache
+    await searchGrammar('', 200) // refresh grammar list (same file)
+    return report
+  }
+
+  async function syncRemote(remoteUrl: string) {
+    const r = await api.glossarySync(remoteUrl)
+    await fetchCategories()
+    await loadSpeakers()
+    await loadAllEntries(true)
+    await searchGrammar('', 200)
+    return r
+  }
+
+  async function loadSpeakers() {
+    speakers.value = await api.glossaryAppellationSpeakers()
+  }
+
+  async function loadTargets(speaker: string) {
+    targets.value = speaker ? await api.glossaryAppellationTargets(speaker) : []
+  }
+
+  async function lookupAppellation(speaker: string, target: string): Promise<AppellationResult> {
+    return api.glossaryAppellationLookup(speaker, target)
+  }
+
+  async function saveAppellation(speaker: string, target: string, jp: string, cn: string) {
+    return api.glossaryAppellationUpsert({ speaker, target, jp, cn })
+  }
+
+  // grammar (语法用例)
+  const grammar = ref<GrammarUsage[]>([])
+  const grammarLoading = ref(false)
+  async function searchGrammar(q = '', limit = 0) {
+    grammarLoading.value = true
+    try {
+      grammar.value = await api.glossaryGrammar(q, limit)
+    } finally {
+      grammarLoading.value = false
+    }
+  }
+
+  // Full entry list cache for the editor matcher (loaded once, lazily).
+  const allEntries = ref<GlossaryEntry[]>([])
+  const allEntriesLoaded = ref(false)
+  async function loadAllEntries(force = false) {
+    if (allEntriesLoaded.value && !force) return allEntries.value
+    const r = await api.glossaryEntries('', 0, 100000)
+    allEntries.value = r.items
+    allEntriesLoaded.value = true
+    return allEntries.value
+  }
+
+  return {
+    results, categories, searching, lastReport, speakers, targets,
+    grammar, grammarLoading, allEntries, allEntriesLoaded,
+    search, fetchCategories, addEntry, updateEntry, deleteEntry,
+    importExcel, syncRemote, loadSpeakers, loadTargets, lookupAppellation, saveAppellation,
+    searchGrammar, loadAllEntries,
+  }
+})

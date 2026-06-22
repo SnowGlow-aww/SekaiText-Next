@@ -1,0 +1,87 @@
+import * as VueRuntime from 'vue'
+import type { Router, RouteRecordRaw } from 'vue-router'
+import type { Pinia } from 'pinia'
+import { useStoryStore } from '../stores/story'
+import { useAppStore } from '../stores/app'
+import { useSettingsStore } from '../stores/settings'
+import { api } from '../api/client'
+import { useToast } from '../composables/useToast'
+import { usePluginRegistry } from './registry'
+import StoryNavigator from '../components/navigation/StoryNavigator.vue'
+import type { SekaiHost, PluginSidebarItem, PluginSettingsSection } from './types'
+
+declare const __APP_VERSION__: string
+
+// Builds the host bridge and installs it on window.__SEKAI_HOST__ exactly once.
+// Must run AFTER app.use(pinia) and app.use(router) in main.ts, since stores and
+// route registration need the active instances. The bridge hands plugins the
+// host's own Vue/router/pinia so a dynamically-imported plugin shares the same
+// singletons (no second Vue instance).
+export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
+  if (window.__SEKAI_HOST__) return window.__SEKAI_HOST__
+
+  const { show: toast } = useToast()
+
+  const registerRoute = (pluginId: string, route: RouteRecordRaw) => {
+    const registry = usePluginRegistry(pinia)
+    if (typeof pluginId !== 'string' || !pluginId) {
+      console.error('[plugin] registerRoute(pluginId, route): pluginId 必须是字符串', pluginId)
+      return
+    }
+    if (!route || typeof route !== 'object' || !route.path) {
+      console.error(`[plugin] ${pluginId} registerRoute: route 无效`, route)
+      return
+    }
+    // name defaults to a namespaced value so removeRoute can target it.
+    if (!route.name) route.name = `plugin:${pluginId}:${route.path}`
+    if (!router.hasRoute(route.name)) router.addRoute(route)
+    registry.trackRoute(pluginId, route.path)
+  }
+
+  const registerSidebarItem = (pluginId: string, item: PluginSidebarItem) => {
+    const registry = usePluginRegistry(pinia)
+    if (typeof pluginId !== 'string' || !pluginId) {
+      console.error('[plugin] registerSidebarItem(pluginId, item): pluginId 必须是字符串。请使用 host.registerSidebarItem(PLUGIN_ID, {...})', pluginId)
+      return
+    }
+    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.to) {
+      console.error(`[plugin] ${pluginId} registerSidebarItem: item 无效（需要 {id, label, to}）`, item)
+      return
+    }
+    registry.addSidebarItem(pluginId, item)
+  }
+
+  const registerSettingsSection = (pluginId: string, section: PluginSettingsSection) => {
+    const registry = usePluginRegistry(pinia)
+    if (typeof pluginId !== 'string' || !pluginId) {
+      console.error('[plugin] registerSettingsSection(pluginId, section): pluginId 必须是字符串', pluginId)
+      return
+    }
+    if (!section || typeof section !== 'object' || typeof section.id !== 'string' || !section.component) {
+      console.error(`[plugin] ${pluginId} registerSettingsSection: section 无效（需要 {id, component}）`, section)
+      return
+    }
+    registry.addSettingsSection(pluginId, section)
+  }
+
+  const host: SekaiHost = {
+    version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0',
+    vue: VueRuntime,
+    router,
+    pinia,
+    stores: {
+      story: () => useStoryStore(pinia),
+      app: () => useAppStore(pinia),
+      settings: () => useSettingsStore(pinia),
+    },
+    api,
+    ui: { toast },
+    components: { StoryNavigator },
+    registerRoute,
+    registerSidebarItem,
+    registerSettingsSection,
+  }
+
+  window.__SEKAI_HOST__ = host
+  return host
+}

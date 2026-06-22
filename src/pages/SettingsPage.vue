@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
 import { useAppStore } from '../stores/app'
@@ -7,12 +7,61 @@ import { useSettingsStore } from '../stores/settings'
 import { useToast } from '../composables/useToast'
 import { api } from '../api/client'
 import { SHORTCUT_ACTIONS, resolveCombo, formatCombo, comboFromEvent } from '../constants/shortcuts'
+import { usePluginRegistry } from '../plugin-host/registry'
+import { usePluginsStore } from '../stores/plugins'
+
 const router = useRouter()
 const app = useAppStore()
 const settings = useSettingsStore()
 const toast = useToast()
+const pluginRegistry = usePluginRegistry()
+const plugins = usePluginsStore()
 
 const appVersion = __APP_VERSION__
+
+// Load the installed-plugins listing for the management panel.
+onMounted(() => { plugins.refresh().catch(() => {}) })
+
+async function togglePlugin(id: string, enabled: boolean) {
+  try {
+    await plugins.setEnabled(id, enabled)
+    toast.show(enabled ? '插件已启用' : '插件已禁用', 'success')
+  } catch (e: any) {
+    toast.show('操作失败: ' + (e?.message || '未知错误'), 'error')
+    plugins.refresh().catch(() => {})
+  }
+}
+
+async function uninstallPlugin(id: string, name: string) {
+  if (!confirm(`确定卸载插件「${name}」？此操作会删除其文件，可在插件市场重新安装。`)) return
+  try {
+    await plugins.uninstall(id)
+    toast.show('插件已卸载', 'success')
+  } catch (e: any) {
+    toast.show('卸载失败: ' + (e?.message || '未知错误'), 'error')
+  }
+}
+
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+async function installPluginFromFile() {
+  if (!isTauri) {
+    toast.show('从文件安装仅在桌面版可用', 'info')
+    return
+  }
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const path = await open({
+      title: '选择插件包',
+      filters: [{ name: '插件包', extensions: ['sekplugin', 'zip'] }],
+    })
+    if (!path) return
+    const id = await plugins.installFromPath(path as string)
+    toast.show(`插件「${id}」安装成功`, 'success')
+  } catch (e: any) {
+    toast.show('安装失败: ' + (e?.message || '未知错误'), 'error')
+  }
+}
 
 // Open the app's writable data directory in Finder/Explorer (downloaded JSON,
 // Live2D asset mirror, recovery files, etc. all live under it).
@@ -21,27 +70,6 @@ async function openDataDir() {
     await api.openDataDir()
   } catch {
     toast.show('打开失败', 'error')
-  }
-}
-
-// Import a folder of Live2D assets (model/ + motion/ + model_list.json) into the
-// app data dir. Picks a folder via the native dialog, then MOVES it into the
-// local mirror so playback serves models/motions from disk (offline, no CDN).
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
-const importingLive2D = ref(false)
-async function importLive2D() {
-  if (!isTauri) { toast.show('仅桌面版可用', 'warn'); return }
-  try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const path = await open({ directory: true, title: '选择 Live2D 素材文件夹' })
-    if (!path) return
-    importingLive2D.value = true
-    const res = await api.importLive2D(path as string)
-    toast.show(`已导入 ${res.moved} 项到本地`, 'success')
-  } catch (e: any) {
-    toast.show('导入失败: ' + (e?.message || '未知错误'), 'error')
-  } finally {
-    importingLive2D.value = false
   }
 }
 
@@ -329,15 +357,57 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             </div>
             <button @click="openDataDir" class="btn btn-outline btn-sm">打开文件夹</button>
           </div>
-          <div class="border-t border-[var(--color-border)] mt-4 pt-4 flex items-center justify-between">
-            <div>
-              <div class="text-sm font-medium">Live2D 依赖文件</div>
-              <div class="text-xs text-[var(--color-text-secondary)] mt-0.5">把模型 / 动作素材文件夹移动到应用数据目录，此后剧情播放将优先走本地加载</div>
-            </div>
-            <button @click="importLive2D" :disabled="importingLive2D" class="btn btn-outline btn-sm whitespace-nowrap">
-              {{ importingLive2D ? '导入中…' : '导入文件夹' }}
-            </button>
+        </div>
+      </section>
+
+      <!-- ====== 插件管理 ====== -->
+      <section class="mb-6">
+        <div class="flex items-center justify-between mb-3 px-1">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">插件</h2>
+            <button @click="router.push('/market')" class="text-xs text-[var(--color-primary)] hover:underline">插件市场</button>
           </div>
+          <button
+            @click="installPluginFromFile"
+            class="text-xs text-[var(--color-primary)] hover:underline"
+          >从文件安装</button>
+        </div>
+        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
+          <div v-if="plugins.loading" class="text-sm text-[var(--color-text-secondary)]">加载中…</div>
+          <div v-else-if="plugins.list.length === 0" class="text-sm text-[var(--color-text-secondary)]">暂无已安装插件</div>
+          <div v-else class="space-y-3">
+            <div v-for="p in plugins.list" :key="p.id" class="flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium truncate">{{ p.name || p.id }}</span>
+                  <span class="text-xs text-[var(--color-text-secondary)] font-mono">v{{ p.version }}</span>
+                </div>
+                <div v-if="p.description" class="text-xs text-[var(--color-text-secondary)] mt-0.5 truncate">{{ p.description }}</div>
+              </div>
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <button
+                  @click="uninstallPlugin(p.id, p.name || p.id)"
+                  :disabled="plugins.busyId === p.id"
+                  class="text-xs text-[var(--color-text-secondary)] hover:text-red-500 transition-colors"
+                >卸载</button>
+                <input
+                  type="checkbox"
+                  class="toggle toggle-primary toggle-sm"
+                  :checked="p.enabled"
+                  :disabled="plugins.busyId === p.id"
+                  @change="togglePlugin(p.id, ($event.target as HTMLInputElement).checked)"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====== 插件贡献的设置区块 ====== -->
+      <section v-for="sec in pluginRegistry.settingsSections" :key="sec.id" class="mb-6">
+        <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">{{ sec.title }}</h2>
+        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
+          <component :is="sec.component" />
         </div>
       </section>
 

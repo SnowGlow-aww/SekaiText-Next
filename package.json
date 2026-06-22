@@ -1,7 +1,7 @@
 {
   "name": "sekaitext",
   "private": true,
-  "version": "2.0.0-alpha-live2d-patch1",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/cleanup.mjs 5173 && vite",
@@ -16,19 +16,15 @@
     "version": "node scripts/sync-version.mjs"
   },
   "dependencies": {
-    "@sekai-world/pixi-live2d-display-mulmotion": "^0.5.1",
     "@tailwindcss/vite": "^4.3.1",
     "@tanstack/vue-table": "^8.21.3",
     "@tanstack/vue-virtual": "^3.13.24",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@types/howler": "^2.2.13",
     "@vueuse/core": "^14.2.1",
     "daisyui": "^5.5.23",
-    "howler": "^2.2.4",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^3.0.4",
-    "pixi.js": "^7.4.3",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.3.1",
     "vue": "^3.5.32",

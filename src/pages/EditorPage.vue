@@ -12,12 +12,15 @@ import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Drama } from 'lucide-vue-next'
+import * as LucideIcons from 'lucide-vue-next'
+import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
 import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
+import { usePluginRegistry } from '../plugin-host/registry'
+import { useTeamStore } from '../stores/team'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -27,6 +30,14 @@ const toast = useToast()
 const fileDialog = useFileDialog()
 const autoSave = useAutoSave()
 const undo = useUndo()
+const pluginRegistry = usePluginRegistry()
+const team = useTeamStore()
+
+// Resolve a lucide icon by name for plugin-contributed sidebar items; fall back
+// to a generic puzzle icon if the name is unknown.
+function pluginIcon(name: string) {
+  return (LucideIcons as any)[name] || (LucideIcons as any).Puzzle
+}
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
@@ -77,6 +88,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('resize', measureSearchAlign)
   nextTick(measureSearchAlign)
+  team.refreshStatus().catch(() => {})
   if (!isTauri) return
   try {
     const win = getCurrentWindow()
@@ -456,8 +468,13 @@ onUnmounted(() => {
         <div class="flex-1" />
         <div class="border-t border-[var(--color-border)] p-1.5 space-y-0.5">
           <router-link to="/download" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Download :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">下载</span></router-link>
-          <router-link to="/live2d" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Drama :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">Live2D</span></router-link>
+          <router-link to="/glossary" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
+          <router-link to="/grammar" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><BookOpen :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">语法用例</span></router-link>
+          <!-- Plugin-contributed sidebar items (Live2D, etc.) -->
+          <router-link v-for="item in pluginRegistry.sidebarItems" :key="item.id" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
+          <router-link to="/market" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Store :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">插件市场</span></router-link>
           <router-link v-if="settings.settings.debugEnabled" to="/debug" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Bug :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">调试</span></router-link>
+          <router-link to="/account" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Users :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">账号中心</span></router-link>
           <router-link to="/settings" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Cog :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">设置</span></router-link>
         </div>
       </aside>
@@ -470,6 +487,7 @@ onUnmounted(() => {
             <button @click="handleClear" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">清空</button>
             <div class="w-px h-4 bg-[var(--color-border)]" />
             <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showFlashback" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />闪回</label>
+            <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showGlossary" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />术语</label>
             <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.syncScroll" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />同步</label>
             <button @click="app.searchOpen = !app.searchOpen" :class="['px-2.5 py-1 rounded transition-colors', app.searchOpen ? 'text-[var(--color-primary)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]']">搜索</button>
             <div ref="toolbarSearchSep" class="w-px h-4 bg-[var(--color-border)]" />

@@ -11,23 +11,6 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  build: {
-    rolldownOptions: {
-      output: {
-        // Split the heavy Live2D-only deps (pixi + live2d runtime + howler) into
-        // their own chunk so the editor's first load doesn't pay for them. They
-        // are reached only via the lazy-loaded /live2d route.
-        advancedChunks: {
-          groups: [
-            {
-              name: 'live2d-vendor',
-              test: /node_modules[/\\](pixi\.js|@pixi|@sekai-world|howler)/,
-            },
-          ],
-        },
-      },
-    },
-  },
   plugins: [
     vue(),
     tailwindcss(),

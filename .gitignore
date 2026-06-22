@@ -52,3 +52,6 @@ backend/*.exe
 *.keychain
 *.keychain-db
 
+
+# Packaged plugin output (.sekplugin)
+dist-plugins/

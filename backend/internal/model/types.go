@@ -169,6 +169,10 @@ type Settings struct {
 	LastStoryIndex  string `json:"lastStoryIndex,omitempty"`
 	LastChapter     int    `json:"lastChapter,omitempty"`
 	LastDataSource  string `json:"lastDataSource,omitempty"`
+
+	// PluginMarketURL overrides the plugin marketplace index URL. Empty falls
+	// back to the built-in default (service.DefaultMarketURL).
+	PluginMarketURL string `json:"pluginMarketUrl,omitempty"`
 }
 
 // DefaultSettings returns sensible defaults.

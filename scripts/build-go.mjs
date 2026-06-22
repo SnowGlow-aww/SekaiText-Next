@@ -1,5 +1,5 @@
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, statSync, readdirSync } from 'fs'
 import { platform, arch } from 'os'
 import { join } from 'path'
 
@@ -36,9 +36,27 @@ if (!info) {
 const binaryName = `sekaitext-backend-${target}${info.ext}`
 const binariesDir = join(import.meta.dirname, '..', 'src-tauri', 'binaries')
 const outPath = join(binariesDir, binaryName)
+const backendDir = join(import.meta.dirname, '..', 'backend')
 
-if (existsSync(outPath)) {
-  console.log(`[build-go] ${binaryName} already exists, skipping. (Delete it to force rebuild.)`)
+// Rebuild only when the binary is missing or older than any backend source
+// file. (Previously this skipped whenever the binary merely existed, which
+// silently shipped a stale backend after source changes.)
+function newestMtime(dir) {
+  let newest = 0
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.name === 'resources' || ent.name === '.git') continue
+    const p = join(dir, ent.name)
+    if (ent.isDirectory()) {
+      newest = Math.max(newest, newestMtime(p))
+    } else if (ent.name.endsWith('.go') || ent.name === 'go.mod' || ent.name === 'go.sum') {
+      newest = Math.max(newest, statSync(p).mtimeMs)
+    }
+  }
+  return newest
+}
+
+if (existsSync(outPath) && statSync(outPath).mtimeMs >= newestMtime(backendDir)) {
+  console.log(`[build-go] ${binaryName} is up to date, skipping. (Delete it to force rebuild.)`)
   process.exit(0)
 }
 
@@ -53,7 +71,7 @@ console.log(`[build-go] Compiling Go backend for ${target} (${info.goos}/${info.
 execSync(
   `go build -ldflags="${ldFlags}" -o "${outPath}" ./cmd/sekaitext/`,
   {
-    cwd: join(import.meta.dirname, '..', 'backend'),
+    cwd: backendDir,
     env: { ...process.env, GOOS: info.goos, GOARCH: info.goarch, CGO_ENABLED: '0' },
     stdio: 'inherit',
   },

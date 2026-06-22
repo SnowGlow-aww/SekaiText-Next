@@ -1,0 +1,88 @@
+import { defineStore } from 'pinia'
+import { ref, computed, markRaw } from 'vue'
+import type { PluginSidebarItem, PluginSettingsSection } from './types'
+
+// Tracks plugin contributions at runtime so the sidebar/router reflect them
+// reactively, and so unloading a plugin can reverse exactly what it added.
+export const usePluginRegistry = defineStore('plugin-registry', () => {
+  // pluginId -> contributed sidebar items
+  const sidebarByPlugin = ref<Record<string, PluginSidebarItem[]>>({})
+  // pluginId -> contributed settings-page sections
+  const settingsByPlugin = ref<Record<string, PluginSettingsSection[]>>({})
+  // pluginId -> route paths it added (for removeRoute on unload)
+  const routesByPlugin = ref<Record<string, string[]>>({})
+  // ids of plugins whose setup() has run
+  const loaded = ref<string[]>([])
+
+  // Flattened, ordered sidebar items across all plugins. filter(Boolean) is a
+  // defensive guard so a malformed contribution can never inject a null/undefined
+  // into the v-for that renders the sidebar (which would white-screen the host).
+  const sidebarItems = computed<PluginSidebarItem[]>(() =>
+    Object.values(sidebarByPlugin.value)
+      .flat()
+      .filter((i): i is PluginSidebarItem => !!i && typeof i === 'object')
+      .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
+  )
+
+  // Flattened, ordered settings sections across all plugins.
+  const settingsSections = computed<PluginSettingsSection[]>(() =>
+    Object.values(settingsByPlugin.value)
+      .flat()
+      .filter((s): s is PluginSettingsSection => !!s && typeof s === 'object')
+      .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
+  )
+
+  function addSidebarItem(pluginId: string, item: PluginSidebarItem) {
+    const list = sidebarByPlugin.value[pluginId] ?? []
+    if (!list.some((i) => i.id === item.id)) {
+      sidebarByPlugin.value = { ...sidebarByPlugin.value, [pluginId]: [...list, item] }
+    }
+  }
+
+  // markRaw the component so pinia/Vue never makes the component definition
+  // reactive (would warn and waste cycles proxying an inert object).
+  function addSettingsSection(pluginId: string, section: PluginSettingsSection) {
+    const list = settingsByPlugin.value[pluginId] ?? []
+    if (!list.some((s) => s.id === section.id)) {
+      const safe = { ...section, component: markRaw(section.component) }
+      settingsByPlugin.value = { ...settingsByPlugin.value, [pluginId]: [...list, safe] }
+    }
+  }
+
+  function trackRoute(pluginId: string, path: string) {
+    const list = routesByPlugin.value[pluginId] ?? []
+    if (!list.includes(path)) {
+      routesByPlugin.value = { ...routesByPlugin.value, [pluginId]: [...list, path] }
+    }
+  }
+
+  function markLoaded(pluginId: string) {
+    if (!loaded.value.includes(pluginId)) loaded.value = [...loaded.value, pluginId]
+  }
+
+  function isLoaded(pluginId: string) {
+    return loaded.value.includes(pluginId)
+  }
+
+  // Forget everything a plugin contributed (the loader handles router.removeRoute
+  // using the tracked paths before calling this).
+  function forget(pluginId: string) {
+    const { [pluginId]: _s, ...restS } = sidebarByPlugin.value
+    sidebarByPlugin.value = restS
+    const { [pluginId]: _set, ...restSet } = settingsByPlugin.value
+    settingsByPlugin.value = restSet
+    const { [pluginId]: _r, ...restR } = routesByPlugin.value
+    routesByPlugin.value = restR
+    loaded.value = loaded.value.filter((id) => id !== pluginId)
+  }
+
+  function routePaths(pluginId: string): string[] {
+    return routesByPlugin.value[pluginId] ?? []
+  }
+
+  return {
+    sidebarByPlugin, settingsByPlugin, routesByPlugin, loaded,
+    sidebarItems, settingsSections,
+    addSidebarItem, addSettingsSection, trackRoute, markLoaded, isLoaded, forget, routePaths,
+  }
+})

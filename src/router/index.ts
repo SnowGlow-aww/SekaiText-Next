@@ -3,7 +3,10 @@ import EditorPage from '../pages/EditorPage.vue'
 import SettingsPage from '../pages/SettingsPage.vue'
 import DebugPage from '../pages/DebugPage.vue'
 import JsonDownloadPage from '../pages/JsonDownloadPage.vue'
-import Live2DPlayerPage from '../pages/Live2DPlayerPage.vue'
+import GlossaryPage from '../pages/GlossaryPage.vue'
+import GrammarPage from '../pages/GrammarPage.vue'
+import MarketPage from '../pages/MarketPage.vue'
+import AccountPage from '../pages/AccountPage.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -29,9 +32,24 @@ const router = createRouter({
       component: JsonDownloadPage,
     },
     {
-      path: '/live2d',
-      name: 'live2d',
-      component: Live2DPlayerPage,
+      path: '/glossary',
+      name: 'glossary',
+      component: GlossaryPage,
+    },
+    {
+      path: '/grammar',
+      name: 'grammar',
+      component: GrammarPage,
+    },
+    {
+      path: '/market',
+      name: 'market',
+      component: MarketPage,
+    },
+    {
+      path: '/account',
+      name: 'account',
+      component: AccountPage,
     },
   ],
 })

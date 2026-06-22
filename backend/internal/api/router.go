@@ -105,8 +105,72 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		// Reveal the app data directory in the OS file manager
 		r.Post("/open-data-dir", h.OpenDataDir)
 
+		// Plugins: list/enable/uninstall + static file serving (entry.js, assets)
+		r.Route("/plugins", func(r chi.Router) {
+			r.Get("/list", h.PluginsList)
+			r.Post("/install", h.PluginInstall)
+			r.Post("/{id}/enabled", h.PluginSetEnabled)
+			r.Delete("/{id}", h.PluginUninstall)
+			r.Get("/{id}/files/*", h.PluginFile)
+		})
+
+		// Plugin marketplace: remote index browse + install-by-id
+		r.Route("/market", func(r chi.Router) {
+			r.Get("/index", h.MarketIndex)
+			r.Post("/install", h.MarketInstall)
+		})
+
 		// Import a folder of Live2D assets into the local mirror
 		r.Post("/live2d/import", h.ImportLive2D)
+
+		// Glossary (term library): search, browse, CRUD, import, sync, appellations
+		r.Route("/glossary", func(r chi.Router) {
+			r.Get("/search", h.GlossarySearch)
+			r.Get("/categories", h.GlossaryCategories)
+			r.Get("/entries", h.GlossaryEntries)
+			r.Post("/entries", h.GlossaryAddEntry)
+			r.Put("/entries/{id}", h.GlossaryUpdateEntry)
+			r.Delete("/entries/{id}", h.GlossaryDeleteEntry)
+			r.Post("/import", h.GlossaryImport)
+			r.Post("/reload", h.GlossaryReload)
+			r.Post("/sync", h.GlossarySync)
+			r.Get("/export", h.GlossaryExport)
+			r.Get("/grammar", h.GlossaryGrammar)
+			// Appellation lookup (人称表)
+			r.Get("/appellations", h.GlossaryAppellationLookup)
+			r.Put("/appellations", h.GlossaryAppellationUpsert)
+			r.Get("/appellations/speakers", h.GlossaryAppellationSpeakers)
+			r.Get("/appellations/targets", h.GlossaryAppellationTargets)
+		})
+
+		// Team mode: proxy to a remote glossary-server (login, sync, proposals,
+		// review, admin). The local backend holds the token + skips the server's
+		// self-signed TLS; the frontend only ever talks to localhost.
+		r.Route("/team", func(r chi.Router) {
+			r.Get("/status", h.TeamStatus)
+			r.Post("/login", h.TeamLogin)
+			r.Post("/logout", h.TeamLogout)
+			r.Post("/connect", h.TeamConnect)
+			r.Post("/disconnect", h.TeamDisconnect)
+			r.Post("/sync", h.TeamSync)
+			r.Post("/proposals", h.TeamCreateProposal)
+			r.Get("/proposals/mine", h.TeamMyProposals)
+			r.Delete("/proposals/{id}", h.TeamWithdrawProposal)
+			r.Get("/proposals", h.TeamPendingProposals)
+			r.Post("/proposals/{id}/approve", h.TeamApproveProposal)
+			r.Post("/proposals/{id}/reject", h.TeamRejectProposal)
+			r.Post("/admin/users", h.TeamCreateUser)
+			r.Post("/admin/reviewers", h.TeamSetReviewer)
+			r.Get("/admin/users", h.TeamListUsers)
+			r.Post("/admin/users/{id}/role", h.TeamSetUserRole)
+			r.Post("/admin/users/{id}/status", h.TeamSetUserStatus)
+			r.Post("/admin/users/{id}/reset-password", h.TeamResetUserPassword)
+			r.Delete("/admin/users/{id}", h.TeamDeleteUser)
+			// account self-service
+			r.Post("/account/password", h.TeamChangePassword)
+			r.Post("/account/profile", h.TeamUpdateProfile)
+			r.Get("/account/users", h.TeamUserList)
+		})
 
 		// Recovery (autosave)
 		r.Route("/recovery", func(r chi.Router) {

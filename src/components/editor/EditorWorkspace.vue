@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onActivated, nextTick } from 'vue'
+import { computed, ref, watch, onActivated, onMounted, nextTick } from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -9,6 +9,8 @@ import { useToast } from '../../composables/useToast'
 import { useUndo } from '../../composables/useUndo'
 import VoicePlayButton from './VoicePlayButton.vue'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
+import { useGlossaryMatcher } from '../../composables/useGlossaryMatcher'
+import { useGlossaryTooltip } from '../../composables/useGlossaryTooltip'
 import { annotateFlashbacks } from '../../utils/flashback'
 import type { DstTalk } from '../../types/translation'
 
@@ -50,6 +52,12 @@ const settings = useSettingsStore()
 const toast = useToast()
 const undo = useUndo()
 const { visible: fbVisible, tooltipStyle: fbStyle, clueGroups: fbClueGroups, show: fbShow, hide: fbHide } = useFlashbackTooltip()
+
+// ---- Glossary term matching + tooltip (opt-in via app.showGlossary) ----
+const matcher = useGlossaryMatcher()
+const { visible: glVisible, tooltipStyle: glStyle, tip: glTip, show: glShow, hide: glHide } = useGlossaryTooltip()
+onMounted(() => { if (app.showGlossary) matcher.ensureLoaded() })
+watch(() => app.showGlossary, (on) => { if (on) matcher.ensureLoaded() })
 
 // ---- Flashback (from SourcePanel) ----
 const talksWithFlashback = computed(() => {
@@ -259,6 +267,45 @@ function highlightSpeaker(speaker: string): string {
   return markQuery(escapeHtml(speaker))
 }
 
+// Wrap matched glossary terms in the ALREADY-escaped source html with a
+// highlight span carrying data-term (the raw source key) for hover lookup.
+// Mirrors markQuery's (?![^<]*>) guard so we never inject inside an existing
+// tag (e.g. a <mark> from search). Only applied to read-only source text.
+function markGlossary(html: string, rawText: string): string {
+  if (!app.showGlossary || !rawText) return html
+  const hits = matcher.matchTerms(rawText)
+  if (hits.length === 0) return html
+  // Unique terms, longest first, so a longer term isn't broken by a shorter one.
+  const terms = Array.from(new Set(hits.map(h => h.term))).sort((a, b) => b.length - a.length)
+  let out = html
+  for (const term of terms) {
+    const escTerm = escapeHtml(term)
+    const pat = escTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(
+      new RegExp(`(${pat})(?![^<]*>)`, 'g'),
+      `<span class="glossary-hit" data-term="${escTerm.replace(/"/g, '&quot;')}">$1</span>`,
+    )
+  }
+  return out
+}
+
+// Render source text with search + glossary highlighting layered on.
+function renderSource(text: string): string {
+  return markGlossary(markQuery(escapeHtml(text)), text)
+}
+
+// Hover handler (event delegation on the source container): show the glossary
+// tooltip for the term under the cursor, with an appellation suggestion based
+// on the line's speaker.
+function onGlossaryHover(e: MouseEvent, speaker: string) {
+  if (!app.showGlossary) return
+  const el = (e.target as HTMLElement)?.closest('[data-term]') as HTMLElement | null
+  if (!el) { glHide(); return }
+  const term = el.getAttribute('data-term') || ''
+  const entry = matcher.lookup(term)
+  if (entry) glShow(el, entry, speaker)
+}
+
 // Match list across source text, dest text and speaker, in group order. Owns
 // app.searchTotal; the toolbar (EditorPage) steps app.searchActiveIndex.
 const searchMatches = computed(() => {
@@ -381,7 +428,8 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                 :class="{ 'bg-[var(--color-flashback)]': flashbackItem(group.items[0].talk)?.isFlashback }"
                 @mouseenter="onSourceEnter($event, group.items[0].talk)"
                 @mousemove="onSourceEnter($event, group.items[0].talk)"
-                @mouseleave="fbHide()"
+                @mouseover="onGlossaryHover($event, srcTalk(group.items[0].talk)?.speaker ?? group.items[0].talk.speaker)"
+                @mouseleave="fbHide(); glHide()"
               >
                 <div class="flex items-center gap-3">
                   <div
@@ -406,7 +454,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                   <div class="flex-1 min-w-0">
                     <div class="text-xs font-medium text-[var(--color-text-secondary)] mb-0.5" v-html="highlightSpeaker(srcTalk(group.items[0].talk)?.speaker ?? '')">
                     </div>
-                    <div v-if="srcTalk(group.items[0].talk)?.text" class="leading-relaxed whitespace-pre-wrap break-words" style="font-size: var(--editor-font-size)" v-html="markQuery(escapeHtml(srcTalk(group.items[0].talk)?.text ?? ''))">
+                    <div v-if="srcTalk(group.items[0].talk)?.text" class="leading-relaxed whitespace-pre-wrap break-words" style="font-size: var(--editor-font-size)" v-html="renderSource(srcTalk(group.items[0].talk)?.text ?? '')">
                     </div>
                     <div v-else class="flex items-center gap-3" style="font-size: var(--editor-font-size)">
                       <span class="flex-1 border-t border-[var(--color-border)] opacity-40" />
@@ -526,6 +574,29 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
     </div>
   </Teleport>
 
+  <!-- Glossary term tooltip -->
+  <Teleport to="body">
+    <div
+      v-if="glVisible && glTip"
+      :style="glStyle"
+      class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-xs pointer-events-none"
+    >
+      <div class="flex items-baseline gap-2">
+        <span class="font-semibold">{{ glTip.source }}</span>
+        <span class="text-[var(--color-text-secondary)]">→</span>
+        <span class="text-[var(--color-primary)] font-medium">{{ glTip.translation }}</span>
+      </div>
+      <div v-if="glTip.aliases && glTip.aliases.length" class="text-[var(--color-text-secondary)] mt-1">别称：{{ glTip.aliases.join('、') }}</div>
+      <div v-if="glTip.note" class="text-[var(--color-text-secondary)] mt-1 leading-relaxed">{{ glTip.note }}</div>
+      <div v-if="glTip.appellCn || glTip.appellJp" class="border-t border-[var(--color-border)] mt-1.5 pt-1.5">
+        <span class="text-[var(--color-text-secondary)]">{{ glTip.appellSpeaker }} 称呼：</span>
+        <span class="font-medium">{{ glTip.appellJp }}</span>
+        <span v-if="glTip.appellCn" class="text-[var(--color-primary)]"> / {{ glTip.appellCn }}</span>
+      </div>
+      <div v-if="glTip.category" class="text-[10px] text-[var(--color-text-secondary)] mt-1.5 opacity-70">{{ glTip.category }}</div>
+    </div>
+  </Teleport>
+
   <!-- Context Menu -->
   <Teleport to="body">
     <div
@@ -549,3 +620,15 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+/* Glossary term highlight in source text (injected via v-html, so :deep). */
+:deep(.glossary-hit) {
+  border-bottom: 1.5px dotted var(--color-primary);
+  cursor: help;
+}
+:deep(.glossary-hit:hover) {
+  background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  border-radius: 2px;
+}
+</style>

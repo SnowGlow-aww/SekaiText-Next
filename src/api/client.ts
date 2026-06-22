@@ -299,6 +299,32 @@ export const api = {
       body: JSON.stringify({ srcDir }),
     }),
 
+  // Plugins (management). The listing/entry-serving is handled directly by the
+  // plugin-host loader against /plugins/*; these cover enable/disable + uninstall.
+  pluginSetEnabled: (id: string, enabled: boolean) =>
+    request<{ ok: boolean }>(`/plugins/${id}/enabled`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+  pluginUninstall: (id: string) =>
+    request<{ ok: boolean }>(`/plugins/${id}`, { method: 'DELETE' }),
+  // Install a .sekplugin package from a local file path (Tauri dialog → path,
+  // or marketplace download → temp path). hostVersion gates minHostVersion.
+  pluginInstall: (srcPath: string, hostVersion: string) =>
+    request<import('../plugin-host/autoload').InstalledPlugin>('/plugins/install', {
+      method: 'POST',
+      body: JSON.stringify({ srcPath, hostVersion }),
+    }),
+
+  // Plugin marketplace
+  marketIndex: () =>
+    request<import('../stores/market').MarketListing[]>('/market/index'),
+  marketInstall: (id: string, hostVersion: string) =>
+    request<import('../plugin-host/autoload').InstalledPlugin>('/market/install', {
+      method: 'POST',
+      body: JSON.stringify({ id, hostVersion }),
+    }),
+
   // Update (CDN refresh)
   update: () => request<{ status: string }>('/update', { method: 'POST' }),
   updateProgress: () =>
@@ -329,4 +355,132 @@ export const api = {
   units: () => request<import('../types/dictionary').UnitInfo[]>('/assets/units'),
   areas: () => request<string[]>('/assets/areas'),
   characterIconUrl: (index: number) => `${BASE_URL}/assets/character-icon/${index}`,
+
+  // --- Glossary (term library) ---
+  glossarySearch: (q: string, category = '', limit = 50) =>
+    request<import('../types/glossary').GlossaryEntry[]>(
+      `/glossary/search?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&limit=${limit}`,
+    ),
+  glossaryCategories: () =>
+    request<import('../types/glossary').CategoryCount[]>('/glossary/categories'),
+  glossaryEntries: (category = '', offset = 0, limit = 200) =>
+    request<{ items: import('../types/glossary').GlossaryEntry[]; total: number }>(
+      `/glossary/entries?category=${encodeURIComponent(category)}&offset=${offset}&limit=${limit}`,
+    ),
+  glossaryAddEntry: (entry: Partial<import('../types/glossary').GlossaryEntry>) =>
+    request<import('../types/glossary').GlossaryEntry>('/glossary/entries', {
+      method: 'POST', body: JSON.stringify(entry),
+    }),
+  glossaryUpdateEntry: (id: string, entry: Partial<import('../types/glossary').GlossaryEntry>) =>
+    request<import('../types/glossary').GlossaryEntry>(`/glossary/entries/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify(entry),
+    }),
+  glossaryDeleteEntry: (id: string) =>
+    request<{ status: string }>(`/glossary/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  glossaryImport: (srcPath: string) =>
+    request<import('../types/glossary').ImportReport>('/glossary/import', {
+      method: 'POST', body: JSON.stringify({ srcPath }),
+    }),
+  glossaryReload: () => request<{ status: string }>('/glossary/reload', { method: 'POST' }),
+  glossarySync: (remoteUrl: string) =>
+    request<{ status: string; entries: number; appellations: number }>('/glossary/sync', {
+      method: 'POST', body: JSON.stringify({ remoteUrl }),
+    }),
+  // Appellation lookup (人称表)
+  glossaryAppellationSpeakers: () =>
+    request<string[]>('/glossary/appellations/speakers'),
+  glossaryAppellationTargets: (speaker: string) =>
+    request<string[]>(`/glossary/appellations/targets?speaker=${encodeURIComponent(speaker)}`),
+  glossaryAppellationLookup: (speaker: string, target: string) =>
+    request<import('../types/glossary').AppellationResult>(
+      `/glossary/appellations?speaker=${encodeURIComponent(speaker)}&target=${encodeURIComponent(target)}`,
+    ),
+  glossaryAppellationUpsert: (a: import('../types/glossary').Appellation) =>
+    request<import('../types/glossary').Appellation>('/glossary/appellations', {
+      method: 'PUT', body: JSON.stringify(a),
+    }),
+  // Grammar (语法用例) + export
+  glossaryGrammar: (q = '', limit = 0) =>
+    request<import('../types/glossary').GrammarUsage[]>(
+      `/glossary/grammar?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
+  glossaryExport: () =>
+    request<import('../types/glossary').GlossaryData>('/glossary/export'),
+
+  // --- Team mode (proxied to remote glossary-server via local backend) ---
+  teamStatus: () => request<import('../types/glossary').TeamStatus>('/team/status'),
+  teamLogin: (serverUrl: string, username: string, password: string) =>
+    request<{ loggedIn: boolean; user: import('../types/glossary').TeamUser }>('/team/login', {
+      method: 'POST', body: JSON.stringify({ serverUrl, username, password }),
+    }),
+  teamLogout: () => request<{ status: string }>('/team/logout', { method: 'POST' }),
+  teamConnect: (serverUrl: string) =>
+    request<{ connected: boolean; readonly: boolean }>('/team/connect', {
+      method: 'POST', body: JSON.stringify({ serverUrl }),
+    }),
+  teamDisconnect: () => request<{ status: string }>('/team/disconnect', { method: 'POST' }),
+  teamSync: (force = false) =>
+    request<{ status: string; version: number; changed: boolean; entries?: number }>(
+      `/team/sync${force ? '?force=1' : ''}`, { method: 'POST' },
+    ),
+  teamCreateProposal: (p: {
+    kind: string; targetType?: string; targetId?: string; category: string
+    payload: unknown; baseVersion?: number
+  }) => request<import('../types/glossary').Proposal>('/team/proposals', {
+    method: 'POST', body: JSON.stringify(p),
+  }),
+  teamMyProposals: () =>
+    request<import('../types/glossary').Proposal[]>('/team/proposals/mine'),
+  teamWithdrawProposal: (id: string) =>
+    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  teamPendingProposals: (category = '') =>
+    request<import('../types/glossary').Proposal[]>(
+      `/team/proposals${category ? `?category=${encodeURIComponent(category)}` : ''}`,
+    ),
+  teamApproveProposal: (id: string, note = '') =>
+    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/approve`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
+  teamRejectProposal: (id: string, note: string) =>
+    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/reject`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
+  teamSetReviewer: (userId: string, categories: string[]) =>
+    request<{ userId: string; categories: string[] }>('/team/admin/reviewers', {
+      method: 'POST', body: JSON.stringify({ userId, categories }),
+    }),
+  teamListUsers: () =>
+    request<import('../types/glossary').TeamUser[]>('/team/admin/users'),
+
+  // account self-service
+  teamChangePassword: (oldPassword: string, newPassword: string) =>
+    request<{ status: string }>('/team/account/password', {
+      method: 'POST', body: JSON.stringify({ oldPassword, newPassword }),
+    }),
+  teamUpdateProfile: (displayName: string) =>
+    request<import('../types/glossary').TeamUser>('/team/account/profile', {
+      method: 'POST', body: JSON.stringify({ displayName }),
+    }),
+  teamAccountUsers: () =>
+    request<import('../types/glossary').TeamUser[]>('/team/account/users'),
+
+  // admin user management
+  teamCreateUser: (username: string, password: string, role: string, displayName: string) =>
+    request<import('../types/glossary').TeamUser>('/team/admin/users', {
+      method: 'POST', body: JSON.stringify({ username, password, role, displayName }),
+    }),
+  teamSetUserRole: (id: string, role: string) =>
+    request<{ id: string; role: string }>(`/team/admin/users/${encodeURIComponent(id)}/role`, {
+      method: 'POST', body: JSON.stringify({ role }),
+    }),
+  teamSetUserStatus: (id: string, status: string) =>
+    request<{ id: string; status: string }>(`/team/admin/users/${encodeURIComponent(id)}/status`, {
+      method: 'POST', body: JSON.stringify({ status }),
+    }),
+  teamResetUserPassword: (id: string, newPassword: string) =>
+    request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}/reset-password`, {
+      method: 'POST', body: JSON.stringify({ newPassword }),
+    }),
+  teamDeleteUser: (id: string) =>
+    request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

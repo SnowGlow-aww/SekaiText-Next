@@ -22,6 +22,9 @@ export interface Settings {
   lastStoryIndex?: string
   lastChapter?: number
   lastDataSource?: string
+
+  /** Override the plugin marketplace index URL. Empty = built-in default. */
+  pluginMarketUrl?: string
 }
 
 export interface UpdateProgress {

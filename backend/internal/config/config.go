@@ -19,6 +19,12 @@ type AppConfig struct {
 	// the proxy serves it from disk instead of hitting the CDN. Lives alongside
 	// the downloaded story JSON under the app data dir: {dataDir}/resources/live2d.
 	Live2DLocalDir string
+	// PluginsDir is the writable directory holding installed plugins, one subdir
+	// per plugin id ({PluginsDir}/<id>/{manifest.json,entry.js,...}). Served by the
+	// Go sidecar so plugins can be installed/uninstalled at runtime (the bundled
+	// frontend dist is read-only in the packaged app). First-party plugins are
+	// seeded here on startup from the read-only bundle if absent.
+	PluginsDir string
 }
 
 // NewAppConfig creates an AppConfig.
@@ -36,6 +42,7 @@ func NewAppConfig(baseDir, dataDir string) *AppConfig {
 		ImagesDir:      filepath.Join(baseDir, "resources", "images"),
 		ImagesChrDir:   filepath.Join(baseDir, "resources", "images", "chr"),
 		Live2DLocalDir: filepath.Join(dataDir, "resources", "live2d"),
+		PluginsDir:     filepath.Join(dataDir, "plugins"),
 	}
 }
 

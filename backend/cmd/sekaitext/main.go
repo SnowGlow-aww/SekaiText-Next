@@ -40,6 +40,7 @@ func main() {
 	ensureDir(cfg.CatalogDir)
 	ensureDir(cfg.DataDir)
 	ensureDir(cfg.ImagesChrDir)
+	ensureDir(cfg.PluginsDir)
 
 	router := api.NewRouter(cfg)
 
