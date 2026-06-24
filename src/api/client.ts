@@ -233,9 +233,10 @@ export const api = {
   voiceClues: () => request<Record<string, { id: number; title: string; name: string; chapters: { title: string }[]; cards: number[]; inferredVoiceIDs?: Record<string, unknown> }>>('/flashback/voice-clues'),
 
   // Voice
-  voiceUrl: (scenarioId: string, voiceId: string, source: string) =>
+  voiceUrl: (scenarioId: string, voiceId: string, source: string, chara2d?: number) =>
     request<{ url: string }>(
-      `/voice/url?scenarioId=${encodeURIComponent(scenarioId)}&voiceId=${encodeURIComponent(voiceId)}&source=${encodeURIComponent(source)}`,
+      `/voice/url?scenarioId=${encodeURIComponent(scenarioId)}&voiceId=${encodeURIComponent(voiceId)}&source=${encodeURIComponent(source)}` +
+      (chara2d != null ? `&chara2d=${chara2d}` : ''),
     ),
 
   // Speaker

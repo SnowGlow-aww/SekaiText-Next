@@ -7,6 +7,10 @@ type SourceTalk struct {
 	Voices   []string `json:"voices,omitempty"`
 	Volume   []int    `json:"volume,omitempty"`
 	CharIdx  int      `json:"charIndex"`
+	// Chara2d is the speaking character's Character2dId for the FIRST voice clip
+	// of this line (the one the player plays). Resolves the partvoice_ bundle
+	// subdir for card stories; 0 when the line has no voice.
+	Chara2d  int      `json:"chara2d,omitempty"`
 	Clues    []string `json:"clues,omitempty"`
 	// FlashbackLines is parallel to Clues: FlashbackLines[k] is the 1-based
 	// physical line where Clues[k]'s flashback sentence appears in its source

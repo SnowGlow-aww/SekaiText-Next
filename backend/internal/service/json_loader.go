@@ -33,8 +33,9 @@ type TalkData struct {
 
 // VoiceData represents a voice clip reference.
 type VoiceData struct {
-	VoiceID string  `json:"VoiceId"`
-	Volume  float64 `json:"Volume"`
+	VoiceID       string  `json:"VoiceId"`
+	Volume        float64 `json:"Volume"`
+	Character2dId int     `json:"Character2dId"`
 }
 
 // SpecialEffectData represents a special effect (scene/option text).
@@ -115,9 +116,13 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 
 			var voices []string
 			var volume []int
-			for _, v := range talkdata.Voices {
+			chara2d := 0
+			for i, v := range talkdata.Voices {
 				voices = append(voices, v.VoiceID)
 				volume = append(volume, int(v.Volume))
+				if i == 0 {
+					chara2d = v.Character2dId
+				}
 			}
 
 			charIdx := -1
@@ -134,6 +139,7 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 				Voices:   voices,
 				Volume:   volume,
 				CharIdx:  charIdx,
+				Chara2d:  chara2d,
 			}
 
 			talks = append(talks, talk)

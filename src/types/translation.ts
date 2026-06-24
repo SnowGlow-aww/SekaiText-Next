@@ -3,6 +3,7 @@ export interface SourceTalk {
   text: string
   voices?: string[]
   volume?: number[]
+  chara2d?: number
   charIndex: number
   clues?: string[]
   flashbackLines?: number[]

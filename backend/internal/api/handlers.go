@@ -578,6 +578,7 @@ var cardScenarioRe = regexp.MustCompile(`^\d{6}_`)
 func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	scenarioID := r.URL.Query().Get("scenarioId")
 	voiceID := r.URL.Query().Get("voiceId")
+	chara2d, _ := strconv.Atoi(r.URL.Query().Get("chara2d"))
 
 	// Voice audio is always served from the moesekai-jp mirror regardless of the
 	// story's selected source. The default source (HarukiBot NEO) and unipjsk do
@@ -596,7 +597,13 @@ func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	var url string
 	switch {
 	case cardScenarioRe.MatchString(scenarioID) && strings.HasPrefix(voiceID, "partvoice"):
-		url = ""
+		// partvoice lines live in a shared bundle keyed by the SPEAKING character's
+		// chara2d: sound/scenario/voice/part_voice_{assetName}_{unit}/{vid}.mp3
+		if c, ok := service.Character2dByID(chara2d); ok {
+			url = baseURL + "sound/scenario/voice/part_voice_" + c.AssetName + "_" + c.Unit + "/" + voiceID + ".mp3"
+		} else {
+			url = ""
+		}
 	case cardScenarioRe.MatchString(scenarioID):
 		url = baseURL + "sound/card_scenario/voice/" + scenarioID + "/" + voiceID + ".mp3"
 	default:

@@ -79,6 +79,7 @@ function onEnter(e: MouseEvent, talk: typeof talksWithFlashback.value[0]) {
           :voice-ids="talk.voices"
           :volume="talk.volume"
           :source="story.selectedSource"
+          :chara2d="talk.chara2d"
         />
       </div>
     </div>

@@ -8,6 +8,7 @@ const props = defineProps<{
   voiceIds: string[]
   volume?: number[]
   source?: string
+  chara2d?: number
 }>()
 
 const playing = ref(false)
@@ -26,7 +27,7 @@ async function play() {
   // Immediate feedback so the click is visibly acknowledged during the async window.
   loading.value = true
   try {
-    const result = await api.voiceUrl(props.scenarioId, props.voiceIds[0], props.source || 'sekai.best')
+    const result = await api.voiceUrl(props.scenarioId, props.voiceIds[0], props.source || 'sekai.best', props.chara2d)
     if (result.url) {
       const audio = new Audio(result.url)
       audio.volume = props.volume?.[0] ? props.volume[0] / 100 : 1

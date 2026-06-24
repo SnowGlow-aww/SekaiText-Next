@@ -469,6 +469,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                     :voice-ids="(srcTalk(group.items[0].talk)?.voices ?? []) as string[]"
                     :volume="srcTalk(group.items[0].talk).volume"
                     :source="story.selectedSource"
+                    :chara2d="srcTalk(group.items[0].talk)?.chara2d"
                   />
                 </div>
               </div>
