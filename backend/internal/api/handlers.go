@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -569,6 +570,11 @@ func live2dContentType(path string) string {
 
 // --- Voice ---
 
+// cardScenarioRe matches card-story (活动卡面 / member card episode) scenario IDs,
+// which are 6 digits + "_" + name (e.g. 013056_tsukasa01). Event / main / world-link
+// scenario IDs start with letters (wl_, event_, ...), so they never match.
+var cardScenarioRe = regexp.MustCompile(`^\d{6}_`)
+
 func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	scenarioID := r.URL.Query().Get("scenarioId")
 	voiceID := r.URL.Query().Get("voiceId")
@@ -579,7 +585,23 @@ func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	// every voice request here is the only reliable option.
 	baseURL := "https://storage.exmeaning.com/sekai-jp-assets/"
 
-	url := baseURL + "sound/scenario/voice/" + scenarioID + "/" + voiceID + ".mp3"
+	// Card stories keep their voices under a different directory than event/main
+	// stories. Verified against storage.exmeaning.com / storage.sekai.best:
+	//   - card "voice_card_*" lines -> sound/card_scenario/voice/{sid}/{vid}.mp3
+	//   - card "partvoice_*"  lines -> a shared per-speaking-character bundle
+	//       (sound/scenario/voice/part_voice_{assetName}_{unit}/...); building it
+	//       needs the talking character's chara2d, which this endpoint does not
+	//       have yet, so we return an empty URL and let the client report it.
+	//   - everything else           -> sound/scenario/voice/{sid}/{vid}.mp3 (unchanged)
+	var url string
+	switch {
+	case cardScenarioRe.MatchString(scenarioID) && strings.HasPrefix(voiceID, "partvoice"):
+		url = ""
+	case cardScenarioRe.MatchString(scenarioID):
+		url = baseURL + "sound/card_scenario/voice/" + scenarioID + "/" + voiceID + ".mp3"
+	default:
+		url = baseURL + "sound/scenario/voice/" + scenarioID + "/" + voiceID + ".mp3"
+	}
 	writeJSON(w, http.StatusOK, model.VoiceURLResponse{URL: url})
 }
 
