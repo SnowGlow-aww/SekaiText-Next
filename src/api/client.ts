@@ -483,4 +483,11 @@ export const api = {
     }),
   teamDeleteUser: (id: string) =>
     request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Bulk-upload the entire LOCAL glossary to the server (superadmin only; the
+  // server upserts by entry ID and bumps the version once so every client re-syncs).
+  teamBulkImport: (entries: import('../types/glossary').GlossaryEntry[]) =>
+    request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
+      method: 'POST', body: JSON.stringify({ entries }),
+    }),
 }

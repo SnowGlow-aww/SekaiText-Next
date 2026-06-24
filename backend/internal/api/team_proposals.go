@@ -90,3 +90,11 @@ func (h *Handler) TeamResetUserPassword(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) TeamDeleteUser(w http.ResponseWriter, r *http.Request) {
 	h.teamProxy(w, http.MethodDelete, "/api/admin/users/"+cleanID(chi.URLParam(r, "id")), nil)
 }
+
+// --- Admin glossary bulk import (remote enforces superadmin) ---
+
+// TeamBulkImport uploads the caller's full local glossary to the remote server
+// in one request. The frontend sends { entries: [...] }; we proxy it through.
+func (h *Handler) TeamBulkImport(w http.ResponseWriter, r *http.Request) {
+	h.teamProxy(w, http.MethodPost, "/api/admin/glossary/bulk-import", decodeBody(r))
+}

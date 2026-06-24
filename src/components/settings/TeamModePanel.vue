@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { api } from '../../api/client'
 import { useTeamStore } from '../../stores/team'
 import { useGlossaryStore } from '../../stores/glossary'
 import { useToast } from '../../composables/useToast'
@@ -87,6 +88,27 @@ async function doSync() {
   }
 }
 
+// Superadmin: push the entire LOCAL glossary up to the team server in one shot.
+// Sync only pulls DOWN, so this is the only way to seed the shared server
+// glossary from an admin's local copy. Idempotent (server upserts by entry ID).
+async function doBulkUpload() {
+  if (!confirm('将把本地术语库全部上传到团队服务器（按条目 ID 覆盖更新，可重复执行）。\n确定上传？')) return
+  busy.value = true
+  try {
+    const data = await api.glossaryExport()
+    const total = data.entries?.length ?? 0
+    if (total === 0) { err('本地术语库为空，没有可上传的条目'); return }
+    const r = await api.teamBulkImport(data.entries)
+    ok(`已上传 ${r.upserted} / ${total} 条到服务器（v${r.version}）`)
+    await team.sync(true)
+    await refreshLocal()
+  } catch (e) {
+    err('上传失败：' + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    busy.value = false
+  }
+}
+
 async function refreshLocal() {
   await glossary.fetchCategories()
   await glossary.loadAllEntries(true)
@@ -125,7 +147,11 @@ function roleLabel(role: string) {
           <template v-else>每 60 秒自动检查更新</template>
           <span v-if="team.syncError" class="text-error ml-2">{{ team.syncError }}</span>
         </div>
-        <button @click="doSync" :disabled="busy" class="btn btn-primary btn-sm">立即同步</button>
+        <div class="flex items-center gap-2">
+          <button v-if="team.isAdmin" @click="doBulkUpload" :disabled="busy"
+            class="btn btn-ghost btn-sm" title="把本地术语库整体上传到团队服务器（仅管理员）">上传本地术语库</button>
+          <button @click="doSync" :disabled="busy" class="btn btn-primary btn-sm">立即同步</button>
+        </div>
       </div>
     </div>
 

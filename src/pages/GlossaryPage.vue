@@ -49,7 +49,29 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
   getScrollElement: () => scrollParent.value,
   estimateSize: () => 76,
   overscan: 8,
+  // Stable per-entry key so dynamic measureElement caches survive list changes
+  // (e.g. after a delete reflows the rows).
+  getItemKey: (index: number) => browseEntries.value[index]?.id ?? index,
 })))
+
+// vue-virtual's measureElement ref callback, wrapped so its element-only signature
+// satisfies Vue's :ref VNodeRef type. Lets a row that expands into an inline edit
+// form remeasure and reflow the rows below it.
+function measureRow(el: any) {
+  rowVirtualizer.value.measureElement(el)
+}
+
+// Refresh whatever the search tab is currently showing — the search results
+// when a query is present, the browse list when only a category is chosen.
+// Called after a local add/edit/delete so the change shows immediately
+// (glossary.deleteEntry only filters `results`, never `browseEntries`).
+async function refreshView() {
+  await glossary.search(query.value, category.value)
+  if (!query.value.trim() && category.value) {
+    const r = await api.glossaryEntries(category.value, 0, 100000)
+    browseEntries.value = r.items
+  }
+}
 
 // --- export ---
 const exporting = ref(false)
@@ -78,9 +100,15 @@ async function handleExport() {
 // import/export. Adding new entries is always allowed.
 const editUnlocked = ref(false)
 const showAdd = ref(false)
-const draft = ref<Partial<GlossaryEntry>>({ source: '', translation: '', note: '', category: '自定义' })
+const draft = ref<Partial<GlossaryEntry>>({ source: '', translation: '', note: '', category: '' })
 const editingId = ref<string | null>(null)
 const editDraft = ref<Partial<GlossaryEntry>>({})
+
+// When the edit/delete controls show:
+//   readonly   → never (view-only mode)
+//   logged-in  → always (local entries delete directly; remote entries route to a proposal)
+//   pure-local → only when the lock is unlocked (guards against accidental edits)
+const canShowControls = computed(() => !team.readonly && (editUnlocked.value || team.loggedIn))
 
 function toggleEditLock() {
   editUnlocked.value = !editUnlocked.value
@@ -102,12 +130,12 @@ async function submitAdd() {
       })
       toast.show('已提交新增提案，待管理员审核', 'success')
     } else {
-      await glossary.addEntry(draft.value)
+      await glossary.addEntry({ ...draft.value, category: draft.value.category || '自定义' })
       toast.show('已添加', 'success')
     }
-    draft.value = { source: '', translation: '', note: '', category: '自定义' }
+    draft.value = { source: '', translation: '', note: '', category: '' }
     showAdd.value = false
-    await glossary.search(query.value, category.value)
+    await refreshView()
   } catch (e: any) { toast.show(e.message || '操作失败', 'error') }
 }
 
@@ -119,7 +147,8 @@ function startEdit(e: GlossaryEntry) {
 async function saveEdit(id: string) {
   if (team.readonly) { toast.show('只读模式：登录后才能修改', 'warn'); return }
   const target = [...glossary.results, ...browseEntries.value].find(x => x.id === id)
-  if (team.loggedIn) {
+  // Remote (server) entries: route edits through the team proposal queue.
+  if (team.loggedIn && target?.origin === 'remote') {
     try {
       await team.submitProposal({
         kind: 'edit',
@@ -133,11 +162,12 @@ async function saveEdit(id: string) {
     } catch (e: any) { toast.show(e.message || '提交失败', 'error') }
     return
   }
+  // Local entries (import/user) — edit directly, even when logged in.
   if (!confirm('确定保存对这条词条的修改吗？')) return
   try {
     await glossary.updateEntry(id, editDraft.value)
     editingId.value = null
-    await glossary.search(query.value, category.value)
+    await refreshView()
     toast.show('已保存', 'success')
   } catch (e: any) { toast.show(e.message || '保存失败', 'error') }
 }
@@ -145,7 +175,9 @@ async function saveEdit(id: string) {
 async function removeEntry(id: string) {
   if (team.readonly) { toast.show('只读模式：登录后才能删除', 'warn'); return }
   const e = [...glossary.results, ...browseEntries.value].find(x => x.id === id)
-  if (team.loggedIn) {
+  // Remote (server) entries: a local delete would be reverted by the next 60s
+  // sync, so route them through the team delete-proposal queue (admin self-approves).
+  if (team.loggedIn && e?.origin === 'remote') {
     if (!confirm(`确定提交删除「${e?.source ?? ''}」的提案吗？需管理员审核通过后生效。`)) return
     try {
       await team.submitProposal({
@@ -155,8 +187,9 @@ async function removeEntry(id: string) {
     } catch (err: any) { toast.show(err.message || '提交失败', 'error') }
     return
   }
+  // Local entries (import/user) — delete directly, even when logged in.
   if (!confirm(`确定删除「${e?.source ?? ''}」这条词条吗？此操作不可撤销。`)) return
-  try { await glossary.deleteEntry(id); toast.show('已删除', 'success') }
+  try { await glossary.deleteEntry(id); await refreshView(); toast.show('已删除', 'success') }
   catch (err: any) { toast.show(err.message || '删除失败', 'error') }
 }
 
@@ -378,13 +411,22 @@ onMounted(async () => {
           </button>
         </div>
 
+        <!-- shared category suggestions for the add / edit forms (always in the DOM
+             so the edit forms can reference it even when the add form is closed) -->
+        <datalist id="glossary-cats">
+          <option v-for="c in glossary.categories" :key="c.category" :value="c.category" />
+        </datalist>
+
         <!-- add form -->
         <div v-if="showAdd" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-4 space-y-3">
           <div class="grid grid-cols-2 gap-3">
             <input v-model="draft.source" placeholder="原文" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-primary)]" />
             <input v-model="draft.translation" placeholder="译文" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-primary)]" />
           </div>
-          <input v-model="draft.note" placeholder="备注（可选）" class="w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-primary)]" />
+          <div class="grid grid-cols-2 gap-3">
+            <input v-model="draft.category" list="glossary-cats" placeholder="分类（可选，可新建，默认自定义）" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-primary)]" />
+            <input v-model="draft.note" placeholder="备注（可选）" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-primary)]" />
+          </div>
           <div class="flex justify-end gap-2">
             <button @click="showAdd = false" class="px-3 py-1.5 rounded-lg text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text)]">取消</button>
             <button @click="submitAdd" class="px-3 py-1.5 rounded-lg text-sm bg-[var(--color-primary)] text-white hover:opacity-90">保存</button>
@@ -400,18 +442,44 @@ onMounted(async () => {
             <div :style="{ height: rowVirtualizer.getTotalSize() + 'px', position: 'relative', width: '100%' }">
               <div
                 v-for="vr in rowVirtualizer.getVirtualItems()"
-                :key="vr.index"
+                :key="browseEntries[vr.index]?.id ?? vr.index"
+                :data-index="vr.index"
+                :ref="measureRow"
                 :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vr.start}px)` }"
                 class="pb-2"
               >
-                <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-3">
-                  <div class="flex items-baseline gap-2 flex-wrap">
-                    <span class="text-sm font-medium">{{ browseEntries[vr.index].source }}</span>
-                    <span class="text-[var(--color-text-secondary)]">→</span>
-                    <span class="text-sm">{{ browseEntries[vr.index].translation }}</span>
-                  </div>
-                  <div v-if="browseEntries[vr.index].aliases?.length" class="text-xs text-[var(--color-text-secondary)] mt-1">别称：{{ browseEntries[vr.index].aliases!.join('、') }}</div>
-                  <div v-if="browseEntries[vr.index].subCategory" class="text-[10px] text-[var(--color-text-secondary)] mt-1">{{ browseEntries[vr.index].subCategory }}</div>
+                <div class="group bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-3">
+                  <!-- inline edit (browse mode) -->
+                  <template v-if="editingId === browseEntries[vr.index].id">
+                    <div class="grid grid-cols-2 gap-2 mb-2">
+                      <input v-model="editDraft.source" class="px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
+                      <input v-model="editDraft.translation" class="px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
+                    </div>
+                    <input v-model="editDraft.category" list="glossary-cats" placeholder="分类" class="w-full px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm mb-2" />
+                    <input v-model="editDraft.note" placeholder="备注" class="w-full px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm mb-2" />
+                    <div class="flex justify-end gap-2">
+                      <button @click="editingId = null" class="flex items-center gap-1 text-sm text-[var(--color-text-secondary)]"><X :size="14" />取消</button>
+                      <button @click="saveEdit(browseEntries[vr.index].id)" class="flex items-center gap-1 text-sm text-[var(--color-primary)]"><Check :size="14" />保存</button>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="flex items-start justify-between gap-3">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-baseline gap-2 flex-wrap">
+                          <span class="text-sm font-medium">{{ browseEntries[vr.index].source }}</span>
+                          <span class="text-[var(--color-text-secondary)]">→</span>
+                          <span class="text-sm">{{ browseEntries[vr.index].translation }}</span>
+                        </div>
+                        <div v-if="browseEntries[vr.index].aliases?.length" class="text-xs text-[var(--color-text-secondary)] mt-1">别称：{{ browseEntries[vr.index].aliases!.join('、') }}</div>
+                        <div v-if="browseEntries[vr.index].note" class="text-xs text-[var(--color-text-secondary)] mt-1 whitespace-pre-wrap">{{ browseEntries[vr.index].note }}</div>
+                        <div v-if="browseEntries[vr.index].subCategory" class="text-[10px] text-[var(--color-text-secondary)] mt-1">{{ browseEntries[vr.index].subCategory }}</div>
+                      </div>
+                      <div v-if="canShowControls" class="flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                        <button @click="startEdit(browseEntries[vr.index])" class="p-1.5 rounded hover:bg-[var(--color-bg)] text-[var(--color-text-secondary)]"><Pencil :size="14" /></button>
+                        <button @click="removeEntry(browseEntries[vr.index].id)" class="p-1.5 rounded hover:bg-[var(--color-bg)] text-[var(--color-text-secondary)] hover:text-red-500"><Trash2 :size="14" /></button>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -430,6 +498,7 @@ onMounted(async () => {
                 <input v-model="editDraft.source" class="px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
                 <input v-model="editDraft.translation" class="px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
               </div>
+              <input v-model="editDraft.category" list="glossary-cats" placeholder="分类" class="w-full px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm mb-2" />
               <input v-model="editDraft.note" placeholder="备注" class="w-full px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-sm mb-2" />
               <div class="flex justify-end gap-2">
                 <button @click="editingId = null" class="flex items-center gap-1 text-sm text-[var(--color-text-secondary)]"><X :size="14" />取消</button>
@@ -453,7 +522,7 @@ onMounted(async () => {
                     <span v-if="e.contributorName" class="text-[10px] text-[var(--color-text-secondary)]">添加者：{{ e.contributorName }}</span>
                   </div>
                 </div>
-                <div v-if="editUnlocked" class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div v-if="canShowControls" class="flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                   <button @click="startEdit(e)" class="p-1.5 rounded hover:bg-[var(--color-bg)] text-[var(--color-text-secondary)]"><Pencil :size="14" /></button>
                   <button @click="removeEntry(e.id)" class="p-1.5 rounded hover:bg-[var(--color-bg)] text-[var(--color-text-secondary)] hover:text-red-500"><Trash2 :size="14" /></button>
                 </div>
