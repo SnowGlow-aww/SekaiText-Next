@@ -36,6 +36,7 @@ type Handler struct {
 	plugins       *service.PluginStore
 	market        *service.MarketService
 	team          *service.TeamService
+	engine        *service.EngineManager
 	downloadTasks sync.Map // map[string]*model.DownloadTaskProgress
 }
 
@@ -60,6 +61,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		plugins:    pluginStore,
 		market:     service.NewMarketService(pluginStore),
 		team:       service.NewTeamService(cfg.DataDir),
+		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
 	}
 }
 
