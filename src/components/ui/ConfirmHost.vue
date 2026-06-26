@@ -41,7 +41,7 @@ watch(
       />
       <!-- panel -->
       <div
-        class="app-card relative w-full max-w-sm p-5"
+        class="app-card app-glass relative w-full max-w-sm p-5"
         style="box-shadow: var(--shadow-lg)"
         @keydown.enter="onConfirm"
       >

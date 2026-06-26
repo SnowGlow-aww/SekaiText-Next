@@ -8,6 +8,13 @@ import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 import { useDebugLog } from '../../composables/useDebugLog'
 import { useDownloadFloat } from '../../composables/useDownloadFloat'
+import SkSelect from '../ui/SkSelect.vue'
+
+const sourceOptions = [
+  { value: 'haruki', label: 'HarukiBot NEO' },
+  { value: 'moesekai-jp', label: 'Moesekai (JP)' },
+  { value: 'moesekai-cn', label: 'Moesekai (CN)' },
+]
 
 // App-lifetime guard: auto-pull metadata once on first mount only.
 let autoPulledOnce = false
@@ -185,31 +192,45 @@ async function handleLoad() {
 
 <template>
   <div class="flex items-center gap-2 flex-wrap">
-    <select v-model="story.selectedType" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
-      <option value="" disabled>故事类型</option>
-      <option v-for="t in story.storyTypes" :key="t" :value="t">{{ unitName(t) }}</option>
-    </select>
+    <SkSelect
+      size="sm"
+      :model-value="story.selectedType"
+      @update:model-value="story.selectedType = $event as string"
+      :options="story.storyTypes.map(t => ({ value: t, label: unitName(t) }))"
+      placeholder="故事类型"
+    />
 
-    <select v-if="story.sorts?.length" v-model="story.selectedSort" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
-      <option value="" disabled>排序</option>
-      <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
-    </select>
+    <SkSelect
+      v-if="story.sorts?.length"
+      size="sm"
+      :model-value="story.selectedSort"
+      @update:model-value="story.selectedSort = $event as string"
+      :options="story.sorts.map(s => ({ value: s.value, label: s.label }))"
+      placeholder="排序"
+    />
 
-    <select v-model="story.selectedIndex" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
-      <option value="" disabled>索引</option>
-      <option v-for="i in displayIndices" :key="i.value" :value="i.value" v-text="i.label" />
-    </select>
+    <SkSelect
+      size="sm"
+      :model-value="story.selectedIndex"
+      @update:model-value="story.selectedIndex = $event as string"
+      :options="displayIndices.map(i => ({ value: i.value, label: i.label }))"
+      placeholder="索引"
+    />
 
-    <select v-model="story.selectedChapter" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
-      <option :value="-1" disabled>章节</option>
-      <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
-    </select>
+    <SkSelect
+      size="sm"
+      :model-value="story.selectedChapter"
+      @update:model-value="story.selectedChapter = $event as number"
+      :options="story.chapters.map(c => ({ value: c.number, label: c.label }))"
+      placeholder="章节"
+    />
 
-    <select v-model="story.selectedSource" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
-      <option value="haruki">HarukiBot NEO</option>
-      <option value="moesekai-jp">Moesekai (JP)</option>
-      <option value="moesekai-cn">Moesekai (CN)</option>
-    </select>
+    <SkSelect
+      size="sm"
+      :model-value="story.selectedSource"
+      @update:model-value="story.selectedSource = $event as string"
+      :options="sourceOptions"
+    />
 
     <button
       @click="handleRefresh"

@@ -99,7 +99,7 @@ async function handleDiscard() {
       <!-- scrim -->
       <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" />
       <!-- panel -->
-      <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+      <div class="app-card app-glass relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
         <div class="flex items-start gap-3">
           <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-warning/15 text-warning">
             <AlertTriangle :size="18" />

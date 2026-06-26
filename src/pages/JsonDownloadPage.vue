@@ -7,6 +7,7 @@ import { useSettingsStore } from '../stores/settings'
 import { api } from '../api/client'
 import { useToast } from '../composables/useToast'
 import { useDownloadFloat } from '../composables/useDownloadFloat'
+import SkSelect from '../components/ui/SkSelect.vue'
 
 const router = useRouter()
 const story = useStoryStore()
@@ -114,34 +115,46 @@ async function handleDownload() {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label class="app-label">故事类型</label>
-            <select v-model="story.selectedType" class="app-input mt-1.5 cursor-pointer">
-              <option value="" disabled>选择类型</option>
-              <option v-for="t in story.storyTypes" :key="t" :value="t">{{ t }}</option>
-            </select>
+            <SkSelect
+              class="mt-1.5"
+              :model-value="story.selectedType"
+              @update:model-value="story.selectedType = $event as string"
+              :options="story.storyTypes.map(t => ({ value: t, label: t }))"
+              placeholder="选择类型"
+            />
           </div>
 
           <div v-if="story.sorts.length">
             <label class="app-label">排序</label>
-            <select v-model="story.selectedSort" class="app-input mt-1.5 cursor-pointer">
-              <option value="" disabled>选择排序</option>
-              <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+            <SkSelect
+              class="mt-1.5"
+              :model-value="story.selectedSort"
+              @update:model-value="story.selectedSort = $event as string"
+              :options="story.sorts.map(s => ({ value: s.value, label: s.label }))"
+              placeholder="选择排序"
+            />
           </div>
 
           <div>
             <label class="app-label">索引</label>
-            <select v-model="story.selectedIndex" class="app-input mt-1.5 cursor-pointer">
-              <option value="" disabled>选择索引</option>
-              <option v-for="i in displayIndices" :key="i.value" :value="i.value">{{ i.label }}</option>
-            </select>
+            <SkSelect
+              class="mt-1.5"
+              :model-value="story.selectedIndex"
+              @update:model-value="story.selectedIndex = $event as string"
+              :options="displayIndices.map(i => ({ value: i.value, label: i.label }))"
+              placeholder="选择索引"
+            />
           </div>
 
           <div>
             <label class="app-label">章节</label>
-            <select v-model="story.selectedChapter" class="app-input mt-1.5 cursor-pointer">
-              <option :value="-1" disabled>选择章节</option>
-              <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
-            </select>
+            <SkSelect
+              class="mt-1.5"
+              :model-value="story.selectedChapter"
+              @update:model-value="story.selectedChapter = $event as number"
+              :options="story.chapters.map(c => ({ value: c.number, label: c.label }))"
+              placeholder="选择章节"
+            />
           </div>
         </div>
       </section>

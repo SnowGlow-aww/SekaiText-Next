@@ -6,6 +6,7 @@ import { useToast } from '../../composables/useToast'
 import { useDebugLog } from '../../composables/useDebugLog'
 import type { Settings } from '../../types/api'
 import ThemePicker from '../ui/ThemePicker.vue'
+import SkSelect from '../ui/SkSelect.vue'
 
 const settings = useSettingsStore()
 const toast = useToast()
@@ -41,7 +42,7 @@ async function save() {
 
       <!-- panel -->
       <div
-        class="app-card relative w-full max-w-md max-h-[85vh] flex flex-col"
+        class="app-card app-glass relative w-full max-w-md max-h-[85vh] flex flex-col"
         style="box-shadow: var(--shadow-lg)"
       >
         <!-- header -->
@@ -125,10 +126,12 @@ async function save() {
               <div class="text-sm font-medium text-[var(--color-text)]">索引排序</div>
               <div class="app-help mt-0.5">故事索引下拉列表的显示顺序</div>
             </div>
-            <select v-model="local.indexOrder" class="app-input w-44 cursor-pointer">
-              <option value="desc">降序（最新的在底部）</option>
-              <option value="asc">升序（最新的在顶部）</option>
-            </select>
+            <SkSelect
+              class="w-44"
+              :model-value="local.indexOrder"
+              @update:model-value="local.indexOrder = $event as 'asc' | 'desc'"
+              :options="[{ value: 'desc', label: '降序（最新的在底部）' }, { value: 'asc', label: '升序（最新的在顶部）' }]"
+            />
           </div>
 
           <div class="app-divider" />

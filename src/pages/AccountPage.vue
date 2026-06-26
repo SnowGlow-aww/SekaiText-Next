@@ -7,6 +7,7 @@ import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { api } from '../api/client'
 import TeamModePanel from '../components/settings/TeamModePanel.vue'
+import SkSelect from '../components/ui/SkSelect.vue'
 import { ACCENT_GROUPS } from '../data/characterColors'
 import type { TeamUser } from '../types/glossary'
 
@@ -358,11 +359,16 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
           </div>
           <div>
             <label class="app-label">角色</label>
-            <select v-model="newUser.role" class="app-input mt-1.5 cursor-pointer">
-              <option value="member">成员</option>
-              <option value="reviewer">校对</option>
-              <option v-if="iAmSuperadmin" value="admin">管理员</option>
-            </select>
+            <SkSelect
+              class="mt-1.5"
+              :model-value="newUser.role"
+              @update:model-value="newUser.role = $event as string"
+              :options="[
+                { value: 'member', label: '成员' },
+                { value: 'reviewer', label: '校对' },
+                ...(iAmSuperadmin ? [{ value: 'admin', label: '管理员' }] : []),
+              ]"
+            />
           </div>
         </div>
         <button @click="createUser" :disabled="creating" class="btn btn-sm btn-brand mt-4">
@@ -407,17 +413,19 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
 
             <!-- 可管理该成员时显示操作（超管可管理任何人；管理员仅能管理成员/校对） -->
             <template v-if="canManage(u)">
-              <select
-                :value="u.role"
-                @change="changeRole(u, ($event.target as HTMLSelectElement).value, $event.target as HTMLSelectElement)"
-                class="select select-sm min-w-[5.5rem] rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-xs"
-              >
-                <option value="member">成员</option>
-                <option value="reviewer">校对</option>
-                <option v-if="iAmSuperadmin" value="admin">管理员</option>
-                <!-- never assignable; rendered only so a superadmin row can't show blank -->
-                <option v-if="u.role === 'superadmin'" value="superadmin" disabled>超级管理员</option>
-              </select>
+              <!-- Controlled by :model-value="u.role" — on guard/failure u.role is
+                   left unchanged so the control reverts on its own (no DOM hack). -->
+              <SkSelect
+                size="sm"
+                :model-value="u.role"
+                @update:model-value="changeRole(u, $event as string)"
+                :options="[
+                  { value: 'member', label: '成员' },
+                  { value: 'reviewer', label: '校对' },
+                  ...(iAmSuperadmin ? [{ value: 'admin', label: '管理员' }] : []),
+                  ...(u.role === 'superadmin' ? [{ value: 'superadmin', label: '超级管理员', disabled: true }] : []),
+                ]"
+              />
               <button @click="toggleStatus(u)" class="btn btn-ghost btn-xs gap-1" :title="u.status === 'active' ? '禁用' : '启用'">
                 <Ban v-if="u.status === 'active'" :size="13" /><CircleCheck v-else :size="13" />
                 <span class="hidden sm:inline">{{ u.status === 'active' ? '禁用' : '启用' }}</span>
