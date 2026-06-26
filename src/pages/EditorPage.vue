@@ -14,7 +14,8 @@ import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import * as LucideIcons from 'lucide-vue-next'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info } from 'lucide-vue-next'
+import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info,
+  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, CheckCircle2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -495,39 +496,39 @@ onUnmounted(() => {
       <div class="flex-1 flex flex-col min-w-0">
         <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2"><StoryNavigator :auto-pull="true"/></header>
         <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
-          <div class="flex items-center gap-2 flex-wrap text-sm">
-            <button @click="handleOpen" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
-            <button @click="handleSave" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">保存</button>
-            <button @click="handleClear" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">清空</button>
-            <div class="w-px h-4 bg-[var(--color-border)]" />
-            <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showFlashback" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />闪回</label>
-            <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showGlossary" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />术语</label>
-            <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.syncScroll" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />同步</label>
-            <button @click="app.searchOpen = !app.searchOpen" :class="['px-2.5 py-1 rounded transition-colors', app.searchOpen ? 'text-[var(--color-primary)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]']">搜索</button>
-            <div ref="toolbarSearchSep" class="w-px h-4 bg-[var(--color-border)]" />
-            <button @click="showSpeakerCheck = true" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">说话人</button>
-            <button @click="handleFullCheck" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">检查</button>
-            <button @click="showSpeakerCount = true" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">统计</button>
+          <div class="flex items-center gap-1 flex-wrap">
+            <button @click="handleOpen" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
+            <button @click="handleSave" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
+            <button @click="handleClear" class="btn btn-sm btn-ghost gap-1.5"><Eraser :size="15" />清空</button>
+            <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
+            <button class="tbar-toggle" :aria-pressed="app.showFlashback" @click="app.showFlashback = !app.showFlashback"><Eye :size="15" />闪回</button>
+            <button class="tbar-toggle" :aria-pressed="app.showGlossary" @click="app.showGlossary = !app.showGlossary"><Languages :size="15" />术语</button>
+            <button class="tbar-toggle" :aria-pressed="app.syncScroll" @click="app.syncScroll = !app.syncScroll"><Link2 :size="15" />同步</button>
+            <button class="tbar-toggle" :aria-pressed="app.searchOpen" @click="app.searchOpen = !app.searchOpen"><Search :size="15" />搜索</button>
+            <div ref="toolbarSearchSep" class="w-px h-5 bg-[var(--color-border)] mx-1" />
+            <button @click="showSpeakerCheck = true" class="btn btn-sm btn-ghost gap-1.5"><Users :size="15" />说话人</button>
+            <button @click="handleFullCheck" class="btn btn-sm btn-ghost gap-1.5"><ListChecks :size="15" />检查</button>
+            <button @click="showSpeakerCount = true" class="btn btn-sm btn-ghost gap-1.5"><BarChart3 :size="15" />统计</button>
             <template v-if="app.editorMode >= 1">
-              <div class="w-px h-4 bg-[var(--color-border)]" />
-              <label class="flex items-center gap-1 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><input v-model="app.showCompare" type="checkbox" class="accent-[var(--color-primary)] w-3 h-3" />对比</label>
-              <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors font-medium">导入校对稿</button>
-              <button v-if="app.editorMode === 2" @click="handleConfirm" class="px-2.5 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors font-medium">确认</button>
+              <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
+              <button class="tbar-toggle" :aria-pressed="app.showCompare" @click="app.showCompare = !app.showCompare"><Columns2 :size="15" />对比</button>
+              <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"><FileInput :size="15" />导入校对稿</button>
+              <button v-if="app.editorMode === 2" @click="handleConfirm" class="btn btn-sm btn-brand gap-1.5"><CheckCircle2 :size="15" />确认</button>
             </template>
           </div>
           <!-- Search / replace bar. The left group is width-matched to the
                toolbar so the divider sits directly under the toolbar's
                "搜索"-right divider. -->
-          <div v-if="app.searchOpen" ref="searchBarRow" class="flex items-center gap-2 mt-1.5 text-sm">
+          <div v-if="app.searchOpen" ref="searchBarRow" class="flex items-center gap-2 mt-2">
             <div class="flex items-center gap-2" :style="{ width: searchLeftWidth + 'px' }">
-              <input v-model="app.searchQuery" type="text" placeholder="查找(原文/译文/说话人)" class="flex-1 min-w-0 px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-xs" @keydown.enter="searchNext" />
-              <span class="text-xs text-[var(--color-text-secondary)]">{{ searchCount }}</span>
-              <button @click="searchPrev" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">上一个</button>
-              <button @click="searchNext" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">下一个</button>
+              <input v-model="app.searchQuery" type="text" placeholder="查找(原文/译文/说话人)" class="app-input flex-1 min-w-0" @keydown.enter="searchNext" />
+              <span class="text-xs text-[var(--color-text-secondary)] tabular-nums flex-shrink-0">{{ searchCount }}</span>
+              <button @click="searchPrev" class="btn btn-xs btn-ghost">上一个</button>
+              <button @click="searchNext" class="btn btn-xs btn-ghost">下一个</button>
             </div>
-            <div class="w-px h-4 bg-[var(--color-border)]" />
-            <input v-model="app.searchReplace" type="text" placeholder="替换为(仅译文)" class="px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-xs w-56" />
-            <button @click="handleReplaceAll" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">全部替换</button>
+            <div class="w-px h-5 bg-[var(--color-border)]" />
+            <input v-model="app.searchReplace" type="text" placeholder="替换为(仅译文)" class="app-input w-56" />
+            <button @click="handleReplaceAll" class="btn btn-sm btn-ghost border border-[var(--color-border)]">全部替换</button>
           </div>
         </div>
         <main class="flex-1 min-h-0"><EditorWorkspace ref="workspace"/></main>
@@ -538,7 +539,7 @@ onUnmounted(() => {
     <Transition name="confirm-fade">
       <div v-if="showCloseConfirm" class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]">
         <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" @click="handleCloseCancel" />
-        <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+        <div class="app-card app-glass relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
           <div class="flex items-start gap-3">
             <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-warning/15 text-warning"><AlertTriangle :size="18" /></div>
             <div class="min-w-0 flex-1">
@@ -558,7 +559,7 @@ onUnmounted(() => {
     <Transition name="confirm-fade">
       <div v-if="showAgreementHint" class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]">
         <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" />
-        <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+        <div class="app-card app-glass relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
           <div class="flex items-start gap-3">
             <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-info/15 text-info"><Info :size="18" /></div>
             <div class="min-w-0 flex-1">
@@ -580,6 +581,29 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* Toolbar toggle chip — on/off view options (闪回/术语/同步/搜索/对比) */
+.tbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border-radius: var(--radius-control);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.tbar-toggle:hover {
+  background: color-mix(in oklch, var(--color-base-content) 8%, transparent);
+  color: var(--color-text);
+}
+.tbar-toggle[aria-pressed="true"] {
+  background: color-mix(in oklch, var(--accent, var(--color-primary)) 14%, transparent);
+  color: var(--accent, var(--color-primary));
+}
+
 .confirm-fade-enter-active,
 .confirm-fade-leave-active {
   transition: opacity var(--dur) var(--ease-out);

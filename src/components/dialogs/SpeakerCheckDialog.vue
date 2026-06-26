@@ -68,7 +68,7 @@ onMounted(async () => {
       <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" @click="emit('close')" />
 
       <!-- panel -->
-      <div class="app-card relative w-full max-w-lg p-5" style="box-shadow: var(--shadow-lg)">
+      <div class="app-card app-glass relative w-full max-w-lg p-5" style="box-shadow: var(--shadow-lg)">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Users :size="15" /></span>
           <div class="section-title">批量修改说话人</div>

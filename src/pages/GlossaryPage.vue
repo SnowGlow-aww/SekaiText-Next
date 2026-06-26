@@ -9,6 +9,7 @@ import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { api } from '../api/client'
 import TeamProposalsPanel from '../components/glossary/TeamProposalsPanel.vue'
+import SkSelect from '../components/ui/SkSelect.vue'
 import type { GlossaryEntry } from '../types/glossary'
 
 const router = useRouter()
@@ -397,15 +398,15 @@ onMounted(async () => {
               class="app-input pl-9"
             />
           </div>
-          <select
-            v-model="category"
-            class="app-input w-auto cursor-pointer"
-          >
-            <option value="">全部分类</option>
-            <option v-for="c in glossary.categories" :key="c.category" :value="c.category">
-              {{ c.category }} ({{ c.count }})
-            </option>
-          </select>
+          <SkSelect
+            class="w-auto"
+            :model-value="category"
+            @update:model-value="category = $event as string"
+            :options="[
+              { value: '', label: '全部分类' },
+              ...glossary.categories.map(c => ({ value: c.category, label: `${c.category} (${c.count})` })),
+            ]"
+          />
           <button
             v-if="!team.readonly"
             @click="showAdd = !showAdd"
@@ -595,22 +596,20 @@ onMounted(async () => {
         <!-- lookup view -->
         <template v-else>
         <div class="flex items-center gap-3">
-          <select
-            v-model="speaker"
-            class="app-input flex-1 cursor-pointer"
-          >
-            <option value="">说话人 A</option>
-            <option v-for="s in glossary.speakers" :key="s" :value="s">{{ s }}</option>
-          </select>
+          <SkSelect
+            class="flex-1"
+            :model-value="speaker"
+            @update:model-value="speaker = $event as string"
+            :options="[{ value: '', label: '说话人 A' }, ...glossary.speakers.map(s => ({ value: s, label: s }))]"
+          />
           <span class="text-[var(--color-text-secondary)] text-sm">称呼</span>
-          <select
-            v-model="target"
+          <SkSelect
+            class="flex-1"
             :disabled="!speaker"
-            class="app-input flex-1 cursor-pointer disabled:opacity-50"
-          >
-            <option value="">对象 B</option>
-            <option v-for="t in glossary.targets" :key="t" :value="t">{{ t }}</option>
-          </select>
+            :model-value="target"
+            @update:model-value="target = $event as string"
+            :options="[{ value: '', label: '对象 B' }, ...glossary.targets.map(t => ({ value: t, label: t }))]"
+          />
         </div>
 
         <div v-if="result" class="app-card p-5">

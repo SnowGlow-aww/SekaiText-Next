@@ -10,6 +10,7 @@ import { SHORTCUT_ACTIONS, resolveCombo, formatCombo, comboFromEvent } from '../
 import { usePluginRegistry } from '../plugin-host/registry'
 import { usePluginsStore } from '../stores/plugins'
 import ThemePicker from '../components/ui/ThemePicker.vue'
+import SkSelect from '../components/ui/SkSelect.vue'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -191,10 +192,12 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
               <div class="text-sm font-medium">索引排序</div>
               <div class="app-help mt-0.5">故事索引下拉列表的显示顺序</div>
             </div>
-            <select v-model="settings.settings.indexOrder" class="app-input cursor-pointer w-44 shrink-0">
-              <option value="desc">降序（最新的在底部）</option>
-              <option value="asc">升序（最新的在顶部）</option>
-            </select>
+            <SkSelect
+              class="w-44 shrink-0"
+              :model-value="settings.settings.indexOrder"
+              @update:model-value="settings.settings.indexOrder = $event as 'asc' | 'desc'"
+              :options="[{ value: 'desc', label: '降序（最新的在底部）' }, { value: 'asc', label: '升序（最新的在顶部）' }]"
+            />
           </div>
 
           <label class="flex items-center justify-between gap-3 cursor-pointer">

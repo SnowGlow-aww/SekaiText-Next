@@ -4,6 +4,7 @@ import { Monitor, Sun, Moon, Check, Sparkles } from 'lucide-vue-next'
 import { useAppStore, FONT_OPTIONS } from '../../stores/app'
 import { ACCENT_GROUPS, ACCENT_NAME_BY_COLOR } from '../../data/characterColors'
 import type { ThemeMode } from '../../stores/app'
+import SkSelect from './SkSelect.vue'
 
 const app = useAppStore()
 
@@ -55,9 +56,12 @@ function swatchStyle(color: string): Record<string, string> {
     <!-- Font -->
     <div>
       <div class="app-label mb-2">字体</div>
-      <select v-model="app.fontFamily" class="app-input cursor-pointer max-w-xs">
-        <option v-for="f in FONT_OPTIONS" :key="f.value" :value="f.value">{{ f.label }}</option>
-      </select>
+      <SkSelect
+        class="max-w-xs"
+        :model-value="app.fontFamily"
+        @update:model-value="app.fontFamily = $event as string"
+        :options="FONT_OPTIONS.map(f => ({ value: f.value, label: f.label }))"
+      />
     </div>
 
     <!-- Accent / oshi colour -->

@@ -2,6 +2,7 @@
 import { Settings, Palette, X, Check } from 'lucide-vue-next'
 import { useSettingsStore } from '../../stores/settings'
 import ThemePicker from '../ui/ThemePicker.vue'
+import SkSelect from '../ui/SkSelect.vue'
 
 const settings = useSettingsStore()
 
@@ -21,7 +22,7 @@ const emit = defineEmits<{
 
       <!-- panel -->
       <div
-        class="app-card relative w-full max-w-md p-5 max-h-[85vh] overflow-y-auto"
+        class="app-card app-glass relative w-full max-w-md p-5 max-h-[85vh] overflow-y-auto"
         style="box-shadow: var(--shadow-lg)"
       >
         <!-- header -->
@@ -46,13 +47,18 @@ const emit = defineEmits<{
 
           <div class="flex items-center justify-between gap-4">
             <span class="text-sm">下载源</span>
-            <select v-model="settings.settings.downloadSource" class="app-input w-44 cursor-pointer">
-              <option value="best">sekai.best</option>
-              <option value="unipjsk">unipjsk.com</option>
-              <option value="haruki">haruki (CN)</option>
-              <option value="moesekai-jp">Moesekai (JP)</option>
-              <option value="moesekai-cn">Moesekai (CN)</option>
-            </select>
+            <SkSelect
+              class="w-44"
+              :model-value="settings.settings.downloadSource"
+              @update:model-value="settings.settings.downloadSource = $event as string"
+              :options="[
+                { value: 'best', label: 'sekai.best' },
+                { value: 'unipjsk', label: 'unipjsk.com' },
+                { value: 'haruki', label: 'haruki (CN)' },
+                { value: 'moesekai-jp', label: 'Moesekai (JP)' },
+                { value: 'moesekai-cn', label: 'Moesekai (CN)' },
+              ]"
+            />
           </div>
 
           <div class="flex items-center justify-between gap-4">

@@ -201,6 +201,19 @@ body {
     border-color: var(--color-border-strong);
   }
 
+  /* Frosted glass — for floating panels (modals/dialogs). Composes on top of
+     .app-card and only swaps the opaque fill for a translucent, blurred one.
+     Defined after .app-card so its background wins within this layer. */
+  .app-glass {
+    background: color-mix(in oklch, var(--color-surface) 82%, transparent);
+    backdrop-filter: blur(18px) saturate(1.4);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    border-color: color-mix(in oklch, var(--color-base-content) 12%, transparent);
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .app-glass { background: var(--color-surface); }
+  }
+
   .section-eyebrow {
     font-size: 0.7rem;
     font-weight: 600;
