@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import { RefreshCw, Download, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
 import { useSettingsStore } from '../../stores/settings'
@@ -183,28 +184,28 @@ async function handleLoad() {
 </script>
 
 <template>
-  <div class="flex items-center gap-3 flex-wrap">
-    <select v-model="story.selectedType" class="select select-bordered select-sm">
+  <div class="flex items-center gap-2 flex-wrap">
+    <select v-model="story.selectedType" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
       <option value="" disabled>故事类型</option>
       <option v-for="t in story.storyTypes" :key="t" :value="t">{{ unitName(t) }}</option>
     </select>
 
-    <select v-if="story.sorts?.length" v-model="story.selectedSort" class="select select-bordered select-sm">
+    <select v-if="story.sorts?.length" v-model="story.selectedSort" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
       <option value="" disabled>排序</option>
       <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
     </select>
 
-    <select v-model="story.selectedIndex" class="select select-bordered select-sm">
+    <select v-model="story.selectedIndex" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
       <option value="" disabled>索引</option>
       <option v-for="i in displayIndices" :key="i.value" :value="i.value" v-text="i.label" />
     </select>
 
-    <select v-model="story.selectedChapter" class="select select-bordered select-sm">
+    <select v-model="story.selectedChapter" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
       <option :value="-1" disabled>章节</option>
       <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
     </select>
 
-    <select v-model="story.selectedSource" class="select select-bordered select-sm">
+    <select v-model="story.selectedSource" class="select select-sm rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-sm cursor-pointer">
       <option value="haruki">HarukiBot NEO</option>
       <option value="moesekai-jp">Moesekai (JP)</option>
       <option value="moesekai-cn">Moesekai (CN)</option>
@@ -212,18 +213,21 @@ async function handleLoad() {
 
     <button
       @click="handleRefresh"
-      class="btn btn-primary btn-sm"
+      class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
       :disabled="refreshing"
     >
-      {{ refreshing ? '拉取中...' : '拉取' }}
+      <RefreshCw :size="15" :class="{ 'animate-spin': refreshing }" />
+      {{ refreshing ? '拉取中…' : '拉取' }}
     </button>
 
     <button
       @click="handleLoad"
-      class="btn btn-secondary btn-sm"
+      class="btn btn-sm btn-brand gap-1.5"
       :disabled="story.loading || !story.selectedType || story.selectedChapter < 0"
     >
-      {{ story.loading ? '载入中...' : '载入' }}
+      <span v-if="story.loading" class="loading loading-spinner loading-sm" />
+      <Download v-else :size="15" />
+      {{ story.loading ? '载入中…' : '载入' }}
     </button>
 
     <input
@@ -235,9 +239,10 @@ async function handleLoad() {
     />
     <button
       @click="fileInput?.click()"
-      class="btn btn-outline btn-sm"
+      class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
       :disabled="story.loading"
     >
+      <FolderOpen :size="15" />
       本地
     </button>
   </div>

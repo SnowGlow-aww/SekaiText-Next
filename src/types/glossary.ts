@@ -21,6 +21,9 @@ export interface TeamUser {
   displayName: string
   role: 'member' | 'reviewer' | 'admin' | 'superadmin'
   status: string
+  // User-chosen avatar background colour ('#rrggbb'); empty/undefined → a
+  // deterministic colour derived from the user id (see AccountPage).
+  avatarColor?: string
 }
 
 export interface TeamStatus {

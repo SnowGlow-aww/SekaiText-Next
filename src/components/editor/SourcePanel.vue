@@ -6,6 +6,7 @@ import { api } from '../../api/client'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
 import { annotateFlashbacks } from '../../utils/flashback'
 import VoicePlayButton from './VoicePlayButton.vue'
+import { ScrollText, FileText } from 'lucide-vue-next'
 
 const iconErrors = ref<Set<number>>(new Set())
 
@@ -29,12 +30,16 @@ function onEnter(e: MouseEvent, talk: typeof talksWithFlashback.value[0]) {
 
 <template>
   <div class="flex items-center justify-between mb-2 px-1">
-    <span class="font-semibold text-sm text-[var(--color-text-secondary)]">原文</span>
-    <span v-if="story.scenarioId" class="text-xs text-[var(--color-text-secondary)]">{{ story.scenarioId }}</span>
+    <div class="flex items-center gap-1.5">
+      <ScrollText :size="14" class="text-[var(--color-text-tertiary)]" />
+      <span class="font-semibold text-sm text-[var(--color-text-secondary)]">原文</span>
+    </div>
+    <span v-if="story.scenarioId" class="app-chip bg-[color-mix(in_oklch,var(--color-base-content)_8%,transparent)] text-[var(--color-text-secondary)]">{{ story.scenarioId }}</span>
   </div>
 
-  <div v-if="story.sourceTalks.length === 0" class="flex-1 p-8 text-center text-[var(--color-text-secondary)] text-sm">
-    选择故事并载入以查看原文
+  <div v-if="story.sourceTalks.length === 0" class="flex-1 flex flex-col items-center justify-center gap-2 py-12 text-center text-[var(--color-text-tertiary)]">
+    <FileText :size="28" :stroke-width="1.5" />
+    <span class="text-sm">选择故事并载入以查看原文</span>
   </div>
 
   <div v-else class="divide-y divide-[var(--color-border)]">
@@ -59,8 +64,7 @@ function onEnter(e: MouseEvent, talk: typeof talksWithFlashback.value[0]) {
           />
           <div
             v-else
-            class="w-full h-full flex items-center justify-center text-white text-xs font-medium"
-            style="background-color: #9ca3af"
+            class="w-full h-full flex items-center justify-center bg-neutral text-neutral-content text-xs font-medium"
           >
             {{ talk.speaker.charAt(0) }}
           </div>
@@ -89,9 +93,9 @@ function onEnter(e: MouseEvent, talk: typeof talksWithFlashback.value[0]) {
     <div
       v-if="visible && clueGroups.length > 0"
       :style="tooltipStyle"
-      class="flashback-tooltip rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-xs pointer-events-none"
+      class="flashback-tooltip rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)] p-3 text-xs pointer-events-none"
     >
-      <div class="font-semibold text-[var(--color-primary)] mb-1.5">闪回来源</div>
+      <div class="font-semibold text-primary mb-1.5">闪回来源</div>
       <template v-for="(group, gi) in clueGroups" :key="gi">
         <div
           v-if="gi > 0"

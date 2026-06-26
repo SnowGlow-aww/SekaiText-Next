@@ -6,6 +6,7 @@
   </router-view>
   <Toast />
   <DownloadFloat />
+  <ConfirmHost />
   <RecoveryDialog
     v-if="showRecovery"
     @restore="showRecovery = false"
@@ -16,13 +17,18 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useSettingsStore } from './stores/settings'
+import { useAppStore } from './stores/app'
 import { useDebugLog } from './composables/useDebugLog'
 import { api, BASE_URL } from './api/client'
 import Toast from './components/Toast.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
+import ConfirmHost from './components/ui/ConfirmHost.vue'
 import RecoveryDialog from './components/RecoveryDialog.vue'
 
 const settings = useSettingsStore()
+// Instantiate the app store at boot so theme + accent are applied immediately,
+// regardless of which route mounts first (its watchers run on creation).
+useAppStore()
 const { enabled, initConsoleCapture } = useDebugLog()
 const showRecovery = ref(false)
 

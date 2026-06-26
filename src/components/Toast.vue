@@ -13,20 +13,24 @@ const iconMap: Record<string, typeof CheckCircle> = {
 </script>
 
 <template>
-  <div class="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+  <div class="fixed top-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none">
     <div
       v-for="t in toasts"
       :key="t.id"
-      class="pointer-events-auto px-4 py-2.5 rounded-lg shadow-lg border text-sm transition-all duration-300 animate-in flex items-center gap-2"
-      :class="{
-        'bg-green-50 border-green-200 text-green-800 dark:bg-green-900 dark:border-green-700 dark:text-green-200': t.type === 'success',
-        'bg-red-50 border-red-200 text-red-800 dark:bg-red-900 dark:border-red-700 dark:text-red-200': t.type === 'error',
-        'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-900 dark:border-blue-700 dark:text-blue-200': t.type === 'info',
-        'bg-yellow-50 border-yellow-200 text-yellow-800 dark:bg-yellow-900 dark:border-yellow-700 dark:text-yellow-200': t.type === 'warn',
-      }"
+      class="app-card pointer-events-auto flex items-center gap-2.5 pl-2.5 pr-4 py-2 shadow-[var(--shadow-lg)] text-sm text-[var(--color-text)] transition-all duration-300 animate-in"
     >
-      <component :is="iconMap[t.type]" :size="16" />
-      {{ t.message }}
+      <span
+        class="grid place-items-center w-7 h-7 rounded-lg shrink-0"
+        :class="{
+          'bg-success/12 text-success': t.type === 'success',
+          'bg-error/15 text-error': t.type === 'error',
+          'bg-info/12 text-info': t.type === 'info',
+          'bg-warning/15 text-warning': t.type === 'warn',
+        }"
+      >
+        <component :is="iconMap[t.type]" :size="15" />
+      </span>
+      <span class="leading-snug">{{ t.message }}</span>
     </div>
   </div>
 </template>

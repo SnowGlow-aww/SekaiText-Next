@@ -7,13 +7,14 @@ import { EditorModeLabel } from '../types/translation'
 import type { SaveMetadata } from '../types/api'
 import { useSettingsStore } from '../stores/settings'
 import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
 import { useFileDialog } from '../composables/useFileDialog'
 import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import * as LucideIcons from 'lucide-vue-next'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users } from 'lucide-vue-next'
+import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -27,6 +28,7 @@ const editor = useEditorStore()
 const story = useStoryStore()
 const settings = useSettingsStore()
 const toast = useToast()
+const { confirm } = useConfirm()
 const fileDialog = useFileDialog()
 const autoSave = useAutoSave()
 const undo = useUndo()
@@ -311,16 +313,18 @@ async function handleSave() {
   }
 }
 
-function handleClear() {
-  if (editor.hasUnsavedChanges) { if (!confirm('有未保存的更改，确定清空吗？')) return }
+async function handleClear() {
+  if (editor.hasUnsavedChanges) {
+    if (!(await confirm({ title: '清空内容', message: '有未保存的更改，确定清空吗？', tone: 'danger', confirmText: '清空' }))) return
+  }
   editor.clearAll()
   undo.clear()
   toast.show('已清空', 'info')
 }
 
-function handleConfirm() {
+async function handleConfirm() {
   if (editor.talks.length === 0) return
-  if (!confirm('确认合意完成？所有差异将以当前译文为准。')) return
+  if (!(await confirm({ title: '确认合意完成', message: '确认合意完成？所有差异将以当前译文为准。', tone: 'primary', confirmText: '确认' }))) return
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   // New model: confirming accepts every current text as the agreed baseline,
   // clearing all diffs. No row removal — row count is fixed.
@@ -531,30 +535,64 @@ onUnmounted(() => {
     </div>
     <SpeakerCountDialog v-if="showSpeakerCount" @close="showSpeakerCount = false"/>
     <SpeakerCheckDialog v-if="showSpeakerCheck" @close="showSpeakerCheck = false" @save="handleSpeakerBatchSave" />
-    <div v-if="showCloseConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-xl w-96 max-w-[90vw] p-6">
-        <h3 class="font-semibold text-sm text-[var(--color-text)] mb-2">有未保存的更改</h3>
-        <p class="text-xs text-[var(--color-text-secondary)] mb-5">关闭前是否保存当前的工作内容？如果不保存，更改将丢失。</p>
-        <div class="flex justify-end gap-2">
-          <button @click="handleCloseCancel" class="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors">取消</button>
-          <button @click="handleCloseDiscard" class="px-4 py-2 text-sm rounded-lg border border-red-400 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">不保存</button>
-          <button @click="handleCloseSave" class="px-4 py-2 text-sm rounded-lg bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity">保存并退出</button>
+    <Transition name="confirm-fade">
+      <div v-if="showCloseConfirm" class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]">
+        <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" @click="handleCloseCancel" />
+        <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+          <div class="flex items-start gap-3">
+            <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-warning/15 text-warning"><AlertTriangle :size="18" /></div>
+            <div class="min-w-0 flex-1">
+              <h3 class="section-title mb-1">有未保存的更改</h3>
+              <p class="text-sm text-[var(--color-text-secondary)] leading-relaxed">关闭前是否保存当前的工作内容？如果不保存，更改将丢失。</p>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 mt-5">
+            <button @click="handleCloseCancel" class="btn btn-sm btn-ghost border border-[var(--color-border)]">取消</button>
+            <button @click="handleCloseDiscard" class="btn btn-sm btn-ghost text-error hover:bg-error/10">不保存</button>
+            <button @click="handleCloseSave" class="btn btn-sm btn-brand">保存并退出</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
 
-    <div v-if="showAgreementHint" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-2xl shadow-black/60 w-96 max-w-[90vw] p-6">
-        <h3 class="font-semibold text-[var(--color-text)] text-center mb-3" style="font-size: 25px">注意</h3>
-        <p class="text-[var(--color-text)] text-center mb-6" style="font-size: 15px">请先导入翻译稿再导入校对稿</p>
-        <div class="flex items-center justify-between gap-3">
-          <label class="flex items-center gap-2 cursor-pointer select-none" style="color: #FFFFFF80; font-size: 12px">
-            <input v-model="agreementHintDontShow" type="checkbox" class="accent-[var(--color-primary)] w-3.5 h-3.5 cursor-pointer opacity-80" />
-            不再弹出此窗口（可随时在设置里调整）
-          </label>
-          <button @click="confirmAgreementHint" class="px-5 py-1.5 rounded-lg text-sm bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity flex-shrink-0">确认</button>
+    <Transition name="confirm-fade">
+      <div v-if="showAgreementHint" class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]">
+        <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" />
+        <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+          <div class="flex items-start gap-3">
+            <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-info/15 text-info"><Info :size="18" /></div>
+            <div class="min-w-0 flex-1">
+              <h3 class="section-title mb-1">注意</h3>
+              <p class="text-sm text-[var(--color-text)] leading-relaxed">请先导入翻译稿再导入校对稿</p>
+            </div>
+          </div>
+          <div class="flex items-center justify-between gap-3 mt-5">
+            <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-[var(--color-text-secondary)]">
+              <input v-model="agreementHintDontShow" type="checkbox" class="accent-[var(--color-primary)] w-3.5 h-3.5 cursor-pointer" />
+              不再弹出此窗口（可随时在设置里调整）
+            </label>
+            <button @click="confirmAgreementHint" class="btn btn-sm btn-brand flex-shrink-0">确认</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
   </div>
 </template>
+
+<style scoped>
+.confirm-fade-enter-active,
+.confirm-fade-leave-active {
+  transition: opacity var(--dur) var(--ease-out);
+}
+.confirm-fade-enter-from,
+.confirm-fade-leave-to {
+  opacity: 0;
+}
+.confirm-fade-enter-active .app-card,
+.confirm-fade-leave-active .app-card {
+  transition: transform var(--dur) var(--ease-out);
+}
+.confirm-fade-enter-from .app-card {
+  transform: translateY(8px) scale(0.97);
+}
+</style>

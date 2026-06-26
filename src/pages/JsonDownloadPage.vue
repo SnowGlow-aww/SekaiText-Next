@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, Download } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
 import { useSettingsStore } from '../stores/settings'
 import { api } from '../api/client'
@@ -95,80 +95,79 @@ async function handleDownload() {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)]">
-    <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-3 flex items-center justify-between">
-      <div class="flex items-center gap-4">
-        <button
-          @click="router.push('/')"
-          class="flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
-        >
-          <ArrowLeft :size="18" />
-          返回编辑器
-        </button>
-        <span class="text-sm font-medium">JSON 下载</span>
+  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
+      <div class="max-w-3xl mx-auto px-6 h-14 flex items-center gap-3">
+        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
+        <h1 class="text-base font-bold tracking-tight">JSON 下载</h1>
       </div>
     </header>
 
-    <main class="max-w-2xl mx-auto p-6">
-      <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6 space-y-5">
-        <h2 class="text-base font-semibold">选择故事</h2>
+    <main class="max-w-3xl mx-auto px-6 py-8 space-y-6">
+      <!-- 选择故事 -->
+      <section class="app-card p-5">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><BookOpen :size="15" /></span>
+          <div class="section-title">选择故事</div>
+        </div>
 
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs text-[var(--color-text-secondary)] mb-1">故事类型</label>
-            <select v-model="story.selectedType" class="select select-bordered select-sm w-full">
+            <label class="app-label">故事类型</label>
+            <select v-model="story.selectedType" class="app-input mt-1.5 cursor-pointer">
               <option value="" disabled>选择类型</option>
               <option v-for="t in story.storyTypes" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
 
           <div v-if="story.sorts.length">
-            <label class="block text-xs text-[var(--color-text-secondary)] mb-1">排序</label>
-            <select v-model="story.selectedSort" class="select select-bordered select-sm w-full">
+            <label class="app-label">排序</label>
+            <select v-model="story.selectedSort" class="app-input mt-1.5 cursor-pointer">
               <option value="" disabled>选择排序</option>
               <option v-for="s in story.sorts" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
           </div>
 
           <div>
-            <label class="block text-xs text-[var(--color-text-secondary)] mb-1">索引</label>
-            <select v-model="story.selectedIndex" class="select select-bordered select-sm w-full">
+            <label class="app-label">索引</label>
+            <select v-model="story.selectedIndex" class="app-input mt-1.5 cursor-pointer">
               <option value="" disabled>选择索引</option>
               <option v-for="i in displayIndices" :key="i.value" :value="i.value">{{ i.label }}</option>
             </select>
           </div>
 
           <div>
-            <label class="block text-xs text-[var(--color-text-secondary)] mb-1">章节</label>
-            <select v-model="story.selectedChapter" class="select select-bordered select-sm w-full">
+            <label class="app-label">章节</label>
+            <select v-model="story.selectedChapter" class="app-input mt-1.5 cursor-pointer">
               <option :value="-1" disabled>选择章节</option>
               <option v-for="c in story.chapters" :key="c.number" :value="c.number">{{ c.label }}</option>
             </select>
           </div>
         </div>
+      </section>
 
-        <div class="border-t border-[var(--color-border)]" />
-
-        <h2 class="text-base font-semibold">下载选项</h2>
+      <!-- 下载选项 -->
+      <section class="app-card p-5">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-success/12 text-success"><Download :size="15" /></span>
+          <div class="section-title">下载选项</div>
+        </div>
 
         <div>
-          <label class="block text-xs text-[var(--color-text-secondary)] mb-1">输出目录</label>
-          <div class="flex gap-2">
+          <label class="app-label">输出目录</label>
+          <div class="flex gap-2 mt-1.5">
             <input
               v-model="outputDir"
               type="text"
               placeholder="输入保存目录路径..."
-              class="input input-bordered input-sm flex-1"
+              class="app-input flex-1"
             />
-            <button
-              @click="handleDownload"
-              class="btn btn-primary btn-sm"
-            >
-              下载
+            <button @click="handleDownload" class="btn btn-sm btn-brand whitespace-nowrap">
+              <Download :size="15" /> 下载
             </button>
           </div>
         </div>
-      </div>
+      </section>
     </main>
   </div>
 </template>

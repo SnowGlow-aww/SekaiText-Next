@@ -12,6 +12,7 @@ import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
 import { useGlossaryMatcher } from '../../composables/useGlossaryMatcher'
 import { useGlossaryTooltip } from '../../composables/useGlossaryTooltip'
 import { annotateFlashbacks } from '../../utils/flashback'
+import { FileText } from 'lucide-vue-next'
 import type { DstTalk } from '../../types/translation'
 
 const iconErrors = ref<Set<number>>(new Set())
@@ -422,14 +423,15 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
             type="text"
             :placeholder="story.chapterTitle || story.saveTitle || '标题...'"
             title="仅替换文件名中的标题部分（【模式】前缀与路径自动保留）"
-            class="ml-2 flex-1 text-sm px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)]"
+            class="app-input ml-2 flex-1 py-1"
           />
         </div>
       </div>
 
       <template v-if="story.sourceTalks.length === 0">
-        <div class="p-8 text-center text-[var(--color-text-secondary)] text-sm">
-          选择故事并载入以查看原文
+        <div class="flex flex-col items-center justify-center gap-3 py-16 text-center text-[var(--color-text-tertiary)]">
+          <FileText :size="32" class="opacity-60" />
+          <span class="text-sm">选择故事并载入以查看原文</span>
         </div>
       </template>
 
@@ -459,8 +461,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                     />
                     <div
                       v-else
-                      class="w-full h-full flex items-center justify-center text-white text-xs font-medium select-none"
-                      style="background-color: #9ca3af"
+                      class="w-full h-full flex items-center justify-center bg-neutral text-neutral-content text-xs font-medium select-none"
                     >
                       {{ srcTalk(group.items[0].talk)?.speaker?.charAt(0) || '' }}
                     </div>
@@ -535,7 +536,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                           @keydown.enter.prevent="focusNext"
                           v-html="renderHighlight(item.talk)"
                         ></div>
-                        <div v-if="item.talk.message" class="text-xs text-red-400 mt-0.5">
+                        <div v-if="item.talk.message" class="text-xs text-error mt-0.5">
                           {{ item.talk.message }}
                         </div>
                       </div>
@@ -550,7 +551,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                         >+</button>
                         <button
                           v-if="!item.talk.start"
-                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:bg-red-50 dark:hover:bg-red-900/30"
+                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:bg-error/10 hover:text-error"
                           title="删除行"
                           @click="handleRemoveLine(item.globalIdx)"
                         >−</button>

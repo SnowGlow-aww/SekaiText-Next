@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { Play, Square } from 'lucide-vue-next'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 
@@ -64,10 +65,12 @@ async function play() {
   <button
     @click="play"
     :disabled="loading"
-    class="w-8 h-8 rounded-full border border-[var(--color-border)] flex items-center justify-center hover:text-[var(--color-primary)] transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-    :class="{ 'bg-[var(--color-primary)] text-white border-[var(--color-primary)]': playing }"
+    class="grid place-items-center w-8 h-8 rounded-full border border-[var(--color-border)] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+    :class="{ 'bg-[var(--color-primary)] text-[var(--color-primary-content)] border-[var(--color-primary)] hover:text-[var(--color-primary-content)]': playing }"
     :title="loading ? '加载中...' : playing ? '停止' : '播放语音'"
   >
-    {{ loading ? '…' : playing ? '⏹' : '▶' }}
+    <span v-if="loading" class="loading loading-spinner loading-xs" />
+    <Square v-else-if="playing" :size="13" fill="currentColor" />
+    <Play v-else :size="13" fill="currentColor" />
   </button>
 </template>

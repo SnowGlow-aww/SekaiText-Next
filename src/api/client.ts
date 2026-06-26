@@ -462,9 +462,10 @@ export const api = {
     request<{ status: string }>('/team/account/password', {
       method: 'POST', body: JSON.stringify({ oldPassword, newPassword }),
     }),
-  teamUpdateProfile: (displayName: string) =>
+  teamUpdateProfile: (displayName: string, avatarColor?: string) =>
     request<import('../types/glossary').TeamUser>('/team/account/profile', {
-      method: 'POST', body: JSON.stringify({ displayName }),
+      method: 'POST',
+      body: JSON.stringify(avatarColor === undefined ? { displayName } : { displayName, avatarColor }),
     }),
   teamAccountUsers: () =>
     request<import('../types/glossary').TeamUser[]>('/team/account/users'),

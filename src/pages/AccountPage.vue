@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, UserPlus, Users, IdCard, Crown, ShieldCheck, Trash2, KeyRound, Ban, CircleCheck, Palette } from 'lucide-vue-next'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
 import { api } from '../api/client'
 import TeamModePanel from '../components/settings/TeamModePanel.vue'
+import { ACCENT_GROUPS } from '../data/characterColors'
 import type { TeamUser } from '../types/glossary'
 
 const router = useRouter()
 const team = useTeamStore()
 const { show } = useToast()
+const { confirm, prompt } = useConfirm()
 const ok = (m: string) => show(m, 'success')
 const err = (e: unknown) => show(e instanceof Error ? e.message : String(e), 'error')
 
@@ -44,6 +47,16 @@ async function loadUsers() {
   catch (e) { err(e) } finally { loadingUsers.value = false }
 }
 
+// Refresh with a guaranteed-visible spin: the fetch is usually too fast to see
+// the icon rotate, so hold the spinning state for a short minimum.
+const refreshing = ref(false)
+async function refreshUsers() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try { await loadUsers() }
+  finally { setTimeout(() => { refreshing.value = false }, 500) }
+}
+
 async function changeRole(u: TeamUser, role: string, el?: HTMLSelectElement) {
   if (role === u.role) return
   // Plain admins may only promote (never demote); surface it before the round-trip.
@@ -65,21 +78,45 @@ async function changeRole(u: TeamUser, role: string, el?: HTMLSelectElement) {
 }
 async function toggleStatus(u: TeamUser) {
   const next = u.status === 'active' ? 'disabled' : 'active'
-  if (!confirm(`确定${next === 'disabled' ? '禁用' : '启用'}「${u.displayName}」吗？`)) return
-  try { await api.teamSetUserStatus(u.id, next); u.status = next; ok(next === 'disabled' ? '已禁用' : '已启用') }
+  const disabling = next === 'disabled'
+  if (!(await confirm({
+    title: disabling ? '禁用账号' : '启用账号',
+    message: `确定${disabling ? '禁用' : '启用'}「${u.displayName}」吗？`,
+    confirmText: disabling ? '禁用' : '启用',
+    tone: disabling ? 'danger' : 'primary',
+  }))) return
+  try { await api.teamSetUserStatus(u.id, next); u.status = next; ok(disabling ? '已禁用' : '已启用') }
   catch (e) { err(e) }
 }
 async function resetPw(u: TeamUser) {
-  const np = prompt(`为「${u.displayName}」设置新密码（至少 6 位）：`)
-  if (!np) return
-  if (np.length < 6) { show('密码至少 6 位', 'warn'); return }
+  const np = await prompt({
+    title: '重置密码',
+    message: `为「${u.displayName}」设置新密码`,
+    placeholder: '至少 6 位',
+    minLength: 6,
+    confirmText: '重置',
+  })
+  if (np == null) return
   try { await api.teamResetUserPassword(u.id, np); ok('密码已重置') }
   catch (e) { err(e) }
 }
 async function deleteUser(u: TeamUser) {
-  if (!confirm(`确定永久删除账号「${u.displayName}」（@${u.username}）吗？此操作不可恢复。`)) return
-  const typed = prompt(`二次确认：请输入该用户的用户名「${u.username}」以删除：`)
-  if (typed !== u.username) { if (typed !== null) show('输入不匹配，已取消', 'warn'); return }
+  if (!(await confirm({
+    title: '永久删除账号',
+    message: `确定永久删除账号「${u.displayName}」（@${u.username}）吗？`,
+    detail: '此操作不可恢复。',
+    tone: 'danger',
+    confirmText: '继续',
+  }))) return
+  const typed = await prompt({
+    title: '二次确认',
+    message: `请输入该用户的用户名「${u.username}」以删除：`,
+    placeholder: u.username,
+    requireMatch: u.username,
+    tone: 'danger',
+    confirmText: '永久删除',
+  })
+  if (typed == null) return
   try { await api.teamDeleteUser(u.id); ok('账号已删除'); await loadUsers() }
   catch (e) { err(e) }
 }
@@ -102,6 +139,15 @@ async function createUser() {
 
 function roleLabel(r: string) {
   return r === 'superadmin' ? '超级管理员' : r === 'admin' ? '管理员' : r === 'reviewer' ? '校对' : '成员'
+}
+function roleBadgeClass(r: string) {
+  return r === 'superadmin'
+    ? 'bg-secondary/15 text-secondary'
+    : r === 'admin'
+      ? 'bg-primary/15 text-primary'
+      : r === 'reviewer'
+        ? 'bg-info/15 text-info'
+        : 'bg-[color-mix(in_oklch,var(--color-base-content)_10%,transparent)] text-[var(--color-text-secondary)]'
 }
 
 // Privilege ranking, mirrored from the server (model.RoleRank). Used to decide
@@ -150,6 +196,52 @@ function canManage(u: TeamUser): boolean {
   return roleRank(u.role) < roleRank('admin')
 }
 
+// Avatar colour: the user's own chosen colour if set, else a playful
+// deterministic colour from the PJSK palette (so every member still gets a
+// distinct avatar even before anyone customises it).
+const PALETTE = ACCENT_GROUPS.flatMap((g) => g.members.map((m) => m.color))
+function hashColor(seed: string) {
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return PALETTE[h % PALETTE.length]
+}
+function avatarBg(u: { id: string; avatarColor?: string }) {
+  return u.avatarColor || hashColor(u.id)
+}
+function avatarText(hex: string) {
+  const h = hex.replace('#', '')
+  const ch = (i: number) => parseInt(h.slice(i, i + 2), 16) / 255
+  const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))
+  const L = 0.2126 * lin(ch(0)) + 0.7152 * lin(ch(2)) + 0.0722 * lin(ch(4))
+  return L > 0.55 ? '#15131f' : '#ffffff'
+}
+function initial(name: string) {
+  return (name.trim()[0] ?? '?').toUpperCase()
+}
+
+// --- my avatar colour picker (persisted server-side via the profile update) ---
+const savingAvatar = ref(false)
+const meAvatarBg = computed(() => me.value?.avatarColor || hashColor(myId.value || team.user?.id || ''))
+function avatarSwatchStyle(c: string): Record<string, string> {
+  const s: Record<string, string> = { backgroundColor: c }
+  if (me.value?.avatarColor && me.value.avatarColor.toLowerCase() === c.toLowerCase()) {
+    s.boxShadow = `0 0 0 2px var(--color-surface), 0 0 0 4px ${c}`
+  }
+  return s
+}
+async function setAvatarColor(color: string) {
+  if (savingAvatar.value) return
+  savingAvatar.value = true
+  // Re-send the current display name (server requires it); only the colour changes.
+  const name = me.value?.displayName || team.user?.displayName || displayName.value.trim()
+  try {
+    await api.teamUpdateProfile(name, color)
+    team.patchUser({ avatarColor: color })
+    await loadUsers()
+    ok(color ? '头像颜色已更新' : '已恢复默认头像色')
+  } catch (e) { err(e) } finally { savingAvatar.value = false }
+}
+
 onMounted(async () => {
   await team.refreshStatus().catch(() => {})
   if (team.loggedIn) await loadUsers()
@@ -161,108 +253,190 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
 
 <template>
   <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
-    <header class="sticky top-0 z-10 bg-[var(--color-bg)]/90 backdrop-blur border-b border-[var(--color-border)]">
+    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-4xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.back()" class="p-1.5 rounded-lg hover:bg-[var(--color-surface)] text-[var(--color-text-secondary)]"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-semibold">账号中心</h1>
-        <span v-if="team.user" class="ml-auto text-xs text-[var(--color-text-secondary)]">
-          {{ team.user.displayName }} · {{ roleLabel(myDisplayRole) }}
-        </span>
+        <button @click="router.back()" class="icon-btn -ml-1"><ArrowLeft :size="18" /></button>
+        <h1 class="text-base font-bold tracking-tight">账号中心</h1>
+        <div v-if="team.user" class="ml-auto flex items-center gap-2">
+          <span class="text-sm text-[var(--color-text-secondary)]">{{ team.user.displayName }}</span>
+          <span class="app-chip" :class="roleBadgeClass(myDisplayRole)">
+            <Crown v-if="myDisplayRole === 'superadmin'" :size="12" />
+            <ShieldCheck v-else-if="myDisplayRole === 'admin'" :size="12" />
+            {{ roleLabel(myDisplayRole) }}
+          </span>
+        </div>
       </div>
     </header>
 
-    <main class="max-w-4xl mx-auto px-6 py-6 space-y-6">
-      <!-- 团队登录/登出/同步 -->
-      <section>
-        <h2 class="text-sm font-semibold mb-3">团队术语库</h2>
+    <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+      <!-- 团队术语库 -->
+      <section class="app-card p-5">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><Users :size="15" /></span>
+          <div class="section-title">团队术语库</div>
+        </div>
         <TeamModePanel />
       </section>
 
       <!-- 我的资料 -->
-      <section v-if="team.loggedIn" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-4">
-        <h2 class="text-sm font-semibold mb-3">我的资料</h2>
-        <div class="space-y-3">
+      <section v-if="team.loggedIn" class="app-card p-5">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><IdCard :size="15" /></span>
+          <div class="section-title">我的资料</div>
+        </div>
+        <div class="space-y-4">
           <div>
-            <label class="text-xs text-[var(--color-text-secondary)]">显示名（审核列表里别人看到的名字）</label>
-            <div class="flex gap-2 mt-1">
-              <input v-model="displayName" class="flex-1 px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
-              <button @click="saveName" :disabled="savingName" class="btn btn-outline btn-sm whitespace-nowrap">{{ savingName ? '保存中…' : '保存' }}</button>
+            <label class="app-label">头像颜色</label>
+            <div class="flex items-center gap-3 mt-1.5">
+              <span
+                class="grid place-items-center w-11 h-11 rounded-full text-base font-bold shrink-0 shadow-[var(--shadow-sm)]"
+                :style="{ backgroundColor: meAvatarBg, color: avatarText(meAvatarBg) }"
+              >{{ initial(me?.displayName || team.user?.displayName || '?') }}</span>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <button
+                  v-for="c in PALETTE"
+                  :key="c"
+                  :title="c"
+                  :disabled="savingAvatar"
+                  class="w-6 h-6 rounded-full transition-transform hover:scale-110 disabled:opacity-60"
+                  :style="avatarSwatchStyle(c)"
+                  @click="setAvatarColor(c)"
+                />
+                <label
+                  class="w-6 h-6 rounded-full border border-dashed border-[var(--color-border-strong)] grid place-items-center cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-text)]"
+                  title="自定义颜色"
+                >
+                  <Palette :size="12" />
+                  <input type="color" class="sr-only" @change="setAvatarColor(($event.target as HTMLInputElement).value)" />
+                </label>
+                <button
+                  :disabled="savingAvatar"
+                  class="h-6 px-2 rounded-full text-[0.68rem] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-strong)]"
+                  @click="setAvatarColor('')"
+                >自动</button>
+              </div>
             </div>
           </div>
-          <div class="border-t border-[var(--color-border)] pt-3">
-            <label class="text-xs text-[var(--color-text-secondary)]">修改密码</label>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-1">
-              <input v-model="oldPw" type="password" placeholder="当前密码" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
-              <input v-model="newPw" type="password" placeholder="新密码（≥6位）" class="px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
-              <button @click="savePw" :disabled="savingPw" class="btn btn-outline btn-sm">{{ savingPw ? '修改中…' : '修改密码' }}</button>
+          <div class="app-divider" />
+          <div>
+            <label class="app-label">显示名（审核列表里别人看到的名字）</label>
+            <div class="flex gap-2 mt-1.5">
+              <input v-model="displayName" class="app-input flex-1" />
+              <button @click="saveName" :disabled="savingName" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">{{ savingName ? '保存中…' : '保存' }}</button>
+            </div>
+          </div>
+          <div class="app-divider" />
+          <div>
+            <label class="app-label">修改密码</label>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-1.5">
+              <input v-model="oldPw" type="password" placeholder="当前密码" class="app-input" />
+              <input v-model="newPw" type="password" placeholder="新密码（≥6位）" class="app-input" />
+              <button @click="savePw" :disabled="savingPw" class="btn btn-sm btn-brand w-full">{{ savingPw ? '修改中…' : '修改密码' }}</button>
             </div>
           </div>
         </div>
       </section>
 
       <!-- 为成员创建账号（仅管理员） -->
-      <section v-if="iAmAdmin" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-4">
-        <h2 class="text-sm font-semibold mb-3">为成员创建账号</h2>
+      <section v-if="iAmAdmin" class="app-card p-5">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-success/12 text-success"><UserPlus :size="15" /></span>
+          <div class="section-title">为成员创建账号</div>
+        </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="text-xs text-[var(--color-text-secondary)]">用户名（登录用）</label>
-            <input v-model="newUser.username" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
+            <label class="app-label">用户名（登录用）</label>
+            <input v-model="newUser.username" class="app-input mt-1.5" />
           </div>
           <div>
-            <label class="text-xs text-[var(--color-text-secondary)]">初始密码（≥6位）</label>
-            <input v-model="newUser.password" type="text" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
+            <label class="app-label">初始密码（≥6位）</label>
+            <input v-model="newUser.password" type="text" class="app-input mt-1.5" />
           </div>
           <div>
-            <label class="text-xs text-[var(--color-text-secondary)]">显示名（留空=用户名）</label>
-            <input v-model="newUser.displayName" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm" />
+            <label class="app-label">显示名（留空=用户名）</label>
+            <input v-model="newUser.displayName" class="app-input mt-1.5" />
           </div>
           <div>
-            <label class="text-xs text-[var(--color-text-secondary)]">角色</label>
-            <select v-model="newUser.role" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm">
+            <label class="app-label">角色</label>
+            <select v-model="newUser.role" class="app-input mt-1.5 cursor-pointer">
               <option value="member">成员</option>
               <option value="reviewer">校对</option>
               <option v-if="iAmSuperadmin" value="admin">管理员</option>
             </select>
           </div>
         </div>
-        <button @click="createUser" :disabled="creating" class="btn btn-primary btn-sm mt-3">{{ creating ? '创建中…' : '创建账号' }}</button>
+        <button @click="createUser" :disabled="creating" class="btn btn-sm btn-brand mt-4">
+          <UserPlus :size="15" /> {{ creating ? '创建中…' : '创建账号' }}
+        </button>
       </section>
 
       <!-- 用户列表 -->
-      <section v-if="team.loggedIn" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-sm font-semibold">成员（{{ users.length }}）</h2>
-          <button @click="loadUsers" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text)]">刷新</button>
+      <section v-if="team.loggedIn" class="app-card p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <span class="grid place-items-center w-7 h-7 rounded-lg bg-accent/12 text-accent"><Users :size="15" /></span>
+            <div class="section-title">成员 <span class="text-[var(--color-text-tertiary)] font-normal">· {{ users.length }}</span></div>
+          </div>
+          <button @click="refreshUsers" class="icon-btn" :class="{ 'animate-spin': refreshing }" title="刷新"><RefreshCw :size="15" /></button>
         </div>
-        <div v-if="loadingUsers" class="text-sm text-[var(--color-text-secondary)] py-4 text-center">加载中…</div>
-        <ul v-else class="space-y-1.5">
-          <li v-for="u in users" :key="u.id" class="flex items-center gap-3 border border-[var(--color-border)] rounded px-3 py-2">
+
+        <div v-if="loadingUsers && !users.length" class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--color-text-secondary)]">
+          <span class="loading loading-spinner loading-sm" /> 加载中…
+        </div>
+
+        <ul v-else class="space-y-2">
+          <li
+            v-for="u in users"
+            :key="u.id"
+            class="flex items-center gap-3 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 transition-colors hover:border-[var(--color-border-strong)]"
+            :class="{ 'opacity-60': u.status === 'disabled' }"
+          >
+            <span
+              class="grid place-items-center w-9 h-9 rounded-full text-sm font-bold shrink-0 shadow-[var(--shadow-sm)]"
+              :style="{ backgroundColor: avatarBg(u), color: avatarText(avatarBg(u)) }"
+            >{{ initial(u.displayName) }}</span>
+
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium flex items-center gap-2">
+              <div class="text-sm font-semibold flex items-center gap-2 truncate">
                 {{ u.displayName }}
-                <span v-if="u.status === 'disabled'" class="text-[10px] px-1.5 py-0.5 rounded bg-error/15 text-error">已禁用</span>
+                <span v-if="u.id === myId" class="app-chip bg-primary/12 text-primary">你</span>
+                <span v-if="u.status === 'disabled'" class="app-chip bg-error/15 text-error">已禁用</span>
               </div>
-              <div class="text-[11px] text-[var(--color-text-secondary)]">@{{ u.username }}</div>
+              <div class="text-[11px] text-[var(--color-text-tertiary)]">@{{ u.username }}</div>
             </div>
+
             <!-- 可管理该成员时显示操作（超管可管理任何人；管理员仅能管理成员/校对） -->
             <template v-if="canManage(u)">
-              <select :value="u.role" @change="changeRole(u, ($event.target as HTMLSelectElement).value, $event.target as HTMLSelectElement)"
-                class="text-xs px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]">
+              <select
+                :value="u.role"
+                @change="changeRole(u, ($event.target as HTMLSelectElement).value, $event.target as HTMLSelectElement)"
+                class="select select-sm min-w-[5.5rem] rounded-[var(--radius-control)] border-[var(--color-border)] bg-[var(--color-surface)] text-xs"
+              >
                 <option value="member">成员</option>
                 <option value="reviewer">校对</option>
                 <option v-if="iAmSuperadmin" value="admin">管理员</option>
                 <!-- never assignable; rendered only so a superadmin row can't show blank -->
                 <option v-if="u.role === 'superadmin'" value="superadmin" disabled>超级管理员</option>
               </select>
-              <button @click="toggleStatus(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">{{ u.status === 'active' ? '禁用' : '启用' }}</button>
-              <button @click="resetPw(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">重置密码</button>
-              <button v-if="iAmSuperadmin" @click="deleteUser(u)" class="text-xs text-error/80 hover:text-error">删除</button>
+              <button @click="toggleStatus(u)" class="btn btn-ghost btn-xs gap-1" :title="u.status === 'active' ? '禁用' : '启用'">
+                <Ban v-if="u.status === 'active'" :size="13" /><CircleCheck v-else :size="13" />
+                <span class="hidden sm:inline">{{ u.status === 'active' ? '禁用' : '启用' }}</span>
+              </button>
+              <button @click="resetPw(u)" class="btn btn-ghost btn-xs gap-1" title="重置密码">
+                <KeyRound :size="13" /><span class="hidden sm:inline">重置</span>
+              </button>
+              <button v-if="iAmSuperadmin" @click="deleteUser(u)" class="btn btn-ghost btn-xs gap-1 text-error hover:bg-error/10" title="删除">
+                <Trash2 :size="13" />
+              </button>
             </template>
-            <span v-else class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--color-bg)] text-[var(--color-text-secondary)]">{{ roleLabel(u.role) }}</span>
+            <span v-else class="app-chip min-w-[5.5rem] justify-center" :class="roleBadgeClass(u.role)">
+              <Crown v-if="u.role === 'superadmin'" :size="11" />
+              <ShieldCheck v-else-if="u.role === 'admin'" :size="11" />
+              {{ roleLabel(u.role) }}
+            </span>
           </li>
         </ul>
       </section>
     </main>
   </div>
 </template>
-

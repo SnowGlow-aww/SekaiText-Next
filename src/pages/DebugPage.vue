@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft, Terminal, Save, Trash2 } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
 import { BASE_URL } from '../api/client'
 
@@ -115,32 +115,22 @@ function clearAll() {
 </script>
 
 <template>
-  <div class="h-screen bg-[#0c0c0c] flex flex-col">
+  <div class="h-screen bg-[var(--color-bg)] text-[var(--color-text)] flex flex-col">
     <!-- Header -->
-    <header class="flex items-center justify-between px-4 py-2 bg-[#1a1a1a] border-b border-[#2a2a2a] flex-shrink-0 select-none">
+    <header class="flex items-center justify-between px-4 py-2.5 bg-[var(--color-surface)] border-b border-[var(--color-border)] flex-shrink-0 select-none">
       <div class="flex items-center gap-3">
-        <button
-          @click="router.push('/')"
-          class="text-xs text-[#888] hover:text-[#fff] transition-colors flex items-center gap-1"
-        >
-          <ArrowLeft :size="14" />
-          返回
-        </button>
-        <span class="text-xs font-medium text-[#666]">debug.log</span>
+        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回"><ArrowLeft :size="16" /></button>
+        <span class="grid place-items-center w-6 h-6 rounded-md bg-primary/12 text-primary"><Terminal :size="13" /></span>
+        <span class="text-sm font-bold tracking-tight">调试日志</span>
+        <span class="font-mono text-[11px] text-[var(--color-text-tertiary)]">debug.log</span>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs text-[#555]">{{ mergedLogs.length }} lines</span>
-        <button
-          @click="saveLogs"
-          class="text-xs text-[#666] hover:text-[#fff] transition-colors px-2 py-0.5 rounded hover:bg-[#2a2a2a]"
-        >
-          保存日志
+        <span class="text-xs text-[var(--color-text-tertiary)]">{{ mergedLogs.length }} lines</span>
+        <button @click="saveLogs" class="btn btn-ghost btn-xs gap-1">
+          <Save :size="13" /> 保存日志
         </button>
-        <button
-          @click="clearAll"
-          class="text-xs text-[#666] hover:text-[#fff] transition-colors px-2 py-0.5 rounded hover:bg-[#2a2a2a]"
-        >
-          清空
+        <button @click="clearAll" class="btn btn-ghost btn-xs gap-1">
+          <Trash2 :size="13" /> 清空
         </button>
       </div>
     </header>
@@ -150,10 +140,10 @@ function clearAll() {
       ref="logContainer"
       class="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed"
     >
-      <div v-if="mergedLogs.length === 0" class="text-[#444] py-4">
-        <div class="mb-1"><span class="text-[#555]">$</span> <span class="text-[#888]">waiting for logs...</span></div>
-        <div class="text-[#444]">[sekai:debug] console capture active</div>
-        <div class="text-[#444]">[sekai:debug] polling server logs at /api/v1/debug/logs</div>
+      <div v-if="mergedLogs.length === 0" class="text-[var(--color-text-tertiary)] py-4">
+        <div class="mb-1"><span class="text-[var(--color-text-secondary)]">$</span> <span class="text-[var(--color-text-secondary)]">waiting for logs...</span></div>
+        <div>[sekai:debug] console capture active</div>
+        <div>[sekai:debug] polling server logs at /api/v1/debug/logs</div>
       </div>
 
       <div v-else class="space-y-0">
@@ -162,14 +152,14 @@ function clearAll() {
           :key="entry.id"
           class="flex gap-2"
         >
-          <span class="text-[#444] flex-shrink-0 w-16 select-none">{{ entry.ts }}</span>
-          <span v-if="entry.type === 'server'" class="text-[#569cd6] flex-shrink-0">[server]</span>
-          <span v-else class="text-[#444] flex-shrink-0">[front]</span>
+          <span class="text-[var(--color-text-tertiary)] flex-shrink-0 w-16 select-none">{{ entry.ts }}</span>
+          <span v-if="entry.type === 'server'" class="text-info flex-shrink-0">[server]</span>
+          <span v-else class="text-[var(--color-text-tertiary)] flex-shrink-0">[front]</span>
           <span :class="{
-            'text-[#d4d4d4]': entry.type === 'info',
-            'text-[#dcdcaa]': entry.type === 'warn',
-            'text-[#f44747]': entry.type === 'error',
-            'text-[#6a9955]': entry.type === 'server',
+            'text-[var(--color-text)]': entry.type === 'info',
+            'text-warning': entry.type === 'warn',
+            'text-error': entry.type === 'error',
+            'text-success': entry.type === 'server',
           }" class="whitespace-pre-wrap break-all">{{ entry.msg }}</span>
         </div>
       </div>

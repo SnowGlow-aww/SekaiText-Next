@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useAppStore } from '../../stores/app'
+import { Settings, Palette, X, Check } from 'lucide-vue-next'
 import { useSettingsStore } from '../../stores/settings'
+import ThemePicker from '../ui/ThemePicker.vue'
 
-const app = useAppStore()
 const settings = useSettingsStore()
 
 const emit = defineEmits<{
@@ -11,73 +11,96 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="modal modal-open" @click.self="emit('close')">
-    <div class="modal-box max-w-md">
-      <h2 class="text-lg font-semibold mb-4">设置</h2>
+  <Transition name="settings-fade" appear>
+    <div
+      class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]"
+      @keydown.esc="emit('close')"
+    >
+      <!-- scrim -->
+      <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" @click="emit('close')" />
 
-      <div class="space-y-4">
-        <div class="flex items-center justify-between">
-          <label class="text-sm">字号</label>
-          <input
-            v-model.number="settings.settings.fontSize"
-            type="number"
-            min="10"
-            max="48"
-            class="input input-bordered input-sm w-20 text-center"
-          />
+      <!-- panel -->
+      <div
+        class="app-card relative w-full max-w-md p-5 max-h-[85vh] overflow-y-auto"
+        style="box-shadow: var(--shadow-lg)"
+      >
+        <!-- header -->
+        <div class="flex items-center gap-2 mb-5">
+          <span class="grid place-items-center w-8 h-8 rounded-lg bg-primary/12 text-primary"><Settings :size="16" /></span>
+          <h2 class="text-base font-bold tracking-tight">设置</h2>
+          <button class="icon-btn ml-auto -mr-1" title="关闭" @click="emit('close')"><X :size="18" /></button>
         </div>
 
-        <div class="flex items-center justify-between">
-          <label class="text-sm">下载源</label>
-          <select
-            v-model="settings.settings.downloadSource"
-            class="select select-bordered select-sm"
-          >
-            <option value="best">sekai.best</option>
-            <option value="unipjsk">unipjsk.com</option>
-            <option value="haruki">haruki (CN)</option>
-            <option value="moesekai-jp">Moesekai (JP)</option>
-            <option value="moesekai-cn">Moesekai (CN)</option>
-          </select>
+        <!-- 常规 -->
+        <div class="space-y-3.5">
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-sm">字号</span>
+            <input
+              v-model.number="settings.settings.fontSize"
+              type="number"
+              min="10"
+              max="48"
+              class="app-input w-20 text-center"
+            />
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-sm">下载源</span>
+            <select v-model="settings.settings.downloadSource" class="app-input w-44 cursor-pointer">
+              <option value="best">sekai.best</option>
+              <option value="unipjsk">unipjsk.com</option>
+              <option value="haruki">haruki (CN)</option>
+              <option value="moesekai-jp">Moesekai (JP)</option>
+              <option value="moesekai-cn">Moesekai (CN)</option>
+            </select>
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-sm">保存 \\N 换行符</span>
+            <input v-model="settings.settings.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-sm">SSL 验证</span>
+            <input v-model="settings.settings.disableSSL" type="checkbox" class="toggle toggle-primary toggle-sm" />
+          </div>
         </div>
 
-        <div class="flex items-center justify-between">
-          <label class="text-sm">保存 \\N 换行符</label>
-          <input v-model="settings.settings.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
-        </div>
+        <div class="app-divider my-5" />
 
-        <div class="flex items-center justify-between">
-          <label class="text-sm">SSL 验证</label>
-          <input v-model="settings.settings.disableSSL" type="checkbox" class="toggle toggle-primary toggle-sm" />
+        <!-- 外观 -->
+        <div class="flex items-center gap-2 mb-4">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><Palette :size="15" /></span>
+          <div class="section-title">外观</div>
         </div>
+        <ThemePicker />
 
-        <div class="flex items-center justify-between">
-          <label class="text-sm">外观模式</label>
-          <select
-            v-model="app.themeMode"
-            class="select select-bordered select-sm"
-          >
-            <option value="system">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
+        <!-- footer -->
+        <div class="flex justify-end gap-2 mt-6">
+          <button class="btn btn-sm btn-ghost border border-[var(--color-border)]" @click="emit('close')">取消</button>
+          <button class="btn btn-sm btn-brand" @click="settings.saveSettings(); emit('close')">
+            <Check :size="15" /> 保存
+          </button>
         </div>
-      </div>
-
-      <div class="modal-action">
-        <button
-          class="btn btn-ghost btn-sm"
-          @click="emit('close')"
-        >
-          取消
-        </button>
-        <button
-          class="btn btn-primary btn-sm"
-          @click="settings.saveSettings(); emit('close')"
-        >
-          保存
-        </button>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
+
+<style scoped>
+.settings-fade-enter-active,
+.settings-fade-leave-active {
+  transition: opacity var(--dur) var(--ease-out);
+}
+.settings-fade-enter-from,
+.settings-fade-leave-to {
+  opacity: 0;
+}
+.settings-fade-enter-active .app-card,
+.settings-fade-leave-active .app-card {
+  transition: transform var(--dur) var(--ease-out);
+}
+.settings-fade-enter-from .app-card {
+  transform: translateY(8px) scale(0.97);
+}
+</style>

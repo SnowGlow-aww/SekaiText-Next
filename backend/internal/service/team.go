@@ -25,6 +25,7 @@ type TeamUser struct {
 	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
 	Status      string `json:"status"`
+	AvatarColor string `json:"avatarColor"`
 }
 
 // TeamService proxies the remote glossary-server: it owns the access/refresh

@@ -94,36 +94,60 @@ async function handleDiscard() {
 </script>
 
 <template>
-  <div class="modal modal-open">
-    <div class="modal-box w-96 max-w-[90vw]">
-      <div class="flex items-center gap-3 mb-4">
-        <div class="w-10 h-10 rounded-full bg-warning/10 flex items-center justify-center shrink-0">
-          <AlertTriangle class="text-warning" :size="20" />
+  <Transition name="recovery-fade" appear>
+    <div class="fixed inset-0 flex items-center justify-center p-4 z-[var(--z-modal)]">
+      <!-- scrim -->
+      <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" />
+      <!-- panel -->
+      <div class="app-card relative w-full max-w-sm p-5" style="box-shadow: var(--shadow-lg)">
+        <div class="flex items-start gap-3">
+          <div class="grid place-items-center w-9 h-9 rounded-full shrink-0 bg-warning/15 text-warning">
+            <AlertTriangle :size="18" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <h3 class="section-title mb-1">恢复未保存的更改</h3>
+            <p class="text-sm text-[var(--color-text-secondary)] leading-relaxed">
+              检测到上次编辑的自动保存内容，可能由于程序意外退出导致。
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 class="font-semibold text-sm">恢复未保存的更改</h3>
-          <p class="text-xs opacity-60 mt-0.5">
-            检测到上次编辑的自动保存内容，可能由于程序意外退出导致。
-          </p>
-        </div>
-      </div>
 
-      <div class="modal-action">
-        <button
-          @click="handleDiscard"
-          :disabled="loading"
-          class="btn btn-ghost btn-sm"
-        >
-          丢弃
-        </button>
-        <button
-          @click="handleRestore"
-          :disabled="loading"
-          class="btn btn-primary btn-sm"
-        >
-          {{ loading ? '恢复中...' : '恢复' }}
-        </button>
+        <div class="flex justify-end gap-2 mt-5">
+          <button
+            @click="handleDiscard"
+            :disabled="loading"
+            class="btn btn-sm btn-ghost"
+          >
+            丢弃
+          </button>
+          <button
+            @click="handleRestore"
+            :disabled="loading"
+            class="btn btn-sm btn-brand gap-1.5"
+          >
+            <span v-if="loading" class="loading loading-spinner loading-sm" />
+            {{ loading ? '恢复中…' : '恢复' }}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
+
+<style scoped>
+.recovery-fade-enter-active,
+.recovery-fade-leave-active {
+  transition: opacity var(--dur) var(--ease-out);
+}
+.recovery-fade-enter-from,
+.recovery-fade-leave-to {
+  opacity: 0;
+}
+.recovery-fade-enter-active .app-card,
+.recovery-fade-leave-active .app-card {
+  transition: transform var(--dur) var(--ease-out);
+}
+.recovery-fade-enter-from .app-card {
+  transform: translateY(8px) scale(0.97);
+}
+</style>
