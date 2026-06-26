@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
 import { useTeamStore } from '../stores/team'
@@ -44,15 +44,24 @@ async function loadUsers() {
   catch (e) { err(e) } finally { loadingUsers.value = false }
 }
 
-async function changeRole(u: TeamUser, role: string) {
+async function changeRole(u: TeamUser, role: string, el?: HTMLSelectElement) {
   if (role === u.role) return
   // Plain admins may only promote (never demote); surface it before the round-trip.
-  if (!team.isSuperadmin && roleRank(role) <= roleRank(u.role)) {
+  if (!iAmSuperadmin.value && roleRank(role) <= roleRank(u.role)) {
     show('管理员只能提升成员等级，不能降级', 'warn')
+    if (el) el.value = u.role // native <select> already moved; snap it back
     return
   }
   try { await api.teamSetUserRole(u.id, role); u.role = role as TeamUser['role']; ok(`${u.displayName} → ${roleLabel(role)}`) }
-  catch (e) { err(e) }
+  catch (e) {
+    // Server rejected it (e.g. 403): u.role is unchanged but the native select
+    // is showing the attempted value, so revert the control, then re-sync the
+    // whole list from the server — a 403 usually means our permission view was
+    // stale (e.g. talking to a backend with an outdated session).
+    err(e)
+    if (el) el.value = u.role
+    await loadUsers()
+  }
 }
 async function toggleStatus(u: TeamUser) {
   const next = u.status === 'active' ? 'disabled' : 'active'
@@ -101,13 +110,43 @@ function roleLabel(r: string) {
 const ROLE_RANK: Record<string, number> = { member: 0, reviewer: 1, admin: 2, superadmin: 3 }
 function roleRank(r: string) { return ROLE_RANK[r] ?? -1 }
 
+// The logged-in user's CURRENT role, taken from the authoritative server list
+// (teamAccountUsers re-fetches from the server on every load) rather than the
+// session object — which can be stale (a server-side role change, or a backend
+// still holding a pre-change session). All permission gating below keys off this
+// so the UI never offers actions the server will reject. (The server remains the
+// final authority and re-checks every request against the live DB.)
+const myId = computed(() => team.user?.id ?? '')
+const me = computed(() => users.value.find((u) => u.id === myId.value) ?? null)
+// Gate STRICTLY on the authoritative self entry. We deliberately do NOT fall back
+// to team.user.role here — that cached session role is exactly what may be stale
+// (e.g. a pre-migration 'superadmin'), so trusting it would re-expose management
+// controls the server rejects. Until the server-loaded list confirms who we are,
+// assume least privilege. (Fail closed: a brief moment of *fewer* controls on
+// first load is fine; flashing elevated controls is not.)
+const myRole = computed(() => me.value?.role ?? 'member')
+const iAmSuperadmin = computed(() => myRole.value === 'superadmin')
+const iAmAdmin = computed(() => myRole.value === 'admin' || myRole.value === 'superadmin')
+// Display-only role for the header label — cosmetic, so a soft fallback to the
+// cached session value while the list loads is fine.
+const myDisplayRole = computed(() => me.value?.role ?? team.user?.role ?? 'member')
+
+// Self-heal: if the cached session role drifts from the authoritative value,
+// patch the store so the header label and the rest of the app (bulk-upload /
+// review gating in other panels) stay consistent too.
+watch(me, (m) => {
+  if (m && team.user && (m.role !== team.user.role || m.status !== team.user.status)) {
+    team.patchUser({ role: m.role, status: m.status })
+  }
+})
+
 // canManage: may the logged-in user act on this row (role/status/password)?
 // Superadmin manages anyone but themselves; a plain admin manages only
 // members/reviewers (never another admin, the superadmin, or themselves).
 function canManage(u: TeamUser): boolean {
-  if (!team.isAdmin) return false
-  if (u.id === team.user?.id) return false
-  if (team.isSuperadmin) return true
+  if (!iAmAdmin.value) return false
+  if (u.id === myId.value) return false
+  if (iAmSuperadmin.value) return true
   return roleRank(u.role) < roleRank('admin')
 }
 
@@ -127,7 +166,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
         <button @click="router.back()" class="p-1.5 rounded-lg hover:bg-[var(--color-surface)] text-[var(--color-text-secondary)]"><ArrowLeft :size="18" /></button>
         <h1 class="text-base font-semibold">账号中心</h1>
         <span v-if="team.user" class="ml-auto text-xs text-[var(--color-text-secondary)]">
-          {{ team.user.displayName }} · {{ roleLabel(team.user.role) }}
+          {{ team.user.displayName }} · {{ roleLabel(myDisplayRole) }}
         </span>
       </div>
     </header>
@@ -162,7 +201,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
       </section>
 
       <!-- 为成员创建账号（仅管理员） -->
-      <section v-if="team.isAdmin" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-4">
+      <section v-if="iAmAdmin" class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-4">
         <h2 class="text-sm font-semibold mb-3">为成员创建账号</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -182,7 +221,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
             <select v-model="newUser.role" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm">
               <option value="member">成员</option>
               <option value="reviewer">校对</option>
-              <option v-if="team.isSuperadmin" value="admin">管理员</option>
+              <option v-if="iAmSuperadmin" value="admin">管理员</option>
             </select>
           </div>
         </div>
@@ -207,15 +246,17 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
             </div>
             <!-- 可管理该成员时显示操作（超管可管理任何人；管理员仅能管理成员/校对） -->
             <template v-if="canManage(u)">
-              <select :value="u.role" @change="changeRole(u, ($event.target as HTMLSelectElement).value)"
+              <select :value="u.role" @change="changeRole(u, ($event.target as HTMLSelectElement).value, $event.target as HTMLSelectElement)"
                 class="text-xs px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]">
                 <option value="member">成员</option>
                 <option value="reviewer">校对</option>
-                <option v-if="team.isSuperadmin" value="admin">管理员</option>
+                <option v-if="iAmSuperadmin" value="admin">管理员</option>
+                <!-- never assignable; rendered only so a superadmin row can't show blank -->
+                <option v-if="u.role === 'superadmin'" value="superadmin" disabled>超级管理员</option>
               </select>
               <button @click="toggleStatus(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">{{ u.status === 'active' ? '禁用' : '启用' }}</button>
               <button @click="resetPw(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">重置密码</button>
-              <button v-if="team.isSuperadmin" @click="deleteUser(u)" class="text-xs text-error/80 hover:text-error">删除</button>
+              <button v-if="iAmSuperadmin" @click="deleteUser(u)" class="text-xs text-error/80 hover:text-error">删除</button>
             </template>
             <span v-else class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--color-bg)] text-[var(--color-text-secondary)]">{{ roleLabel(u.role) }}</span>
           </li>

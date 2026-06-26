@@ -124,6 +124,13 @@ export const useTeamStore = defineStore('team', () => {
     }
   }
 
+  // patchUser reconciles the cached session user in place — e.g. when the
+  // authoritative user list reveals the role drifted (a server-side role change,
+  // or a backend still holding a pre-change session). No-op when not logged in.
+  function patchUser(patch: Partial<TeamUser>) {
+    if (user.value) user.value = { ...user.value, ...patch }
+  }
+
   // Proposal helpers
   async function submitProposal(p: {
     kind: 'add' | 'edit' | 'delete'
@@ -138,6 +145,6 @@ export const useTeamStore = defineStore('team', () => {
   return {
     user, serverUrl, connected, loading, lastSync, syncError,
     loggedIn, readonly, isReviewer, isAdmin, isSuperadmin,
-    refreshStatus, login, connect, logout, disconnect, sync, startPolling, stopPolling, submitProposal,
+    refreshStatus, login, connect, logout, disconnect, sync, startPolling, stopPolling, submitProposal, patchUser,
   }
 })
