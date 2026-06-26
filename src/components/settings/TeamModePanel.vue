@@ -116,7 +116,10 @@ async function refreshLocal() {
 }
 
 function roleLabel(role: string) {
-  return role === 'superadmin' ? '超级管理员' : role === 'reviewer' ? '校对/管理员' : '成员'
+  return role === 'superadmin' ? '超级管理员'
+    : role === 'admin' ? '管理员'
+    : role === 'reviewer' ? '校对'
+    : '成员'
 }
 </script>
 

@@ -46,6 +46,11 @@ async function loadUsers() {
 
 async function changeRole(u: TeamUser, role: string) {
   if (role === u.role) return
+  // Plain admins may only promote (never demote); surface it before the round-trip.
+  if (!team.isSuperadmin && roleRank(role) <= roleRank(u.role)) {
+    show('管理员只能提升成员等级，不能降级', 'warn')
+    return
+  }
   try { await api.teamSetUserRole(u.id, role); u.role = role as TeamUser['role']; ok(`${u.displayName} → ${roleLabel(role)}`) }
   catch (e) { err(e) }
 }
@@ -86,7 +91,25 @@ async function createUser() {
   } catch (e) { err(e) } finally { creating.value = false }
 }
 
-function roleLabel(r: string) { return r === 'superadmin' ? '管理员' : r === 'reviewer' ? '校对' : '成员' }
+function roleLabel(r: string) {
+  return r === 'superadmin' ? '超级管理员' : r === 'admin' ? '管理员' : r === 'reviewer' ? '校对' : '成员'
+}
+
+// Privilege ranking, mirrored from the server (model.RoleRank). Used to decide
+// what the current actor may do to a given row — the server is still the source
+// of truth, this just keeps the UI from offering actions it will reject.
+const ROLE_RANK: Record<string, number> = { member: 0, reviewer: 1, admin: 2, superadmin: 3 }
+function roleRank(r: string) { return ROLE_RANK[r] ?? -1 }
+
+// canManage: may the logged-in user act on this row (role/status/password)?
+// Superadmin manages anyone but themselves; a plain admin manages only
+// members/reviewers (never another admin, the superadmin, or themselves).
+function canManage(u: TeamUser): boolean {
+  if (!team.isAdmin) return false
+  if (u.id === team.user?.id) return false
+  if (team.isSuperadmin) return true
+  return roleRank(u.role) < roleRank('admin')
+}
 
 onMounted(async () => {
   await team.refreshStatus().catch(() => {})
@@ -159,7 +182,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
             <select v-model="newUser.role" class="block mt-1 w-full px-3 py-2 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm">
               <option value="member">成员</option>
               <option value="reviewer">校对</option>
-              <option value="superadmin">管理员</option>
+              <option v-if="team.isSuperadmin" value="admin">管理员</option>
             </select>
           </div>
         </div>
@@ -182,17 +205,17 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
               </div>
               <div class="text-[11px] text-[var(--color-text-secondary)]">@{{ u.username }}</div>
             </div>
-            <!-- 管理员可操作 -->
-            <template v-if="team.isAdmin">
+            <!-- 可管理该成员时显示操作（超管可管理任何人；管理员仅能管理成员/校对） -->
+            <template v-if="canManage(u)">
               <select :value="u.role" @change="changeRole(u, ($event.target as HTMLSelectElement).value)"
                 class="text-xs px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]">
                 <option value="member">成员</option>
                 <option value="reviewer">校对</option>
-                <option value="superadmin">管理员</option>
+                <option v-if="team.isSuperadmin" value="admin">管理员</option>
               </select>
               <button @click="toggleStatus(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">{{ u.status === 'active' ? '禁用' : '启用' }}</button>
               <button @click="resetPw(u)" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">重置密码</button>
-              <button @click="deleteUser(u)" class="text-xs text-error/80 hover:text-error">删除</button>
+              <button v-if="team.isSuperadmin" @click="deleteUser(u)" class="text-xs text-error/80 hover:text-error">删除</button>
             </template>
             <span v-else class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--color-bg)] text-[var(--color-text-secondary)]">{{ roleLabel(u.role) }}</span>
           </li>

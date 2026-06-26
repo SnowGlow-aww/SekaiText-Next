@@ -19,7 +19,7 @@ export interface TeamUser {
   id: string
   username: string
   displayName: string
-  role: 'member' | 'reviewer' | 'superadmin'
+  role: 'member' | 'reviewer' | 'admin' | 'superadmin'
   status: string
 }
 

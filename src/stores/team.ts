@@ -18,9 +18,15 @@ export const useTeamStore = defineStore('team', () => {
   // readonly: connected to a server but not logged in (no-login readonly mode)
   const readonly = computed(() => connected.value && user.value === null)
   const isReviewer = computed(
-    () => user.value?.role === 'reviewer' || user.value?.role === 'superadmin',
+    () => user.value?.role === 'reviewer' || user.value?.role === 'admin' || user.value?.role === 'superadmin',
   )
-  const isAdmin = computed(() => user.value?.role === 'superadmin')
+  // isAdmin: may open the admin panel (create accounts, manage members, bulk-upload).
+  // Both the sole superadmin and plain admins qualify; the backend further limits
+  // what a plain admin may do to a given target.
+  const isAdmin = computed(() => user.value?.role === 'admin' || user.value?.role === 'superadmin')
+  // isSuperadmin: the single top-tier account (@admin / Server). Gates the
+  // superadmin-only UI (delete account, granting the 管理员 role, acting on admins).
+  const isSuperadmin = computed(() => user.value?.role === 'superadmin')
 
   let timer: ReturnType<typeof setInterval> | null = null
 
@@ -131,7 +137,7 @@ export const useTeamStore = defineStore('team', () => {
 
   return {
     user, serverUrl, connected, loading, lastSync, syncError,
-    loggedIn, readonly, isReviewer, isAdmin,
+    loggedIn, readonly, isReviewer, isAdmin, isSuperadmin,
     refreshStatus, login, connect, logout, disconnect, sync, startPolling, stopPolling, submitProposal,
   }
 })
