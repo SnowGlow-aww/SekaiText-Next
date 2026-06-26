@@ -19,12 +19,17 @@ export const useGlossaryStore = defineStore('glossary', () => {
   const speakers = ref<string[]>([])
   const targets = ref<string[]>([])
 
+  // Monotonic token: overlapping searches (debounced watch + direct calls) can
+  // resolve out of order, so only the latest request is allowed to write state.
+  let searchSeq = 0
   async function search(q: string, category = '', limit = 50) {
+    const seq = ++searchSeq
     searching.value = true
     try {
-      results.value = q.trim() ? await api.glossarySearch(q, category, limit) : []
+      const r = q.trim() ? await api.glossarySearch(q, category, limit) : []
+      if (seq === searchSeq) results.value = r
     } finally {
-      searching.value = false
+      if (seq === searchSeq) searching.value = false
     }
   }
 

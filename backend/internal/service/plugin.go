@@ -125,6 +125,9 @@ func (s *PluginStore) List() ([]PluginInfo, error) {
 
 // SetEnabled persists a plugin's enabled flag.
 func (s *PluginStore) SetEnabled(id string, enabled bool) error {
+	if !validPluginID(id) {
+		return errors.New("invalid plugin id")
+	}
 	state := s.loadState()
 	state[id] = enabled
 	return s.saveState(state)
@@ -132,6 +135,12 @@ func (s *PluginStore) SetEnabled(id string, enabled bool) error {
 
 // Uninstall removes a plugin's directory and its state entry.
 func (s *PluginStore) Uninstall(id string) error {
+	// Validate id is a single safe segment before any filesystem op: an id like
+	// ".." would make filepath.Join(s.dir, id) escape the plugins dir and have
+	// os.RemoveAll wipe the parent (app data) directory.
+	if !validPluginID(id) {
+		return errors.New("invalid plugin id")
+	}
 	target := filepath.Join(s.dir, id)
 	if err := os.RemoveAll(target); err != nil {
 		return err
@@ -142,7 +151,11 @@ func (s *PluginStore) Uninstall(id string) error {
 }
 
 // PluginDir returns the absolute directory for a plugin id (for file serving).
+// An invalid id returns "" so callers don't serve files outside the plugins dir.
 func (s *PluginStore) PluginDir(id string) string {
+	if !validPluginID(id) {
+		return ""
+	}
 	return filepath.Join(s.dir, id)
 }
 
@@ -160,7 +173,8 @@ var ErrIDMismatch = errors.New("plugin id mismatch")
 // assets) into the plugins dir. It validates the manifest, the entry file's
 // presence, and minHostVersion against hostVersion (when both are set). An
 // existing plugin with the same id is replaced (its enable-state preserved).
-// First-party plugins cannot be overwritten by an install. Returns the manifest.
+// NOTE: there is currently no first-party/reserved-id protection — any id can be
+// overwritten by an install or removed by Uninstall. Returns the manifest.
 //
 // expectID, when non-empty, asserts the package's manifest id matches it — used
 // by the marketplace so a misconfigured or malicious index can't install a

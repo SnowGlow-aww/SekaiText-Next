@@ -32,10 +32,19 @@ async function handleRestore() {
       if ((result.editorMode ?? 0) >= 1) {
         for (const t of talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
       }
+      // Keep the editor store's currentMode (which keys the per-mode modeCache)
+      // in sync with app.editorMode BEFORE seeding talks. EditorPage.setMode is the
+      // only other place these two are synced; recovering via app.setEditorMode
+      // alone left editor.currentMode at 0, so the next mode switch saved the
+      // recovered rows into the wrong cache slot and dropped them. switchMode runs
+      // first so its (empty target-slot) load doesn't clobber the seeded talks.
+      if (result.editorMode != null) {
+        editor.switchMode(result.editorMode as 0 | 1 | 2)
+        app.setEditorMode(result.editorMode as 0 | 1 | 2)
+      }
       editor.setTalks(talks, talks, [])
       editor.markUnsaved()
       if (result.filePath) editor.currentFilePath = result.filePath
-      if (result.editorMode != null) app.setEditorMode(result.editorMode as 0 | 1 | 2)
 
       // Restore story context and re-load source text
       if (result.storyType) {

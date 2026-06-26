@@ -1,5 +1,7 @@
 package model
 
+import "sync"
+
 // SourceTalk represents a source text entry parsed from Unity JSON.
 type SourceTalk struct {
 	Speaker  string   `json:"speaker"`
@@ -154,6 +156,7 @@ type Settings struct {
 	DisableSSL                bool   `json:"disableSSL"`
 	VoiceOutputDir            string `json:"voiceOutputDir,omitempty"`
 	JsonDownloadDir           string `json:"jsonDownloadDir,omitempty"`
+	SaveBaseDir               string `json:"saveBaseDir,omitempty"`
 	DebugEnabled              bool   `json:"debugEnabled"`
 	IndexOrder                string `json:"indexOrder"`
 	PreserveStoryOnModeSwitch bool   `json:"preserveStoryOnModeSwitch"`
@@ -188,6 +191,7 @@ func DefaultSettings() Settings {
 		SaveVoice:                 false,
 		DisableSSL:                false,
 		JsonDownloadDir:           "./downloads/json",
+		SaveBaseDir:               "/Users/amia/Documents/Translation/PJS字幕组",
 		DebugEnabled:              false,
 		IndexOrder:                "asc",
 		PreserveStoryOnModeSwitch: true,
@@ -364,7 +368,10 @@ type JsonDownloadRequest struct {
 }
 
 // DownloadTaskProgress tracks progress of an async download.
+// Mu guards the mutable fields below, which are written by the download
+// goroutine and read concurrently by the progress HTTP handler.
 type DownloadTaskProgress struct {
+	Mu        sync.Mutex `json:"-"`
 	TaskID    string `json:"taskId"`
 	Status    string `json:"status"` // downloading, done, error
 	Read      int64  `json:"read"`

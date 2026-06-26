@@ -30,7 +30,11 @@ async function play() {
     const result = await api.voiceUrl(props.scenarioId, props.voiceIds[0], props.source || 'sekai.best', props.chara2d)
     if (result.url) {
       const audio = new Audio(result.url)
-      audio.volume = props.volume?.[0] ? props.volume[0] / 100 : 1
+      // talk.volume carries the Unity linear gain multiplier (typically ~1), not a
+      // 0-100 percentage — dividing by 100 made every voiced line near-silent.
+      // Apply it directly, clamped to the HTMLAudioElement [0,1] range; treat a
+      // falsy/unspecified value as the default 1.
+      audio.volume = props.volume?.[0] ? Math.min(1, Math.max(0, props.volume[0])) : 1
       audio.onended = () => { playing.value = false; loading.value = false }
       audio.onerror = () => {
         console.error('[VoicePlayButton] 音频加载失败:', result.url)

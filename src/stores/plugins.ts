@@ -9,8 +9,9 @@ declare const __APP_VERSION__: string
 // Drives the settings "插件" management panel. Enable/disable toggles persist to
 // the backend AND apply live via the plugin-host loader (load/unloadPlugin), so
 // a plugin's routes + sidebar + settings contributions appear/disappear without
-// a restart. Uninstall removes the plugin dir on the backend (first-party
-// plugins are protected server-side).
+// a restart. Uninstall removes the plugin dir on the backend (the id is validated
+// server-side to a single safe path segment; there is no first-party/built-in
+// protection, so any installed plugin can be uninstalled).
 export const usePluginsStore = defineStore('plugins', () => {
   const list = ref<InstalledPlugin[]>([])
   const loading = ref(false)

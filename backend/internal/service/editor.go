@@ -82,7 +82,7 @@ func (e *EditorService) SaveFile(filepath string, dsttalks []model.DstTalk, save
 	var out strings.Builder
 	for _, talk := range dsttalks {
 		switch talk.Speaker {
-		case "场景", "左上场景", "":
+		case "场景", "左上场景", "选项", "":
 			if (talk.Speaker == "场景" || talk.Speaker == "左上场景") && talk.Text == "" {
 				talk.Text = talk.Speaker
 			} else if talk.Speaker == "选项" && !strings.Contains(talk.Text, "/") {
@@ -217,7 +217,7 @@ func (e *EditorService) SerializeContent(dsttalks []model.DstTalk, saveN bool) s
 	var out strings.Builder
 	for _, talk := range dsttalks {
 		switch talk.Speaker {
-		case "场景", "左上场景", "":
+		case "场景", "左上场景", "选项", "":
 			if (talk.Speaker == "场景" || talk.Speaker == "左上场景") && talk.Text == "" {
 				talk.Text = talk.Speaker
 			} else if talk.Speaker == "选项" && !strings.Contains(talk.Text, "/") {
@@ -579,7 +579,7 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 		talks[row].Checked = checked
 		talks[row].Message = msg
 		dstidx := talks[row].DstIdx
-		if dstidx < len(dsttalks) {
+		if dstidx >= 0 && dstidx < len(dsttalks) {
 			dsttalks[dstidx].Text = text
 			dsttalks[dstidx].Checked = checked
 			dsttalks[dstidx].Message = msg
@@ -612,6 +612,16 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 			dsttalks[dstidx].Text = text
 			dsttalks[dstidx].Checked = checked
 			dsttalks[dstidx].Message = msg
+		} else if dstidx >= len(dsttalks) {
+			// Compared "deletion" rows (合意/校对) carry a DstIdx beyond the shorter
+			// dstTalks slice, so the edit would be silently dropped and lost on save
+			// (the frontend persists dstTalks, not talks). Grow dstTalks up to dstidx
+			// so the edited row has a real slot and round-trips. New filler slots are
+			// blank lines; the edited row copies talks[row]'s metadata.
+			for len(dsttalks) <= dstidx {
+				dsttalks = append(dsttalks, model.DstTalk{})
+			}
+			dsttalks[dstidx] = talks[row]
 		}
 	}
 
@@ -638,7 +648,17 @@ func (e *EditorService) AddLine(row int, talks, dsttalks []model.DstTalk, isProo
 	newtalk.DiffParts = nil
 
 	dstidx := talks[row].DstIdx
-	dsttalks = insertDstTalk(dsttalks, dstidx+1, newtalk)
+	// Bound-check before inserting into dstTalks. In 合意/校对 mode a compared
+	// "deletion" row can carry a DstIdx >= len(dsttalks) (dstTalks is the shorter
+	// check slice), so dstidx+1 would slice insertDstTalk's copy out of range and
+	// panic. Clamp the insert index to len(dsttalks) so it appends instead.
+	dstInsert := dstidx + 1
+	if dstInsert < 0 {
+		dstInsert = 0
+	} else if dstInsert > len(dsttalks) {
+		dstInsert = len(dsttalks)
+	}
+	dsttalks = insertDstTalk(dsttalks, dstInsert, newtalk)
 
 	talks = insertTalk(talks, row+1, newtalk)
 	for i := row + 1; i < len(talks); i++ {
@@ -702,7 +722,7 @@ func (e *EditorService) ReplaceBrackets(talks []model.DstTalk, dstTalks []model.
 		for _, ch := range text {
 			if strings.ContainsRune("「『（“‘【", ch) {
 				b.WriteRune(openB)
-			} else if strings.ContainsRune("」』（”’】", ch) {
+			} else if strings.ContainsRune("」』）”’】", ch) {
 				b.WriteRune(closeB)
 			} else {
 				b.WriteRune(ch)

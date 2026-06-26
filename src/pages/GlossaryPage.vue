@@ -227,6 +227,12 @@ const result = ref<{ jp?: string; cn?: string; found: boolean } | null>(null)
 const editingAppell = ref(false)
 const appellDraft = ref({ jp: '', cn: '' })
 
+// Appellation editing is local-only (no proposal `kind` for it), and the 60s
+// team sync's MergeImport wholesale-replaces the appellation table — so any edit
+// a logged-in user makes is silently wiped on the next poll. Gate editing off in
+// team mode; pure-local users still edit via the lock toggle.
+const appellEditable = computed(() => editUnlocked.value && !team.loggedIn)
+
 // matrix view: speaker (rows) × target (cols) grid, click a cell to edit.
 const appellMode = ref<'lookup' | 'matrix'>('lookup')
 const matrixData = ref<import('../types/glossary').Appellation[]>([])
@@ -264,6 +270,7 @@ function startEditCell(s: string, t: string) {
 }
 
 async function saveCell(s: string, t: string) {
+  if (team.loggedIn) { toast.show('团队模式下称呼表由服务器同步，暂不支持本地修改', 'warn'); return }
   if (!confirm(`确定保存「${s} → ${t}」的称呼修改吗？`)) return
   try {
     await glossary.saveAppellation(s, t, cellDraft.value.jp, cellDraft.value.cn)
@@ -293,6 +300,7 @@ function startEditAppell() {
 }
 
 async function saveAppell() {
+  if (team.loggedIn) { toast.show('团队模式下称呼表由服务器同步，暂不支持本地修改', 'warn'); return }
   if (!confirm('确定保存对这条称呼的修改吗？')) return
   try {
     await glossary.saveAppellation(speaker.value, target.value, appellDraft.value.jp, appellDraft.value.cn)
@@ -536,7 +544,7 @@ onMounted(async () => {
       <div v-show="tab === 'appellation'" class="space-y-4">
         <div class="flex items-center justify-between">
           <p class="text-sm text-[var(--color-text-secondary)]">
-            {{ appellMode === 'lookup' ? '选「说话人」和「对象」，直接查出称呼（来自人称表）。' : (editUnlocked ? '说话人（行）× 对象（列），点格子就地编辑。' : '说话人（行）× 对象（列）。解锁编辑后可点格子修改。') }}
+            {{ appellMode === 'lookup' ? '选「说话人」和「对象」，直接查出称呼（来自人称表）。' : (appellEditable ? '说话人（行）× 对象（列），点格子就地编辑。' : '说话人（行）× 对象（列）。解锁编辑后可点格子修改。') }}
           </p>
           <div class="flex gap-1 text-xs">
             <button @click="appellMode = 'lookup'" :class="['px-2.5 py-1 rounded', appellMode === 'lookup' ? 'bg-[var(--color-primary)] text-white' : 'border border-[var(--color-border)] text-[var(--color-text-secondary)]']">逐对查询</button>
@@ -559,8 +567,8 @@ onMounted(async () => {
                 <td
                   v-for="t in matrixTargets"
                   :key="t"
-                  :class="['border border-[var(--color-border)] px-2 py-1 align-top min-w-[64px]', editUnlocked ? 'cursor-pointer hover:bg-[var(--color-primary)]/5' : '']"
-                  @click="editUnlocked && startEditCell(s, t)"
+                  :class="['border border-[var(--color-border)] px-2 py-1 align-top min-w-[64px]', appellEditable ? 'cursor-pointer hover:bg-[var(--color-primary)]/5' : '']"
+                  @click="appellEditable && startEditCell(s, t)"
                 >
                   <template v-if="editingCell === cellKey(s, t)">
                     <input v-model="cellDraft.jp" placeholder="日" class="w-full px-1 py-0.5 rounded bg-[var(--color-bg)] border border-[var(--color-border)] mb-1" @click.stop @keydown.enter="saveCell(s, t)" />
@@ -611,7 +619,7 @@ onMounted(async () => {
               <div v-if="result.jp"><span class="text-xs text-[var(--color-text-secondary)] mr-1">日</span><span class="text-lg font-medium">{{ result.jp }}</span></div>
               <div v-if="result.cn"><span class="text-xs text-[var(--color-text-secondary)] mr-1">中</span><span class="text-lg font-medium">{{ result.cn }}</span></div>
             </div>
-            <button v-if="editUnlocked" @click="startEditAppell" class="flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text)] mt-3"><Pencil :size="12" />编辑</button>
+            <button v-if="appellEditable" @click="startEditAppell" class="flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text)] mt-3"><Pencil :size="12" />编辑</button>
           </template>
           <template v-else-if="editingAppell">
             <div class="grid grid-cols-2 gap-3 mb-3">
@@ -624,7 +632,7 @@ onMounted(async () => {
             </div>
           </template>
           <template v-else>
-            <div class="text-sm text-[var(--color-text-secondary)]">人称表里暂无这对组合的记录。<button v-if="editUnlocked" @click="startEditAppell" class="text-[var(--color-primary)] hover:underline ml-1">手动补充</button><span v-else class="opacity-60 ml-1">（解锁编辑后可补充）</span></div>
+            <div class="text-sm text-[var(--color-text-secondary)]">人称表里暂无这对组合的记录。<button v-if="appellEditable" @click="startEditAppell" class="text-[var(--color-primary)] hover:underline ml-1">手动补充</button><span v-else class="opacity-60 ml-1">（解锁编辑后可补充）</span></div>
           </template>
         </div>
         <div v-else-if="speaker && target" class="text-sm text-[var(--color-text-secondary)] py-8 text-center">查询中…</div>

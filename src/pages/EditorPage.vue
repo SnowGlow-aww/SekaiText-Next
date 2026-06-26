@@ -41,11 +41,18 @@ function pluginIcon(name: string) {
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
+// Template ref to EditorWorkspace so structural mutations here can cancel its
+// pending debounced edit first (the timer captured a row index that these
+// reorder, so letting it fire would corrupt a shifted row).
+const workspace = ref<{ cancelPendingEdit: () => void } | null>(null)
+
 function doUndo() {
+  workspace.value?.cancelPendingEdit()
   const snap = undo.undo(editor.talks, editor.dstTalks)
   if (snap) { editor.talks = snap.talks; editor.dstTalks = snap.dstTalks; editor.markUnsaved() }
 }
 function doRedo() {
+  workspace.value?.cancelPendingEdit()
   const snap = undo.redo(editor.talks, editor.dstTalks)
   if (snap) { editor.talks = snap.talks; editor.dstTalks = snap.dstTalks; editor.markUnsaved() }
 }
@@ -394,6 +401,9 @@ function searchPrev() {
 async function handleReplaceAll() {
   const q = app.searchQuery.trim()
   if (!q) return
+  // Drop any pending debounced edit before re-routing rows through changeText:
+  // its captured row index could land on a row this loop has already rewritten.
+  workspace.value?.cancelPendingEdit()
   const repl = app.searchReplace
   let changed = 0
   undo.pushSnapshot(editor.talks, editor.dstTalks)
@@ -471,7 +481,7 @@ onUnmounted(() => {
           <router-link to="/glossary" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
           <router-link to="/grammar" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><BookOpen :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">语法用例</span></router-link>
           <!-- Plugin-contributed sidebar items (Live2D, etc.) -->
-          <router-link v-for="item in pluginRegistry.sidebarItems" :key="item.id" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
+          <router-link v-for="item in pluginRegistry.sidebarItems" :key="`${item.pluginId}:${item.id}`" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
           <router-link to="/market" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Store :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">插件市场</span></router-link>
           <router-link v-if="settings.settings.debugEnabled" to="/debug" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Bug :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">调试</span></router-link>
           <router-link to="/account" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Users :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">账号中心</span></router-link>
@@ -516,7 +526,7 @@ onUnmounted(() => {
             <button @click="handleReplaceAll" class="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">全部替换</button>
           </div>
         </div>
-        <main class="flex-1 min-h-0"><EditorWorkspace/></main>
+        <main class="flex-1 min-h-0"><EditorWorkspace ref="workspace"/></main>
       </div>
     </div>
     <SpeakerCountDialog v-if="showSpeakerCount" @close="showSpeakerCount = false"/>

@@ -181,6 +181,10 @@ function onBlur(e: Event, idx: number) {
 }
 
 async function handleAddLine(row: number) {
+  // Cancel any pending debounced edit before reordering rows: it captured a row
+  // index that setTalks below will shift, so firing it would write to the wrong
+  // line (mirrors handleBracketsReplace). onBlur already committed the text.
+  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
   const currentIdx = editor.talks[row]?.idx
   if (currentIdx && editor.talks.filter(t => t.idx === currentIdx).length >= MAX_LINES_PER_SRC) {
     toast.show(`每个原文行最多添加 ${MAX_LINES_PER_SRC} 行`, 'warn')
@@ -203,6 +207,8 @@ async function handleAddLine(row: number) {
 }
 
 async function handleRemoveLine(row: number) {
+  // See handleAddLine: drop the stale debounced edit before re-counting rows.
+  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   try {
     const result = await api.removeLine({
@@ -370,6 +376,15 @@ function focusNext(e: KeyboardEvent) {
     sel?.addRange(range)
   }
 }
+
+// Allow the parent (EditorPage) to drop the pending debounced edit before it
+// performs a structural mutation (replace-all / undo / redo) that reorders
+// editor.talks, which would otherwise make the stale timer write to a shifted
+// row. onBlur has already committed the visible text, so cancelling loses nothing.
+function cancelPendingEdit() {
+  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+}
+defineExpose({ cancelPendingEdit })
 
 function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   const fb = flashbackItem(talk)

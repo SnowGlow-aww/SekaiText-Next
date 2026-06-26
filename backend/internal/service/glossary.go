@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +172,9 @@ func (s *GlossaryStore) Entries(category string, offset, limit int) ([]model.Glo
 		}
 	}
 	total := len(filtered)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > total {
 		offset = total
 	}
@@ -297,6 +301,13 @@ func (s *GlossaryStore) UpdateEntry(id string, patch model.GlossaryEntry) (model
 				cur.Category = patch.Category
 			}
 			cur.SubCategory = patch.SubCategory
+			// A hand-edited entry becomes user-authored so MergeImport's
+			// "user rows always survive" rule protects it from being dropped
+			// on the next re-import/remote sync.
+			cur.Origin = model.OriginUser
+			// Keep the id consistent with the makeID(source,category) invariant
+			// that import/dedup relies on (source or category may have changed).
+			cur.ID = makeID(cur.Source, cur.Category)
 			return *cur, true, s.persist()
 		}
 	}
@@ -363,9 +374,11 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 		s.appellations = appellations
 	}
 	if len(grammar) > 0 {
-		// Stamp stable ids; grammar fully replaces (no user-authored grammar).
+		// Stamp ids; grammar fully replaces (no user-authored grammar). Include
+		// the row index so rows sharing the same Item with a blank Index don't
+		// collide (the id must be unique for frontend v-for :key / row identity).
 		for i := range grammar {
-			grammar[i].ID = makeID(grammar[i].Item+"\x00"+grammar[i].Index, grammarSheet)
+			grammar[i].ID = makeID(strconv.Itoa(i)+"\x00"+grammar[i].Item+"\x00"+grammar[i].Index, grammarSheet)
 		}
 		s.grammar = grammar
 	}
@@ -438,6 +451,9 @@ func (s *GlossaryStore) Grammar(offset, limit int) ([]model.GrammarUsage, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	total := len(s.grammar)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > total {
 		offset = total
 	}

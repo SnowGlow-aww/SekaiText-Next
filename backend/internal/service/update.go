@@ -264,7 +264,21 @@ func (lm *ListManager) updateFestivals(dir string) error {
 	fesIdx := 1
 	birthdayIdx := 1
 
-	firstCardID := lm.Events[0].Cards[0]
+	// Find the smallest card id owned by any event; lm.Events[0] (smallest
+	// KdyicrID with chapters) is not guaranteed to have any cards, so do not
+	// blindly index [0][0].
+	firstCardID := 0
+	for _, ev := range lm.Events {
+		for _, c := range ev.Cards {
+			if firstCardID == 0 || c < firstCardID {
+				firstCardID = c
+			}
+		}
+	}
+	if firstCardID == 0 {
+		// No event owns any card; nothing to scan for festivals.
+		return saveJSON(dir, "festivals.json", lm.Festivals)
+	}
 	lastCardID := lm.Cards[len(lm.Cards)-1].ID
 
 	i := firstCardID
@@ -321,9 +335,14 @@ func (lm *ListManager) updateFestivals(dir string) error {
 			} else if containsInt(specialCards, 724) {
 				fest.ID = 1
 				fest.LevelUp = true
-				fest.Cards = specialCards[:len(specialCards)-2]
-				lm.Festivals = append(lm.Festivals, fest)
-				fest = FestivalEntry{ID: fesIdx, IsBirthday: false, Cards: specialCards[len(specialCards)-2:]}
+				// Only split off the trailing 2 cards when the run is long
+				// enough; otherwise keep the whole run as one festival to
+				// avoid a negative slice bound.
+				if len(specialCards) >= 2 {
+					fest.Cards = specialCards[:len(specialCards)-2]
+					lm.Festivals = append(lm.Festivals, fest)
+					fest = FestivalEntry{ID: fesIdx, IsBirthday: false, Cards: specialCards[len(specialCards)-2:]}
+				}
 			} else {
 				fesIdx++
 			}

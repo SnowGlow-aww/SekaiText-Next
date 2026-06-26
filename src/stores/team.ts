@@ -66,19 +66,31 @@ export const useTeamStore = defineStore('team', () => {
 
   // logout: drop to readonly mode (still connected & synced).
   async function logout() {
-    await api.teamLogout()
-    user.value = null
+    // Always drop local login state, even if the backend call rejects — the
+    // intent is to leave the logged-in session; a stuck user.value would keep
+    // loggedIn true with no way to recover.
+    try {
+      await api.teamLogout()
+    } finally {
+      user.value = null
+    }
     // stays connected in readonly mode; polling continues
   }
 
   // disconnect: fully leave team mode (back to pure local editing).
   async function disconnect() {
     stopPolling()
-    await api.teamDisconnect()
-    user.value = null
-    connected.value = false
-    serverUrl.value = ''
-    lastSync.value = null
+    // Always tear down the local session, even if the backend call rejects;
+    // polling is already stopped, so leaving connected true would strand a
+    // dead, non-recoverable session in the UI.
+    try {
+      await api.teamDisconnect()
+    } finally {
+      user.value = null
+      connected.value = false
+      serverUrl.value = ''
+      lastSync.value = null
+    }
   }
 
   async function sync(force = false) {

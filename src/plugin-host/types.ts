@@ -14,6 +14,9 @@ export interface PluginSidebarItem {
   icon: string // lucide icon name, e.g. "Drama"
   to: string // route path
   order?: number
+  // Stamped by the registry when flattening so the host can build a globally
+  // unique v-for key (two plugins may pick the same item id).
+  pluginId?: string
 }
 
 // A settings-page section contributed by a plugin. The host renders `component`
@@ -25,6 +28,9 @@ export interface PluginSettingsSection {
   title: string // section heading shown above the card
   component: any // a Vue component (resolved via host.vue)
   order?: number
+  // Stamped by the registry when flattening so the host can build a globally
+  // unique v-for key (two plugins may pick the same section id).
+  pluginId?: string
 }
 
 // What the host exposes to every plugin's setup(host).

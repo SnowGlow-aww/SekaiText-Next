@@ -88,6 +88,14 @@ func (t *TeamService) doRefresh() error {
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = json.Unmarshal(raw, &tr)
 	if resp.StatusCode != http.StatusOK || tr.AccessToken == "" {
+		// Refresh was definitively rejected (token expired/revoked, account
+		// disabled, server key rotated): clear the session so LoggedIn() goes
+		// false and the app drops to no-login readonly instead of looping on
+		// 401s. Keep serverURL (mirrors Logout) so readonly stays synced.
+		t.mu.Lock()
+		t.access, t.refresh, t.user = "", "", nil
+		t.mu.Unlock()
+		t.persist()
 		return errors.New("refresh rejected")
 	}
 	t.mu.Lock()

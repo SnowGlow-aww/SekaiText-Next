@@ -404,7 +404,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 插件贡献的设置区块 ====== -->
-      <section v-for="sec in pluginRegistry.settingsSections" :key="sec.id" class="mb-6">
+      <section v-for="sec in pluginRegistry.settingsSections" :key="`${sec.pluginId}:${sec.id}`" class="mb-6">
         <h2 class="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3 px-1">{{ sec.title }}</h2>
         <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
           <component :is="sec.component" />

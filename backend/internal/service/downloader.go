@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -83,9 +84,23 @@ func (pt *ProgressTracker) Status() (int, int, string, bool) {
 	return pt.current, pt.total, pt.message, pt.done
 }
 
+// safeCacheName validates a CDN-derived cache file name. The names come from
+// remote master data (event chapter AssetName / special story FileName, etc.)
+// and are always flat basenames, so any path separator or ".." segment is
+// rejected to keep the write inside the cache directory.
+func safeCacheName(fileName string) error {
+	if fileName == "" || fileName != filepath.Base(fileName) || strings.Contains(fileName, "..") {
+		return fmt.Errorf("invalid file name: %q", fileName)
+	}
+	return nil
+}
+
 // DownloadJSON downloads a JSON file from URL and saves to dataDir.
 // Returns file path.
 func (d *Downloader) DownloadJSON(url, fileName string) (string, error) {
+	if err := safeCacheName(fileName); err != nil {
+		return "", err
+	}
 	filePath := filepath.Join(d.dataDir, fileName)
 
 	// Check if already cached
@@ -105,13 +120,25 @@ func (d *Downloader) DownloadJSON(url, fileName string) (string, error) {
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	out, err := os.Create(filePath)
+	// Write to a temp file first, then rename, so a mid-stream failure never
+	// leaves a partial file that the cache check would later return as a hit.
+	tmpPath := filePath + ".part"
+	out, err := os.Create(tmpPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file: %w", err)
 	}
-	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -125,6 +152,9 @@ type DownloadProgressFn func(read, total int64)
 // DownloadJSONToDir downloads a JSON file from URL to a specific directory.
 // If progress is non-nil, it is called periodically with bytes read and total bytes.
 func (d *Downloader) DownloadJSONToDir(url, dir, fileName string, progress DownloadProgressFn) (string, error) {
+	if err := safeCacheName(fileName); err != nil {
+		return "", err
+	}
 	filePath := filepath.Join(dir, fileName)
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -153,11 +183,13 @@ func (d *Downloader) DownloadJSONToDir(url, dir, fileName string, progress Downl
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	out, err := os.Create(filePath)
+	// Write to a temp file first, then rename, so a mid-stream failure never
+	// leaves a partial file that the cache check would later return as a hit.
+	tmpPath := filePath + ".part"
+	out, err := os.Create(tmpPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file: %w", err)
 	}
-	defer out.Close()
 
 	var reader io.Reader = resp.Body
 	if progress != nil && resp.ContentLength > 0 {
@@ -165,6 +197,16 @@ func (d *Downloader) DownloadJSONToDir(url, dir, fileName string, progress Downl
 	}
 
 	if _, err := io.Copy(out, reader); err != nil {
+		out.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 

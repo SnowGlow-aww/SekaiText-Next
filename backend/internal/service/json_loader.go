@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"sekaitext/backend/internal/model"
 )
@@ -55,8 +56,8 @@ type JsonLoaderService struct {
 	dl        *Downloader
 	dataDir   string
 	source    string
+	cacheMu   sync.Mutex // guards lineCache against concurrent story-load requests
 	lineCache map[string]int
-	locating  bool // true while re-parsing a source scenario just to count lines
 }
 
 // NewJsonLoaderService creates a new JsonLoaderService.
@@ -85,7 +86,7 @@ func (j *JsonLoaderService) ParseFile(path string) (*model.LoadResponse, error) 
 		return nil, fmt.Errorf("failed to parse story JSON: %w", err)
 	}
 
-	return j.parse(&story), nil
+	return j.parse(&story, false), nil
 }
 
 // ParseBytes parses Unity story JSON from raw bytes.
@@ -94,10 +95,13 @@ func (j *JsonLoaderService) ParseBytes(data []byte) (*model.LoadResponse, error)
 	if err := json.Unmarshal(data, &story); err != nil {
 		return nil, fmt.Errorf("failed to parse story JSON: %w", err)
 	}
-	return j.parse(&story), nil
+	return j.parse(&story, false), nil
 }
 
-func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
+// parse converts a parsed Unity story into a LoadResponse. locating is true only
+// when re-parsing a source scenario solely to count lines; it is request-local
+// (threaded as a parameter, not shared state) so concurrent loads stay isolated.
+func (j *JsonLoaderService) parse(story *UnityStoryData, locating bool) *model.LoadResponse {
 	var talks []model.SourceTalk
 	talkIndex := make(map[int]*TalkData)
 	for i := range story.TalkData {
@@ -107,7 +111,7 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 	for _, snippet := range story.Snippets {
 		switch snippet.Action {
 		case 1: // TalkData
-			if snippet.ReferenceIndex >= len(story.TalkData) {
+			if snippet.ReferenceIndex < 0 || snippet.ReferenceIndex >= len(story.TalkData) {
 				continue
 			}
 			talkdata := story.TalkData[snippet.ReferenceIndex]
@@ -153,7 +157,7 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 			}
 
 		case 6: // SpecialEffectData
-			if snippet.ReferenceIndex >= len(story.SpecialEffectData) {
+			if snippet.ReferenceIndex < 0 || snippet.ReferenceIndex >= len(story.SpecialEffectData) {
 				continue
 			}
 			effect := story.SpecialEffectData[snippet.ReferenceIndex]
@@ -189,7 +193,7 @@ func (j *JsonLoaderService) parse(story *UnityStoryData) *model.LoadResponse {
 	// Flashback analysis. Skipped while locating a flashback's source line: that
 	// path re-parses a source scenario only to count lines, and running flashback
 	// analysis there would recursively download yet more scenarios.
-	if !j.locating {
+	if !locating {
 		talks = j.checkFlashback(talks)
 	}
 
@@ -240,11 +244,19 @@ func (j *JsonLoaderService) locateVoiceLine(voiceID string) int {
 	if j.dl == nil || j.fb == nil {
 		return 0
 	}
-	if line, ok := j.lineCache[voiceID]; ok {
+	// lineCache is shared across concurrent story-load goroutines, so guard the
+	// read and the write. The lock is not held across locateVoiceLineUncached
+	// (which downloads + re-parses) to avoid serializing unrelated lookups.
+	j.cacheMu.Lock()
+	line, ok := j.lineCache[voiceID]
+	j.cacheMu.Unlock()
+	if ok {
 		return line
 	}
-	line := j.locateVoiceLineUncached(voiceID)
+	line = j.locateVoiceLineUncached(voiceID)
+	j.cacheMu.Lock()
 	j.lineCache[voiceID] = line
+	j.cacheMu.Unlock()
 	return line
 }
 
@@ -266,10 +278,9 @@ func (j *JsonLoaderService) locateVoiceLineUncached(voiceID string) int {
 		return 0
 	}
 	// Reuse the real parser so line counting matches exactly what the translator
-	// sees when loading this source scenario.
-	j.locating = true
-	resp := j.parse(&story)
-	j.locating = false
+	// sees when loading this source scenario. locating=true suppresses recursive
+	// flashback analysis on this source-only re-parse.
+	resp := j.parse(&story, true)
 	target := normalizeVoiceID(voiceID)
 	for idx, t := range resp.SourceTalks {
 		for _, v := range t.Voices {

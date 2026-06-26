@@ -143,6 +143,13 @@ func (h *Handler) GlossarySync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing remoteUrl")
 		return
 	}
+	// Only allow http(s) so the fetch can't be redirected to file://, gopher://
+	// and similar SSRF vectors. (Private/LAN hosts are intentionally allowed:
+	// the user may self-host the team glossary server on a plain-http LAN box.)
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		writeError(w, http.StatusBadRequest, "remoteUrl must be an http(s) URL")
+		return
+	}
 	resp, err := http.Get(url)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch failed: "+err.Error())

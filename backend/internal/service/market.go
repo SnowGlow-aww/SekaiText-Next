@@ -2,7 +2,6 @@ package service
 
 import (
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,7 +27,7 @@ type MarketEntry struct {
 	Icon           string `json:"icon,omitempty"`
 	MinHostVersion string `json:"minHostVersion,omitempty"`
 	Download       string `json:"download"`         // URL to the .sekplugin
-	SHA256         string `json:"sha256,omitempty"` // optional integrity check
+	SHA256         string `json:"sha256,omitempty"` // required at install for integrity
 	Homepage       string `json:"homepage,omitempty"`
 }
 
@@ -58,8 +57,9 @@ func NewMarketService(store *PluginStore) *MarketService {
 	return &MarketService{
 		client: &http.Client{
 			Timeout: 60 * time.Second,
-			// Match the downloader's TLS posture (some CDNs trip Go's macOS verifier).
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			// TLS certs are verified (default transport): both the index and the
+			// downloaded .sekplugin come over the network and feed dynamically
+			// imported JS, so an unverified connection is a MITM→RCE vector.
 		},
 		store: store,
 	}
@@ -146,14 +146,17 @@ func (m *MarketService) Install(url, id, hostVersion string) (PluginManifest, er
 	}
 	defer os.Remove(tmp)
 
-	if entry.SHA256 != "" {
-		sum, err := fileSHA256(tmp)
-		if err != nil {
-			return zero, err
-		}
-		if !strings.EqualFold(sum, entry.SHA256) {
-			return zero, errors.New("下载校验失败（sha256 不匹配）")
-		}
+	// sha256 is mandatory: an entry without it would be installed with zero
+	// integrity verification, so refuse rather than trust the bytes blindly.
+	if strings.TrimSpace(entry.SHA256) == "" {
+		return zero, errors.New("市场条目缺少 sha256 校验值，拒绝安装")
+	}
+	sum, err := fileSHA256(tmp)
+	if err != nil {
+		return zero, err
+	}
+	if !strings.EqualFold(sum, entry.SHA256) {
+		return zero, errors.New("下载校验失败（sha256 不匹配）")
 	}
 	return m.store.Install(tmp, hostVersion, entry.ID)
 }

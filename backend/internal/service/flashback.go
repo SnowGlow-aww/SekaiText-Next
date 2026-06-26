@@ -161,7 +161,9 @@ func (fb *FlashbackAnalyzer) GetClueHints(clue, lang string) []string {
 		return fb.getEventHints(words[firstIdx+1:])
 
 	case "ms", "op", "unit":
-		return fb.getMainStoryHints(words[firstIdx:], first)
+		// Strip the leading "ms"/"op"/"unit" keyword (like the "ev" branch does),
+		// so getMainStoryHints sees the team/episode body rather than the keyword.
+		return fb.getMainStoryHints(words[firstIdx+1:], first)
 
 	case "card":
 		return fb.getCardHints(words[firstIdx+1:])
@@ -203,7 +205,14 @@ func (fb *FlashbackAnalyzer) getEventHints(words []string) []string {
 		ep += chOffset
 	}
 
-	hints = append(hints, strconv.Itoa(eventInfo.ID)+"-"+padZero(ep))
+	// Only append the "id-episode" label when we actually parsed an episode
+	// number; otherwise ep is still -1 and padZero(-1) would emit a bogus
+	// "id-0-1" label.
+	if ep >= 0 {
+		hints = append(hints, strconv.Itoa(eventInfo.ID)+"-"+padZero(ep))
+	} else {
+		hints = append(hints, strconv.Itoa(eventInfo.ID))
+	}
 	hints = append(hints, eventInfo.Title)
 	if ep > 0 && ep <= len(eventInfo.Chapters) {
 		hints = append(hints, eventInfo.Chapters[ep-1].Title)
@@ -219,7 +228,17 @@ func (fb *FlashbackAnalyzer) getMainStoryHints(words []string, first string) []s
 		return append(hints, "未知主线剧情")
 	}
 
+	// The clue body splits the team and episode into separate underscore
+	// segments (e.g. ["night","05",...]), but mainstoryEpRe expects them in a
+	// single token like "night05". When words[0] is an alphabetic team name,
+	// rejoin it with the following numeric episode segment so the regex (and
+	// the voiceMsToMainStory lookup below) resolve the real chapter.
 	w := words[0]
+	if _, err := strconv.Atoi(words[0]); err != nil && len(words) > 1 {
+		if _, err := strconv.Atoi(words[1]); err == nil {
+			w = words[0] + words[1]
+		}
+	}
 	match := fb.mainstoryEpRe.FindStringSubmatch(w)
 	if match == nil {
 		hints = append(hints, "未知主线剧情")

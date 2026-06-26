@@ -215,7 +215,9 @@ func (lm *ListManager) GetStoryTypes() []string {
 		StoryLabelAreaTalkInit,
 		StoryLabelAreaTalkUpgrade,
 		StoryLabelAreaTalkExtra,
-		StoryLabelGreet,
+		// StoryLabelGreet (主界面语音) is intentionally omitted: GetJsonPath has no
+		// case for it, so it would always 404 "story not found". Don't surface an
+		// unloadable type until the greet voice URL is implemented.
 		StoryLabelSpecial,
 	}
 }
@@ -296,7 +298,7 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 			}
 		}
 
-	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade:
+	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade, StoryLabelAreaTalkExtra:
 		if sort == "character" {
 			for idx, char := range model.CharacterDict[:26] {
 				indices = append(indices, model.StoryIndex{Label: char.NameJ, Value: strconv.Itoa(idx)})
@@ -527,7 +529,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 	switch storyType {
 	case StoryLabelMainStory:
 		unitIdx := idx
-		if unitIdx >= len(lm.MainStory) {
+		if unitIdx < 0 || unitIdx >= len(lm.MainStory) {
 			return model.JsonPathResult{}
 		}
 		unit := lm.MainStory[unitIdx]
@@ -535,7 +537,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		if unitIdx == 0 {
 			chapterIdx = (chapterIdx+1)*4/5
 		}
-		if chapterIdx >= len(ch) {
+		if chapterIdx < 0 || chapterIdx >= len(ch) {
 			return model.JsonPathResult{}
 		}
 		chapter := ch[chapterIdx].AssetName
@@ -554,7 +556,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 
 		case StoryLabelEvent:
 			ev := lm.findEventByID(idx)
-			if ev == nil || chapterIdx >= len(ev.Chapters) {
+			if ev == nil || chapterIdx < 0 || chapterIdx >= len(ev.Chapters) {
 				return model.JsonPathResult{}
 			}
 			chapter := ev.Chapters[chapterIdx].AssetName
@@ -575,14 +577,25 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 			if ev == nil {
 				return model.JsonPathResult{}
 			}
+			// Enumerate only valid cards, matching GetStoryChapterList's filter,
+			// so the chapter slot the user picked maps to the same card here.
+			var validCards []int
+			for _, c := range ev.Cards {
+				if c >= 1 && c <= len(lm.Cards) {
+					validCards = append(validCards, c)
+				}
+			}
 			cardSlot := chapterIdx / 3
-			if cardSlot >= len(ev.Cards) {
+			if cardSlot < 0 || cardSlot >= len(validCards) {
 			return model.JsonPathResult{}
 			}
-			cardID := ev.Cards[cardSlot]
+			cardID := validCards[cardSlot]
 			cardCharID := lm.Cards[cardID-1].CharacterID
 			cardNo := lm.Cards[cardID-1].CardNo
 			ch := padZero(chapterIdx%3 + 1)
+			if cardCharID < 1 || cardCharID > len(model.CharacterDict) {
+			return model.JsonPathResult{}
+			}
 			char := model.CharacterDict[cardCharID-1]
 			charID := padZero3(cardCharID)
 			var url string
@@ -605,7 +618,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 		f := lm.Festivals[fesIdx-1]
 		cardSlot := chapterIdx / 3
-		if cardSlot >= len(f.Cards) {
+		if cardSlot < 0 || cardSlot >= len(f.Cards) {
 			return model.JsonPathResult{}
 		}
 		cardID := f.Cards[cardSlot]
@@ -624,11 +637,13 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelCardInit:
-		if idx > 25 {
-			// virtual singer special mapping
-			idx = idx - 4
+		// The index dropdown emits contiguous Values 0..25 (separators carry
+		// Value "-" and consume no number), so idx maps directly to
+		// CharacterDict[idx]; the 1-based card character id is idx+1.
+		charId := idx + 1
+		if charId < 1 || charId > len(model.CharacterDict) {
+			return model.JsonPathResult{}
 		}
-		charId := (idx/5)*4 + (idx+1)%5
 		charName := model.CharacterDict[charId-1].Name
 		rarity := chapterIdx/3 + 1
 		rarityStr := padZero3(rarity)
@@ -647,10 +662,12 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelCardUpgrade:
-		if idx > 25 {
-			idx = idx - 4
+		// The index dropdown emits contiguous Values 0..25, so idx maps directly
+		// to CharacterDict[idx]; the 1-based card character id is idx+1.
+		charId := idx + 1
+		if charId < 1 || charId > len(model.CharacterDict) {
+			return model.JsonPathResult{}
 		}
-		charId := (idx/5)*4 + (idx+1)%5
 		var levelupcards []int
 		for _, f := range lm.Festivals {
 			if f.LevelUp {
@@ -661,23 +678,32 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		if levelupcards == nil {
 			return model.JsonPathResult{}
 		}
+		if charId < 1 || charId > len(levelupcards) {
+			return model.JsonPathResult{}
+		}
 		cardID := levelupcards[charId-1]
 		// Virtual singer special VS chapters
 		if charId >= 21 && chapterIdx > 2 {
 			vsIdx := 30 - 6 + chapterIdx/3
+			var lvIdx int
 			if charId == 22 { // Rin
-				cardID = levelupcards[len(model.CharacterDict)-4]
+				lvIdx = len(model.CharacterDict) - 4
 			} else if charId == 23 { // Len
-				cardID = levelupcards[len(model.CharacterDict)-3]
+				lvIdx = len(model.CharacterDict) - 3
 			} else if charId == 24 { // MEIKO
-				cardID = levelupcards[len(model.CharacterDict)-5]
+				lvIdx = len(model.CharacterDict) - 5
 			} else if charId == 25 { // KAITO
-				cardID = levelupcards[len(model.CharacterDict)-2]
+				lvIdx = len(model.CharacterDict) - 2
 			} else if charId == 26 { // Miku_band
-				cardID = levelupcards[len(model.CharacterDict)-1]
+				lvIdx = len(model.CharacterDict) - 1
 			} else { // Miku (21)
-				cardID = levelupcards[vsIdx]
+				lvIdx = vsIdx
 			}
+			// Guard against a short/partial levelup festival card list.
+			if lvIdx < 0 || lvIdx >= len(levelupcards) {
+				return model.JsonPathResult{}
+			}
+			cardID = levelupcards[lvIdx]
 		}
 		if cardID < 1 || cardID > len(lm.Cards) {
 			return model.JsonPathResult{}
@@ -693,7 +719,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade, StoryLabelAreaTalkExtra:
-		if chapterIdx >= len(lm.ChapterScenario) {
+		if chapterIdx < 0 || chapterIdx >= len(lm.ChapterScenario) {
 			return model.JsonPathResult{}
 		}
 		cs := lm.ChapterScenario[chapterIdx]
@@ -713,7 +739,9 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelSpecial:
-		specialIdx := len(lm.Specials) - 1 - idx
+		// The index dropdown emits Value = the raw array index, so idx already
+		// is the wanted position; do NOT reverse it again.
+		specialIdx := idx
 		if specialIdx < 0 || specialIdx >= len(lm.Specials) {
 			return model.JsonPathResult{}
 		}
@@ -738,6 +766,9 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 // --- Helpers for ListManager ---
 
 func (lm *ListManager) buildAreaTalkByTime() {
+	// Reset before rebuilding so repeated requests don't append duplicates
+	// (matches buildAreaTalkChapterScenario).
+	lm.AreaTalkByTime = nil
 	// Simplified: just stores add/release event IDs from area talks
 	for _, at := range lm.AreaTalks {
 		if at.ScenarioID == "none" || at.AddEventID < 0 {

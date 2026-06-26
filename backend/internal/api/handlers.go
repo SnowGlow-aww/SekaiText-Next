@@ -139,7 +139,41 @@ func (h *Handler) StoryLoad(w http.ResponseWriter, r *http.Request) {
 
 	resp.SaveTitle = path.SaveTitle
 	resp.ChapterTitle = path.ChapterTitle
+
+	// Card-story scenario JSON often carries a broken / Japanese internal
+	// ScenarioId (e.g. "★4冬弥・泉_前半") that does NOT match the on-CDN voice
+	// folder name. The voice clips instead live under the scenario ASSET base name
+	// (e.g. 012043_touya01) — the last path segment of the download URL — which is
+	// also a clean "\d{6}_name" id that cardScenarioRe matches. Use it as the
+	// scenarioId so VoiceURL can build a resolvable card_scenario / partvoice path.
+	// Only cards are remapped; event / main scenario ids are already correct.
+	if strings.Contains(req.StoryType, "卡面") {
+		if name := scenarioAssetName(path.URL); name != "" {
+			resp.ScenarioID = name
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// scenarioAssetName extracts the scenario asset's base name (no directory, no
+// extension) from its download URL, e.g.
+//
+//	".../character/member/res012_no043/012043_touya01.asset" -> "012043_touya01".
+//
+// Uses plain string ops (not filepath) so URL "/" separators are handled the
+// same on Windows as on macOS/Linux.
+func scenarioAssetName(rawURL string) string {
+	u := rawURL
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.LastIndexByte(u, '/'); i >= 0 {
+		u = u[i+1:]
+	}
+	if i := strings.LastIndexByte(u, '.'); i >= 0 {
+		u = u[:i]
+	}
+	return u
 }
 
 func (h *Handler) StoryLoadLocal(w http.ResponseWriter, r *http.Request) {
@@ -586,19 +620,20 @@ func (h *Handler) VoiceURL(w http.ResponseWriter, r *http.Request) {
 	// every voice request here is the only reliable option.
 	baseURL := "https://storage.exmeaning.com/sekai-jp-assets/"
 
-	// Card stories keep their voices under a different directory than event/main
-	// stories. Verified against storage.exmeaning.com / storage.sekai.best:
-	//   - card "voice_card_*" lines -> sound/card_scenario/voice/{sid}/{vid}.mp3
-	//   - card "partvoice_*"  lines -> a shared per-speaking-character bundle
-	//       (sound/scenario/voice/part_voice_{assetName}_{unit}/...); building it
-	//       needs the talking character's chara2d, which this endpoint does not
-	//       have yet, so we return an empty URL and let the client report it.
-	//   - everything else           -> sound/scenario/voice/{sid}/{vid}.mp3 (unchanged)
+	// Voice clips live under different directories depending on the line, not the
+	// story type. Verified against storage.exmeaning.com / storage.sekai.best:
+	//   - any "partvoice_*" line -> a shared per-speaking-character bundle
+	//       sound/scenario/voice/part_voice_{assetName}_{unit}/{vid}.mp3, keyed by
+	//       the talking character's chara2d (resolved via the character2ds table).
+	//       This is checked FIRST and independently of the story type, because a
+	//       partvoice can appear in card, event or main stories alike.
+	//   - card scenario ids (\d{6}_name) -> sound/card_scenario/voice/{sid}/{vid}.mp3
+	//   - everything else                -> sound/scenario/voice/{sid}/{vid}.mp3
+	// (Card scenarioIds reach here as the asset base name, set in StoryLoad, not the
+	// raw JSON ScenarioId — see scenarioAssetName.)
 	var url string
 	switch {
-	case cardScenarioRe.MatchString(scenarioID) && strings.HasPrefix(voiceID, "partvoice"):
-		// partvoice lines live in a shared bundle keyed by the SPEAKING character's
-		// chara2d: sound/scenario/voice/part_voice_{assetName}_{unit}/{vid}.mp3
+	case strings.HasPrefix(voiceID, "partvoice"):
 		if c, ok := service.Character2dByID(chara2d); ok {
 			url = baseURL + "sound/scenario/voice/part_voice_" + c.AssetName + "_" + c.Unit + "/" + voiceID + ".mp3"
 		} else {
@@ -907,9 +942,12 @@ func (h *Handler) DownloadStoryJSON(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		dlPath, err := h.dl.DownloadJSONToDir(path.URL, outputDir, path.FileName, func(read, total int64) {
+			task.Mu.Lock()
 			task.Read = read
 			task.Total = total
+			task.Mu.Unlock()
 		})
+		task.Mu.Lock()
 		if err != nil {
 			task.Status = "error"
 			task.Error = err.Error()
@@ -917,6 +955,7 @@ func (h *Handler) DownloadStoryJSON(w http.ResponseWriter, r *http.Request) {
 			task.Status = "done"
 			task.FilePath = dlPath
 		}
+		task.Mu.Unlock()
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]string{"taskId": taskID})
@@ -936,10 +975,32 @@ func (h *Handler) DownloadProgress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task := val.(*model.DownloadTaskProgress)
-	writeJSON(w, http.StatusOK, task)
+
+	// Snapshot the mutable fields under the lock so we don't race with the
+	// download goroutine while encoding/reading Status. Use a separate value
+	// (no embedded mutex) so encoding happens off-lock and go vet is happy.
+	task.Mu.Lock()
+	snap := struct {
+		TaskID   string `json:"taskId"`
+		Status   string `json:"status"`
+		Read     int64  `json:"read"`
+		Total    int64  `json:"total"`
+		FilePath string `json:"filePath,omitempty"`
+		Error    string `json:"error,omitempty"`
+	}{
+		TaskID:   task.TaskID,
+		Status:   task.Status,
+		Read:     task.Read,
+		Total:    task.Total,
+		FilePath: task.FilePath,
+		Error:    task.Error,
+	}
+	task.Mu.Unlock()
+
+	writeJSON(w, http.StatusOK, snap)
 
 	// Clean up completed tasks after serving
-	if task.Status == "done" || task.Status == "error" {
+	if snap.Status == "done" || snap.Status == "error" {
 		h.downloadTasks.Delete(taskID)
 	}
 }

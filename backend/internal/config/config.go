@@ -22,8 +22,8 @@ type AppConfig struct {
 	// PluginsDir is the writable directory holding installed plugins, one subdir
 	// per plugin id ({PluginsDir}/<id>/{manifest.json,entry.js,...}). Served by the
 	// Go sidecar so plugins can be installed/uninstalled at runtime (the bundled
-	// frontend dist is read-only in the packaged app). First-party plugins are
-	// seeded here on startup from the read-only bundle if absent.
+	// frontend dist is read-only in the packaged app). NOTE: no first-party
+	// seeding from the read-only bundle is performed on startup.
 	PluginsDir string
 }
 

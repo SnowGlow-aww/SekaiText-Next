@@ -23,7 +23,9 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger(logBuf))
 
-	// CORS - allow all origins in dev
+	// CORS - allow all origins in dev.
+	// NOTE: '*' is intentionally permissive because the Tauri webview origin
+	// (tauri://localhost) varies by platform/dev-server; left unrestricted by design.
 	corsHandler := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},

@@ -15,8 +15,9 @@ import (
 // --- Plugins ---
 // Plugins live under {dataDir}/plugins/<id>/ (writable) and are served by this
 // sidecar so the frontend can install/enable/disable/uninstall at runtime —
-// the bundled frontend dist is read-only in the packaged app. First-party
-// plugins are seeded on startup and flagged un-uninstallable.
+// the bundled frontend dist is read-only in the packaged app. (There is no
+// first-party seeding or un-uninstallable flag — any installed id can be
+// enabled/disabled/uninstalled.)
 
 // PluginsList returns all installed plugins with manifest metadata + state.
 func (h *Handler) PluginsList(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +73,10 @@ func (h *Handler) PluginFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := h.plugins.PluginDir(id)
+	if base == "" { // invalid plugin id (rejected by the store)
+		writeError(w, http.StatusBadRequest, "invalid plugin id")
+		return
+	}
 	target := filepath.Join(base, filepath.Clean("/"+rest))
 	if !strings.HasPrefix(target, filepath.Clean(base)+string(filepath.Separator)) {
 		writeError(w, http.StatusBadRequest, "invalid path")

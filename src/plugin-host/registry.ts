@@ -17,18 +17,21 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
   // Flattened, ordered sidebar items across all plugins. filter(Boolean) is a
   // defensive guard so a malformed contribution can never inject a null/undefined
   // into the v-for that renders the sidebar (which would white-screen the host).
+  // Stamp each item with its owning pluginId so the host can render a globally
+  // unique v-for key (`${pluginId}:${id}`) — two different plugins may pick the
+  // same item id, which would otherwise produce duplicate keys and corrupt the patch.
   const sidebarItems = computed<PluginSidebarItem[]>(() =>
-    Object.values(sidebarByPlugin.value)
-      .flat()
-      .filter((i): i is PluginSidebarItem => !!i && typeof i === 'object')
+    Object.entries(sidebarByPlugin.value)
+      .flatMap(([pluginId, items]) => (items ?? []).map((i) => ({ ...i, pluginId })))
+      .filter((i) => !!i && typeof i === 'object')
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   )
 
   // Flattened, ordered settings sections across all plugins.
   const settingsSections = computed<PluginSettingsSection[]>(() =>
-    Object.values(settingsByPlugin.value)
-      .flat()
-      .filter((s): s is PluginSettingsSection => !!s && typeof s === 'object')
+    Object.entries(settingsByPlugin.value)
+      .flatMap(([pluginId, sections]) => (sections ?? []).map((s) => ({ ...s, pluginId })))
+      .filter((s) => !!s && typeof s === 'object')
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   )
 

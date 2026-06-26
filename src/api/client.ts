@@ -312,7 +312,9 @@ export const api = {
   // Install a .sekplugin package from a local file path (Tauri dialog → path,
   // or marketplace download → temp path). hostVersion gates minHostVersion.
   pluginInstall: (srcPath: string, hostVersion: string) =>
-    request<import('../plugin-host/autoload').InstalledPlugin>('/plugins/install', {
+    // Backend returns a PluginManifest (no runtime `enabled` field); callers
+    // re-fetch the list for enable-state. Omit `enabled` so it can't be misread.
+    request<Omit<import('../plugin-host/autoload').InstalledPlugin, 'enabled'>>('/plugins/install', {
       method: 'POST',
       body: JSON.stringify({ srcPath, hostVersion }),
     }),
@@ -321,7 +323,9 @@ export const api = {
   marketIndex: () =>
     request<import('../stores/market').MarketListing[]>('/market/index'),
   marketInstall: (id: string, hostVersion: string) =>
-    request<import('../plugin-host/autoload').InstalledPlugin>('/market/install', {
+    // Backend returns a PluginManifest (no runtime `enabled` field); callers
+    // re-fetch the list for enable-state. Omit `enabled` so it can't be misread.
+    request<Omit<import('../plugin-host/autoload').InstalledPlugin, 'enabled'>>('/market/install', {
       method: 'POST',
       body: JSON.stringify({ id, hostVersion }),
     }),

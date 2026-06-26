@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -27,7 +28,9 @@ func (h *Handler) TeamWithdrawProposal(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) TeamPendingProposals(w http.ResponseWriter, r *http.Request) {
 	path := "/api/proposals"
 	if c := r.URL.Query().Get("category"); c != "" {
-		path += "?category=" + c
+		// Re-encode so a category containing '&'/'=' can't inject extra
+		// query params into the upstream request.
+		path += "?category=" + url.QueryEscape(c)
 	}
 	h.teamProxy(w, http.MethodGet, path, nil)
 }
