@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,6 +60,10 @@ func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.engine.StartTiming(newTaskID(), req)
 	if err != nil {
+		if errors.Is(err, service.ErrTimingBusy) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "启动打轴失败: "+err.Error())
 		return
 	}
@@ -152,6 +157,10 @@ func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.engine.StartSuppress(newTaskID(), req)
 	if err != nil {
+		if errors.Is(err, service.ErrSuppressBusy) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "启动压制失败: "+err.Error())
 		return
 	}

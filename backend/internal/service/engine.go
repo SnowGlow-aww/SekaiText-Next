@@ -53,6 +53,13 @@ type rawResponse struct {
 	Error  string
 }
 
+// Busy errors are returned when a single-job-per-domain start is rejected because
+// a run is already in progress; the HTTP layer maps these to 409 Conflict.
+var (
+	ErrTimingBusy   = errors.New("已有打轴任务在进行中")
+	ErrSuppressBusy = errors.New("已有压制任务在进行中")
+)
+
 // envelope is the union of response + notification fields; "id" presence selects.
 type ipcEnvelope struct {
 	ID     *int64          `json:"id"`
@@ -203,7 +210,33 @@ func (em *EngineManager) onExit() {
 	em.started = false
 	em.stdin = nil
 	em.cmd = nil
+	// Capture the active job pointers under em.mu, then release before touching
+	// each job's own Mu — same lock order as routeNotification (em.mu -> job.Mu)
+	// to avoid deadlock.
+	timing := em.timingJob
+	suppress := em.suppressJob
 	em.mu.Unlock()
+
+	// A still-running job will never get its finished notification once the
+	// engine dies, so fail it explicitly instead of leaving it stuck on running.
+	if timing != nil {
+		timing.Mu.Lock()
+		if timing.Status == "running" {
+			timing.Status = "error"
+			timing.Error = "引擎进程已退出"
+			timing.FinishReason = "EngineExited"
+		}
+		timing.Mu.Unlock()
+	}
+	if suppress != nil {
+		suppress.Mu.Lock()
+		if suppress.Status == "running" {
+			suppress.Status = "error"
+			suppress.Error = "引擎进程已退出"
+			suppress.FinishReason = "EngineExited"
+		}
+		suppress.Mu.Unlock()
+	}
 
 	em.pending.Range(func(k, v interface{}) bool {
 		em.pending.Delete(k)
@@ -291,6 +324,18 @@ type TimingParams struct {
 func (em *EngineManager) StartTiming(taskID string, p TimingParams) (*EngineTimingJob, error) {
 	job := &EngineTimingJob{TaskID: taskID, Status: "running"}
 	em.mu.Lock()
+	// Single-flight: refuse a second run rather than overwriting the active job
+	// pointer (which would orphan the old job and let its notifications bleed into
+	// the new one).
+	if prev := em.timingJob; prev != nil {
+		prev.Mu.Lock()
+		running := prev.Status == "running"
+		prev.Mu.Unlock()
+		if running {
+			em.mu.Unlock()
+			return nil, ErrTimingBusy
+		}
+	}
 	em.timingJob = job
 	em.mu.Unlock()
 
@@ -343,6 +388,18 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams) (*Engine
 	}
 	job := &EngineSuppressJob{TaskID: taskID, Status: "running", OutputPath: p.OutputPath}
 	em.mu.Lock()
+	// Single-flight: refuse a second run rather than overwriting the active job
+	// pointer (which would orphan the old job and let its notifications bleed into
+	// the new one).
+	if prev := em.suppressJob; prev != nil {
+		prev.Mu.Lock()
+		running := prev.Status == "running"
+		prev.Mu.Unlock()
+		if running {
+			em.mu.Unlock()
+			return nil, ErrSuppressBusy
+		}
+	}
 	em.suppressJob = job
 	em.mu.Unlock()
 
@@ -420,8 +477,16 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 		var p struct{ Percent float64 }
 		_ = json.Unmarshal(params, &p)
 		if j := em.activeTiming(); j != nil {
+			// Engine reports percent as a 0..1 fraction; the frontend renders
+			// 0..100, so scale here to match the 压制 progress (already 0..100).
+			pct := p.Percent * 100
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
 			j.Mu.Lock()
-			j.Percent = p.Percent
+			j.Percent = pct
 			j.Mu.Unlock()
 		}
 	case method == "subtitle.fps":
@@ -455,7 +520,10 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 		if j := em.activeTiming(); j != nil {
 			j.Mu.Lock()
 			j.FinishReason = p.Reason
-			if p.Reason == "Completed" {
+			// ReadFailed means the engine ran to the end of the video (read past
+			// EOF) — a normal successful finish, same as Completed. See native app
+			// SekaiToolsApp/Views/Pages/SubtitlePageView.cs:513-518.
+			if p.Reason == "Completed" || p.Reason == "ReadFailed" {
 				j.Status = "done"
 				j.Percent = 100
 			} else if p.Reason == "Canceled" {
