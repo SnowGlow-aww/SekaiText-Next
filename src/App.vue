@@ -5,6 +5,7 @@
     </keep-alive>
   </router-view>
   <Toast />
+  <UpdateBanner />
   <DownloadFloat />
   <ConfirmHost />
   <RecoveryDialog
@@ -18,14 +19,19 @@
 import { ref, onMounted, watch } from 'vue'
 import { useSettingsStore } from './stores/settings'
 import { useAppStore } from './stores/app'
+import { useAppUpdateStore } from './stores/appUpdate'
+import { useToast } from './composables/useToast'
 import { useDebugLog } from './composables/useDebugLog'
 import { api, BASE_URL } from './api/client'
 import Toast from './components/Toast.vue'
+import UpdateBanner from './components/ui/UpdateBanner.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
 import ConfirmHost from './components/ui/ConfirmHost.vue'
 import RecoveryDialog from './components/RecoveryDialog.vue'
 
 const settings = useSettingsStore()
+const appUpdate = useAppUpdateStore()
+const toast = useToast()
 // Instantiate the app store at boot so theme + accent are applied immediately,
 // regardless of which route mounts first (its watchers run on creation).
 useAppStore()
@@ -69,5 +75,16 @@ onMounted(async () => {
   } catch {
     // backend not available, skip
   }
+
+  // Auto-update (non-blocking): silently bring installed plugins up to date
+  // (effective next launch) and check for a newer app version (→ UpdateBanner).
+  // Both swallow offline/mirror failures so a cold start is never blocked.
+  void appUpdate.autoUpdatePlugins().then((sum) => {
+    if (sum && sum.updated.length) {
+      const names = sum.updated.map((p) => p.name || p.id).join('、')
+      toast.show(`已自动更新 ${sum.updated.length} 个插件（${names}），重启后生效`, 'success', 6000)
+    }
+  })
+  void appUpdate.check()
 })
 </script>

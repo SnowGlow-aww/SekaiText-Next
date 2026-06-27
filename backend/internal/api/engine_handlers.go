@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,36 @@ import (
 // JSON download endpoints (taskId -> a /progress poll -> terminal status).
 
 func newTaskID() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }
+
+// sanitizeThreshold defends the .NET engine's GetDouble() — which throws on a
+// non-number JSON value — from a malformed threshold object: it keeps only finite
+// numeric entries and drops everything else, so a stray ""/null/string from any
+// caller can't 500 the start. The plugin already coerces these client-side; this
+// is belt-and-suspenders for other callers. A non-object threshold (nil, etc.)
+// yields nil, letting the engine apply its built-in defaults.
+func sanitizeThreshold(v interface{}) interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, val := range m {
+		switch n := val.(type) {
+		case float64:
+			if !math.IsNaN(n) && !math.IsInf(n, 0) {
+				out[k] = n
+			}
+		case json.Number:
+			if f, err := n.Float64(); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+				out[k] = f
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // EngineStatus reports whether the engine is bundled and, if so, its version.
 func (h *Handler) EngineStatus(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +88,9 @@ func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "剧本文件不存在: "+req.ScriptPath)
 		return
 	}
+	// Drop any non-numeric threshold entries before they reach the engine's
+	// GetDouble() (which would otherwise throw and 500 the start).
+	req.Threshold = sanitizeThreshold(req.Threshold)
 
 	job, err := h.engine.StartTiming(newTaskID(), req)
 	if err != nil {
@@ -117,6 +151,20 @@ func (h *Handler) EngineTimingPreview(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil || !h.engine.Available() {
 		writeError(w, http.StatusServiceUnavailable, "打轴引擎未安装")
+		return
+	}
+	// Bind export to a specific finished task so a second timing run (or a still-
+	// running one) can't make us export the engine's wrong/half-built subtitle.
+	job, ok := h.engineTimingJob(r.URL.Query().Get("task"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	job.Mu.Lock()
+	status := job.Status
+	job.Mu.Unlock()
+	if status != "done" {
+		writeError(w, http.StatusConflict, "打轴尚未完成，无法导出")
 		return
 	}
 	content, err := h.engine.Export()
@@ -204,6 +252,10 @@ func (h *Handler) EngineCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domain := r.URL.Query().Get("domain")
+	if domain != "timing" && domain != "suppress" {
+		writeError(w, http.StatusBadRequest, "未知取消域（应为 timing 或 suppress）: "+domain)
+		return
+	}
 	if err := h.engine.Cancel(domain); err != nil {
 		writeError(w, http.StatusInternalServerError, "取消失败: "+err.Error())
 		return

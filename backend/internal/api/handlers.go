@@ -35,6 +35,7 @@ type Handler struct {
 	glossary      *service.GlossaryStore
 	plugins       *service.PluginStore
 	market        *service.MarketService
+	appUpdate     *service.AppUpdateService
 	team          *service.TeamService
 	engine        *service.EngineManager
 	downloadTasks sync.Map // map[string]*model.DownloadTaskProgress
@@ -60,6 +61,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		glossary:   service.NewGlossaryStore(cfg.DataDir),
 		plugins:    pluginStore,
 		market:     service.NewMarketService(pluginStore),
+		appUpdate:  service.NewAppUpdateService(),
 		team:       service.NewTeamService(cfg.DataDir),
 		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
 	}

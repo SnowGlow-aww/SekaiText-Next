@@ -1,20 +1,13 @@
 import { defineStore } from 'pinia'
 import { useLocalStorage, usePreferredDark } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
+import { DEFAULT_ACCENT } from '../data/characterColors'
+import { idbGet, idbPut, idbDel } from '../lib/idb'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
 const THEME_STORAGE_KEY = 'sekaitext-theme-mode'
 const ACCENT_STORAGE_KEY = 'sekaitext-accent'
-
-// The default 'rainbow' accent maps to a fixed PJSK multicolour gradient; any
-// other value is a character 代表色 hex ('#rrggbb'). The teal below (Miku) is the
-// solid colour rainbow mode uses for primary controls.
-// Light pastel multicolour so the gradient's dark text (accent-content below)
-// stays legible across every stop — the deep-blue/purple version washed out the
-// label on CTAs.
-const RAINBOW_GRADIENT =
-  'linear-gradient(135deg,#5fdccb 0%,#8fa6f5 28%,#c9a0f0 50%,#ff9ec9 73%,#ffc06b 100%)'
 
 // Pick black-ish vs white text for a given accent so labels on primary buttons
 // stay legible across the whole pastel-to-saturated PJSK range (WCAG relative
@@ -30,26 +23,40 @@ function contrastContent(hex: string): string {
 
 function applyAccent(value: string) {
   const root = document.documentElement
-  if (value === 'rainbow') {
-    root.style.setProperty('--accent', '#33ccbb')
-    root.style.setProperty('--accent-content', '#12203a')
-    root.style.setProperty('--brand-gradient', RAINBOW_GRADIENT)
-    return
-  }
-  root.style.setProperty('--accent', value)
-  root.style.setProperty('--accent-content', contrastContent(value))
-  // Drop the inline override so the CSS-derived (accent-based) gradient applies.
-  root.style.removeProperty('--brand-gradient')
+  // Legacy migration: the removed 'rainbow' default falls back to the default accent.
+  const hex = value === 'rainbow' ? DEFAULT_ACCENT : value
+  root.style.setProperty('--accent', hex)
+  root.style.setProperty('--accent-content', contrastContent(hex))
 }
 
 const FONT_STORAGE_KEY = 'sekaitext-font'
+const CUSTOM_FONTS_KEY = 'sekaitext-custom-fonts'
+
+// Appended after a user-imported family so glyphs it lacks (e.g. CJK in a
+// latin-only font) fall through gracefully instead of showing tofu.
+const CUSTOM_FONT_FALLBACK = "'PingFang SC','Microsoft YaHei',system-ui,sans-serif"
+
+// id -> the unique CSS family name we registered the imported font under.
+const customFamilies = new Map<string, string>()
+
+// Register an imported font blob with the document so CSS can reference it.
+// No-op if already registered (boot + re-import are idempotent).
+async function registerCustomFont(id: string, blob: Blob): Promise<void> {
+  if (customFamilies.has(id)) return
+  const family = `SekaiUserFont-${id}`
+  const face = new FontFace(family, await blob.arrayBuffer())
+  await face.load()
+  document.fonts.add(face)
+  customFamilies.set(id, family)
+}
 
 // App-wide UI font choices. Each maps to a CSS font-family stack applied to
 // <html> via --app-font-family (style.css body falls back to the default stack
-// when unset). Only system-available fonts — nothing is bundled, so unavailable
-// families just fall through to the next in the stack.
+// when unset). The 'default' entry leaves --app-font-family unset, so the body
+// inherits the bundled 荆南麦圆体 (Jingnan Maiyuan) @font-face from style.css;
+// the rest are system families that fall through if unavailable.
 export const FONT_OPTIONS: { value: string; label: string; stack: string }[] = [
-  { value: 'default', label: '默认', stack: '' },
+  { value: 'default', label: '荆南麦圆体 · 默认', stack: '' },
   { value: 'system', label: '系统 UI', stack: 'system-ui,-apple-system,"Segoe UI",sans-serif' },
   { value: 'pingfang', label: '苹方', stack: '"PingFang SC","PingFang TC","Hiragino Sans GB",sans-serif' },
   { value: 'yahei', label: '微软雅黑', stack: '"Microsoft YaHei","微软雅黑",sans-serif' },
@@ -62,9 +69,59 @@ export const FONT_OPTIONS: { value: string; label: string; stack: string }[] = [
 
 function applyFont(value: string) {
   const root = document.documentElement
-  const opt = FONT_OPTIONS.find((o) => o.value === value)
-  if (!opt || !opt.stack) root.style.removeProperty('--app-font-family')
-  else root.style.setProperty('--app-font-family', opt.stack)
+  const builtin = FONT_OPTIONS.find((o) => o.value === value)
+  if (builtin) {
+    if (builtin.stack) root.style.setProperty('--app-font-family', builtin.stack)
+    else root.style.removeProperty('--app-font-family')
+    return
+  }
+  // Custom imported font (value is its id). If not yet registered (boot races
+  // the async IDB load), fall back to default; boot re-applies once registered.
+  const family = customFamilies.get(value)
+  if (family) root.style.setProperty('--app-font-family', `"${family}",${CUSTOM_FONT_FALLBACK}`)
+  else root.style.removeProperty('--app-font-family')
+}
+
+// ── Personalised background image ──────────────────────────────────────────
+const BG_ENABLED_KEY = 'sekaitext-bg-enabled'
+const BG_VEIL_KEY = 'sekaitext-bg-veil'
+const BG_BLUR_KEY = 'sekaitext-bg-blur'
+// Readability floor: the theme-tinted veil over the wallpaper never drops below
+// this opacity (%), so text on --color-bg surfaces always keeps contrast.
+export const BG_VEIL_MIN = 60
+// Surfaces (cards / panels / the full-bleed editor) are kept more opaque than
+// the page veil so dense translated text never loses contrast over a wallpaper.
+// Driven by the same slider as --bg-veil, just floored higher.
+const SURFACE_VEIL_MIN = 86
+
+let bgUrl = '' // current object URL for the wallpaper blob
+
+function applyBgVeil(v: number) {
+  const root = document.documentElement.style
+  root.setProperty('--bg-veil', Math.max(BG_VEIL_MIN, v) + '%')
+  root.setProperty('--surface-veil', Math.max(SURFACE_VEIL_MIN, v) + '%')
+}
+function applyBgBlur(px: number) {
+  document.documentElement.style.setProperty('--bg-blur', Math.max(0, px) + 'px')
+}
+// Point the fixed background layer at a blob and return its object URL (for the
+// picker's preview thumbnail). Revokes the previous URL to avoid leaks.
+function showBackground(blob: Blob): string {
+  if (bgUrl) URL.revokeObjectURL(bgUrl)
+  bgUrl = URL.createObjectURL(blob)
+  const root = document.documentElement
+  root.style.setProperty('--bg-image', `url("${bgUrl}")`)
+  root.setAttribute('data-bg', 'on')
+  return bgUrl
+}
+function hideBackground() {
+  if (bgUrl) {
+    URL.revokeObjectURL(bgUrl)
+    bgUrl = ''
+  }
+  const root = document.documentElement
+  root.removeAttribute('data-bg')
+  root.style.removeProperty('--bg-image')
 }
 
 export const useAppStore = defineStore('app', () => {
@@ -93,16 +150,56 @@ export const useAppStore = defineStore('app', () => {
   const isSystemDark = usePreferredDark()
   const isDark = computed(() => themeMode.value === 'dark' || (themeMode.value === 'system' && isSystemDark.value))
 
-  // accentColor: 'rainbow' (default PJSK multicolour) or a character 代表色 hex.
-  const accentColor = useLocalStorage(ACCENT_STORAGE_KEY, 'rainbow')
+  // accentColor: a character 代表色 hex; defaults to Miku's DEFAULT_ACCENT.
+  const accentColor = useLocalStorage(ACCENT_STORAGE_KEY, DEFAULT_ACCENT)
+  // Migrate legacy accents to the current default (Miku 代表色): the removed
+  // 'rainbow' gradient and the removed brand-violet default both fall through.
+  if (accentColor.value === 'rainbow' || accentColor.value.toLowerCase() === '#6c4cff') {
+    accentColor.value = DEFAULT_ACCENT
+  }
   function setAccent(value: string) {
     accentColor.value = value
   }
 
-  // fontFamily: app-wide UI font (see FONT_OPTIONS). 'default' uses the base stack.
+  // fontFamily: app-wide UI font — a FONT_OPTIONS value, or a custom font id.
   const fontFamily = useLocalStorage(FONT_STORAGE_KEY, 'default')
   function setFont(value: string) {
     fontFamily.value = value
+  }
+  // customFonts: user-imported families (blob lives in IndexedDB under font:<id>).
+  const customFonts = useLocalStorage<{ id: string; label: string }[]>(CUSTOM_FONTS_KEY, [])
+  async function importFont(file: File) {
+    const id = String(Date.now())
+    await registerCustomFont(id, file) // throws on an invalid/unsupported font
+    await idbPut(`font:${id}`, file)
+    const label = file.name.replace(/\.[^.]+$/, '').trim() || '自定义字体'
+    customFonts.value = [...customFonts.value, { id, label }]
+    setFont(id)
+  }
+  async function removeCustomFont(id: string) {
+    await idbDel(`font:${id}`)
+    customFonts.value = customFonts.value.filter((f) => f.id !== id)
+    customFamilies.delete(id)
+    if (fontFamily.value === id) setFont('default')
+  }
+
+  // Background wallpaper. bgEnabled gates the fixed image layer; veil/blur tune
+  // readability (veil floored at BG_VEIL_MIN). Blob lives in IDB under bg:image.
+  const bgEnabled = useLocalStorage(BG_ENABLED_KEY, false)
+  const bgVeil = useLocalStorage(BG_VEIL_KEY, 82)
+  const bgBlur = useLocalStorage(BG_BLUR_KEY, 2)
+  const bgThumb = ref('') // object URL for the picker preview
+  async function importBackground(file: File) {
+    if (!file.type.startsWith('image/')) throw new Error('not an image')
+    await idbPut('bg:image', file)
+    bgEnabled.value = true
+    bgThumb.value = showBackground(file)
+  }
+  function removeBackground() {
+    void idbDel('bg:image')
+    bgEnabled.value = false
+    bgThumb.value = ''
+    hideBackground()
   }
 
   function applyTheme(dark: boolean) {
@@ -116,6 +213,35 @@ export const useAppStore = defineStore('app', () => {
   watch(isDark, applyTheme, { immediate: true })
   watch(accentColor, applyAccent, { immediate: true })
   watch(fontFamily, applyFont, { immediate: true })
+  watch(bgVeil, applyBgVeil, { immediate: true })
+  watch(bgBlur, applyBgBlur, { immediate: true })
+
+  // Restore imported fonts + wallpaper from IndexedDB on boot. Runs async after
+  // the synchronous watchers above have applied defaults; a font/image that
+  // fails to load is dropped rather than blocking the rest.
+  async function restorePersonalization() {
+    for (const f of customFonts.value) {
+      try {
+        const blob = await idbGet(`font:${f.id}`)
+        if (blob) await registerCustomFont(f.id, blob)
+      } catch {
+        /* skip one bad font */
+      }
+    }
+    // The active font may have been a custom one not yet registered when the
+    // immediate watcher first ran — re-apply now that families are loaded.
+    if (!FONT_OPTIONS.some((o) => o.value === fontFamily.value)) applyFont(fontFamily.value)
+    if (bgEnabled.value) {
+      try {
+        const blob = await idbGet('bg:image')
+        if (blob) bgThumb.value = showBackground(blob)
+        else bgEnabled.value = false
+      } catch {
+        bgEnabled.value = false
+      }
+    }
+  }
+  void restorePersonalization()
 
   function setEditorMode(mode: 0 | 1 | 2) {
     editorMode.value = mode
@@ -144,6 +270,15 @@ export const useAppStore = defineStore('app', () => {
     setAccent,
     fontFamily,
     setFont,
+    customFonts,
+    importFont,
+    removeCustomFont,
+    bgEnabled,
+    bgVeil,
+    bgBlur,
+    bgThumb,
+    importBackground,
+    removeBackground,
     setEditorMode,
   }
 })

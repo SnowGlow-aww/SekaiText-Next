@@ -87,8 +87,9 @@ export const ACCENT_GROUPS: AccentGroup[] = [
   },
 ]
 
-// 'rainbow' = the default PJSK multicolour gradient accent (no single character).
-export const DEFAULT_ACCENT = 'rainbow'
+// Default accent — Miku's 代表色 (teal #33ccbb). Previously a PJSK multicolour
+// gradient, then brand violet; both removed in favour of Miku's official colour.
+export const DEFAULT_ACCENT = '#33ccbb'
 
 // Flat lookup: hex -> display name (used to label the current selection).
 export const ACCENT_NAME_BY_COLOR: Record<string, string> = (() => {

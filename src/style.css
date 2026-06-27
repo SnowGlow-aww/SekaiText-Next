@@ -2,6 +2,24 @@
 
 @plugin "daisyui";
 
+/* Installed plugin bundles (auto-timing, live2d, …) render with host utility
+   classes but ship no CSS of their own — scan their built entry.js so any
+   utilities they use (e.g. grid-cols-[1fr_7rem], bg-warning/10, max-h-72) are
+   generated here. Without this, plugin-only utilities would be missing. */
+@source "../backend/plugins";
+
+/* Bundled default UI font — 荆南麦圆体 (Jingnan Maiyuan). Vite fingerprints the
+   .otf and copies it into dist/assets; the body default stack below leads with
+   this family so the app ships with it out of the box. The settings font picker
+   ('default' option) leaves --app-font-family unset, so this stays the default;
+   choosing another font overrides --app-font-family and supersedes it. */
+@font-face {
+  font-family: 'Jingnan Maiyuan';
+  src: url('./assets/fonts/jingnan-maiyuan.otf') format('opentype');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /* ────────────────────────────────────────────────────────────────────────
    SekaiText design system — two hand-tuned PJSK themes (精致有质感 × 二次元活泼).
    sekai-light: soft cool off-white canvas, raised white cards.
@@ -103,10 +121,9 @@
   --color-primary-content: var(--accent-content, oklch(99% 0 0));
 }
 
-/* Brand gradient — the "PJSK 多彩" flavour for hero/CTA surfaces. Default below
-   is derived from whatever the current --accent is (refined same-family sweep
-   with a violet pop). The 'rainbow' default accent overrides this inline with a
-   full multicolour gradient (see applyAccent). */
+/* Brand gradient for hero/CTA surfaces — a subtle same-family sweep derived
+   from the current --accent (with a violet pop). Always accent-driven now; the
+   old multicolour "rainbow" default was removed. */
 :root {
   --brand-gradient: linear-gradient(
     135deg,
@@ -178,17 +195,71 @@ body {
   margin: 0;
   /* --app-font-family is set at runtime by the settings font picker (stores/app.ts);
      unset → the default stack below applies. */
-  font-family: var(--app-font-family, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif);
+  font-family: var(--app-font-family, 'Jingnan Maiyuan', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif);
   background-color: var(--color-bg);
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
+/* ── Personalised background image (opt-in wallpaper) ───────────────────────
+   Set via the appearance picker (stores/app.ts toggles html[data-bg="on"] and
+   the --bg-* vars). Readability is structural, not best-effort:
+   • the image sits on a fixed, blurred layer *behind* everything (body::before);
+   • --color-bg becomes a theme-tinted veil over it — base-100 whitens it in
+     light mode / darkens it in dark mode, so text contrast tracks the theme.
+     The veil opacity (--bg-veil) is floored in the store (BG_VEIL_MIN), so it
+     can never get thin enough to wash out body text;
+   • --color-surface becomes a *thinner* theme-tinted glass so the wallpaper
+     reads through the whole app — the editor is a full-bleed grid of surfaces
+     (sidebar / toolbars / the 原文·译文 panel), so a fully opaque surface there
+     hid the wallpaper entirely. Its opacity (--surface-veil) is floored higher
+     than --bg-veil (SURFACE_VEIL_MIN in stores/app.ts), and the wallpaper is
+     already blurred at the source, so dense editor text keeps its contrast —
+     no per-element backdrop-filter needed (which would also trap SkSelect's
+     fixed dropdown panels inside a containing block). */
+html[data-bg='on'] {
+  --color-bg: color-mix(in oklch, var(--color-base-100) var(--bg-veil, 82%), transparent);
+  --color-surface: color-mix(in oklch, var(--color-base-200) var(--surface-veil, 84%), transparent);
+}
+/* Form fields stay opaque over a wallpaper so placeholder/value text never has
+   to fight the image showing through a translucent veil — the #1 readability
+   complaint on input-heavy (e.g. plugin) pages. */
+html[data-bg='on'] .app-input,
+html[data-bg='on'] select.app-input {
+  background-color: var(--color-base-100);
+}
+html[data-bg='on'] body {
+  background-color: transparent;
+}
+html[data-bg='on'] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  /* scale hides the soft edge the blur would otherwise reveal at the viewport rim */
+  transform: scale(1.06);
+  filter: blur(var(--bg-blur, 0px));
+  pointer-events: none;
+}
+
 /* ── Component primitives ──────────────────────────────────────────────────
    Small set of semantic classes used by the redesigned screens. They compose
    with daisyUI utilities; explicit Tailwind utilities still win. */
 @layer components {
+  /* md SkSelect fills its container by default. This lives in the components
+     layer on purpose: any caller width utility (w-44 / w-auto / max-w-xs /
+     flex-1) sits in the utilities layer and therefore overrides it. A scoped
+     component rule can't achieve this — scoped styles are unlayered and would
+     always beat layered utilities regardless of specificity. */
+  .sk-is-full {
+    width: 100%;
+  }
+
   .app-card {
     background-color: var(--color-surface);
     border: 1px solid var(--color-border);

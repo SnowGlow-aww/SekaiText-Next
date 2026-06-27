@@ -32,7 +32,7 @@ const activeIdx = ref(-1)
 // trigger width and flips above when there's no room below). Upward placement
 // anchors via `bottom` so it never needs an inline transform that would fight
 // the enter/leave transition.
-const pos = ref({ left: 0, top: 0, bottom: 0, width: 0, placement: 'bottom' as 'bottom' | 'top' })
+const pos = ref({ left: 0, top: 0, bottom: 0, minWidth: 0, placement: 'bottom' as 'bottom' | 'top' })
 
 const selected = computed(() => props.options.find(o => o.value === props.modelValue))
 const display = computed(() => selected.value?.label ?? props.placeholder)
@@ -48,9 +48,21 @@ function measure() {
     left: r.left,
     top: r.bottom + 6,
     bottom: window.innerHeight - r.top + 6,
-    width: r.width,
+    minWidth: r.width,
     placement,
   }
+}
+
+// The panel sizes to its widest option (width: max-content, floored at the
+// trigger width). Once it's mounted we know its real width, so nudge it back
+// onto the screen if growing rightward would push it past the viewport edge.
+function clampHoriz() {
+  const p = panel.value
+  if (!p) return
+  const w = p.offsetWidth
+  const max = window.innerWidth - 8
+  const left = pos.value.left + w > max ? Math.max(8, max - w) : pos.value.left
+  if (left !== pos.value.left) pos.value = { ...pos.value, left }
 }
 
 async function toggle() {
@@ -60,6 +72,7 @@ async function toggle() {
   open.value = true
   activeIdx.value = props.options.findIndex(o => o.value === props.modelValue)
   await nextTick()
+  clampHoriz()
   panel.value?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
 }
 
@@ -101,13 +114,13 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 onClickOutside(root, () => close(), { ignore: [panel] })
-useEventListener(window, 'scroll', () => { if (open.value) measure() }, true)
-useEventListener(window, 'resize', () => { if (open.value) measure() })
+useEventListener(window, 'scroll', () => { if (open.value) { measure(); nextTick(clampHoriz) } }, true)
+useEventListener(window, 'resize', () => { if (open.value) { measure(); nextTick(clampHoriz) } })
 watch(() => props.disabled, (d) => { if (d) close() })
 </script>
 
 <template>
-  <div ref="root" class="sk-select-root" :class="{ 'is-full': size === 'md' }">
+  <div ref="root" class="sk-select-root" :class="{ 'sk-is-full': size === 'md' }">
     <button
       type="button"
       class="sk-trigger"
@@ -129,7 +142,7 @@ watch(() => props.disabled, (d) => { if (d) close() })
           :data-placement="pos.placement"
           :style="{
             left: pos.left + 'px',
-            width: pos.width + 'px',
+            minWidth: pos.minWidth + 'px',
             ...(pos.placement === 'bottom' ? { top: pos.top + 'px' } : { bottom: pos.bottom + 'px' }),
           }"
         >
@@ -159,11 +172,8 @@ watch(() => props.disabled, (d) => { if (d) close() })
   display: inline-flex;
   position: relative;
 }
-/* :where() keeps this at zero specificity so caller width utilities
-   (w-44 / max-w-xs / …) always win. */
-:where(.sk-select-root.is-full) {
-  width: 100%;
-}
+/* The md full-width default lives in the global components layer (.sk-is-full)
+   so caller width utilities can override it — see style.css. */
 
 .sk-trigger {
   display: inline-flex;
@@ -216,8 +226,11 @@ watch(() => props.disabled, (d) => { if (d) close() })
 .sk-panel {
   position: fixed;
   z-index: 1000;
+  width: max-content;
+  max-width: calc(100vw - 16px);
   max-height: 16rem;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 0.25rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);

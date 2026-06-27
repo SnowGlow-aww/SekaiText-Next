@@ -180,6 +180,10 @@ type Settings struct {
 	// PluginMarketURL overrides the plugin marketplace index URL. Empty falls
 	// back to the built-in default (service.DefaultMarketURL).
 	PluginMarketURL string `json:"pluginMarketUrl,omitempty"`
+
+	// AppUpdateURL overrides the app-release manifest URL. Empty falls back to the
+	// built-in default (service.DefaultAppUpdateURL).
+	AppUpdateURL string `json:"appUpdateUrl,omitempty"`
 }
 
 // DefaultSettings returns sensible defaults.

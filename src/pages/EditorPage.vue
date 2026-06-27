@@ -531,7 +531,11 @@ onUnmounted(() => {
             <button @click="handleReplaceAll" class="btn btn-sm btn-ghost border border-[var(--color-border)]">全部替换</button>
           </div>
         </div>
-        <main class="flex-1 min-h-0"><EditorWorkspace ref="workspace"/></main>
+        <!-- With a wallpaper on, let the editor card float on a thin gutter of
+             wallpaper instead of butting a bordered rounded card straight into
+             the square toolbar/sidebar (which left a hard full-width seam + cut
+             corner notches). Off → unchanged full-bleed layout. -->
+        <main class="flex-1 min-h-0" :class="{ 'p-2.5': app.bgEnabled }"><EditorWorkspace ref="workspace"/></main>
       </div>
     </div>
     <SpeakerCountDialog v-if="showSpeakerCount" @close="showSpeakerCount = false"/>

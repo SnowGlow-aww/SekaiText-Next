@@ -55,6 +55,13 @@ export interface SekaiHost {
   ui: {
     toast: (message: string, type?: 'success' | 'error' | 'info' | 'warn', duration?: number) => void
   }
+  // Native file dialogs (Tauri). Resolve to an absolute path / paths / null. In a
+  // non-Tauri context (web dev) the underlying import throws — callers should
+  // catch and fall back to manual path entry.
+  dialog: {
+    open: (options?: any) => Promise<string | string[] | null>
+    save: (options?: any) => Promise<string | null>
+  }
   // Pre-compiled core components plugins can reuse (shared, not re-bundled).
   components: {
     StoryNavigator: any

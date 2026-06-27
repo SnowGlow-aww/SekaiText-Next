@@ -116,10 +116,20 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/{id}/files/*", h.PluginFile)
 		})
 
-		// Plugin marketplace: remote index browse + install-by-id
+		// Plugin marketplace: remote index browse + install-by-id + auto-update
 		r.Route("/market", func(r chi.Router) {
 			r.Get("/index", h.MarketIndex)
 			r.Post("/install", h.MarketInstall)
+			r.Post("/auto-update", h.MarketAutoUpdate)
+		})
+
+		// App self-update: check the release manifest, download the installer
+		// (mirror-accelerated) to Downloads, then open it for the user to install.
+		r.Route("/app", func(r chi.Router) {
+			r.Get("/update/check", h.AppUpdateCheck)
+			r.Post("/update/download", h.AppUpdateDownload)
+			r.Get("/update/download-progress", h.DownloadProgress)
+			r.Post("/open", h.AppUpdateOpen)
 		})
 
 		// Import a folder of Live2D assets into the local mirror

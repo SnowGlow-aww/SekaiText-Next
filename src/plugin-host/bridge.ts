@@ -76,6 +76,19 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
     },
     api,
     ui: { toast },
+    // Reuse the host's own Tauri file dialog (lazy import, same as the editor's
+    // file-open paths) so plugins can pick absolute paths instead of forcing the
+    // user to type them.
+    dialog: {
+      open: async (options?: any) => {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        return open(options) as Promise<string | string[] | null>
+      },
+      save: async (options?: any) => {
+        const { save } = await import('@tauri-apps/plugin-dialog')
+        return save(options)
+      },
+    },
     components: { StoryNavigator },
     registerRoute,
     registerSidebarItem,

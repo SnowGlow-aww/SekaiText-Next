@@ -329,6 +329,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id, hostVersion }),
     }),
+  // Reinstall every installed plugin that has a newer market version. Silent
+  // auto-update on boot; the summary drives a "已更新 N 个插件" toast.
+  marketAutoUpdate: (hostVersion: string) =>
+    request<import('../stores/appUpdate').AutoUpdateSummary>('/market/auto-update', {
+      method: 'POST',
+      body: JSON.stringify({ hostVersion }),
+    }),
+
+  // App self-update (本体 检查 → 下载 → 打开安装)
+  appUpdateCheck: (current: string) =>
+    request<import('../stores/appUpdate').AppUpdateInfo>(
+      '/app/update/check?current=' + encodeURIComponent(current),
+    ),
+  appUpdateDownload: (current: string) =>
+    request<{ taskId: string }>('/app/update/download', {
+      method: 'POST',
+      body: JSON.stringify({ current }),
+    }),
+  appUpdateDownloadProgress: (taskId: string) =>
+    request<{ taskId: string; status: string; read: number; total: number; filePath?: string; error?: string }>(
+      '/app/update/download-progress?task=' + encodeURIComponent(taskId),
+    ),
+  appUpdateOpen: (path: string) =>
+    request<{ opened: string }>('/app/open', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 
   // Update (CDN refresh)
   update: () => request<{ status: string }>('/update', { method: 'POST' }),

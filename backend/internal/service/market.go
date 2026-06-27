@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +17,70 @@ import (
 // DefaultMarketURL is the built-in plugin marketplace index. Overridable via
 // Settings.PluginMarketURL.
 const DefaultMarketURL = "https://raw.githubusercontent.com/snowglow-aww/sekaitext-plugins/main/index.json"
+
+// GitHubProxyPrefix accelerates plugin-market downloads on networks where direct
+// github.com / raw.githubusercontent.com access is slow or flaky. GitHub URLs are
+// tried through this mirror first and fall back to the original GitHub URL when the
+// mirror errors or returns non-200 (see MarketService.fetch). Keep the trailing /.
+const GitHubProxyPrefix = "https://ghfast.top/"
+
+// githubHosts are the GitHub-owned hosts worth routing through the mirror. Other
+// hosts (a self-hosted index/CDN via Settings.PluginMarketURL) are left untouched.
+var githubHosts = map[string]bool{
+	"github.com":                    true,
+	"raw.githubusercontent.com":     true,
+	"objects.githubusercontent.com": true,
+	"codeload.github.com":           true,
+	"gist.githubusercontent.com":    true,
+}
+
+// mirrorCandidates returns the URLs to try in order: the ghfast.top mirror first
+// (GitHub hosts only), then the original. A non-GitHub or unparseable URL yields
+// just itself, so a self-hosted index/CDN is unaffected.
+func mirrorCandidates(rawurl string) []string {
+	u, err := url.Parse(rawurl)
+	if err != nil || !githubHosts[strings.ToLower(u.Hostname())] {
+		return []string{rawurl}
+	}
+	// ghfast.top expects the full original URL (scheme included) appended.
+	return []string{GitHubProxyPrefix + rawurl, rawurl}
+}
+
+// mirrorFetch GETs rawurl, trying each mirrorCandidates URL in order until one
+// returns HTTP 200. firstClient (shorter timeout) is used for every candidate
+// except the last so a dead mirror fails over fast; lastClient (full timeout) is
+// used for the final official attempt. The response Body is the caller's to close.
+func mirrorFetch(firstClient, lastClient *http.Client, rawurl string) (*http.Response, error) {
+	candidates := mirrorCandidates(rawurl)
+	var lastErr error
+	for i, cand := range candidates {
+		client := lastClient
+		if i < len(candidates)-1 {
+			client = firstClient // a fallback remains → don't wait the full timeout
+		}
+		req, err := http.NewRequest(http.MethodGet, cand, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "SekaiText-PluginMarket")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+		return resp, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no url candidates")
+	}
+	return nil, lastErr
+}
 
 // MarketEntry is one plugin listing in the remote index.
 type MarketEntry struct {
@@ -49,20 +114,27 @@ type MarketListing struct {
 // MarketService fetches the remote plugin index and installs plugins from it by
 // downloading the .sekplugin to a temp file and delegating to PluginStore.Install.
 type MarketService struct {
-	client *http.Client
-	store  *PluginStore
+	client     *http.Client // full timeout — used for the official-source attempt
+	fastClient *http.Client // shorter timeout — fail over fast when the mirror is dead
+	store      *PluginStore
 }
 
 func NewMarketService(store *PluginStore) *MarketService {
+	// TLS certs are verified (default transport): both the index and the downloaded
+	// .sekplugin feed dynamically imported JS, so an unverified connection is a
+	// MITM→RCE vector. Routing through GitHubProxyPrefix is a deliberate, accepted
+	// trust in that mirror; the install path still verifies each plugin's sha256
+	// (taken from the index) before it is ever loaded.
 	return &MarketService{
-		client: &http.Client{
-			Timeout: 60 * time.Second,
-			// TLS certs are verified (default transport): both the index and the
-			// downloaded .sekplugin come over the network and feed dynamically
-			// imported JS, so an unverified connection is a MITM→RCE vector.
-		},
-		store: store,
+		client:     &http.Client{Timeout: 60 * time.Second},
+		fastClient: &http.Client{Timeout: 25 * time.Second},
+		store:      store,
 	}
+}
+
+// fetch GETs rawurl through the GitHub mirror (then official) — see mirrorFetch.
+func (m *MarketService) fetch(rawurl string) (*http.Response, error) {
+	return mirrorFetch(m.fastClient, m.client, rawurl)
 }
 
 // FetchIndex retrieves + parses the remote index. url empty → DefaultMarketURL.
@@ -71,19 +143,11 @@ func (m *MarketService) FetchIndex(url string) (MarketIndex, error) {
 	if strings.TrimSpace(url) == "" {
 		url = DefaultMarketURL
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	resp, err := m.fetch(url)
 	if err != nil {
-		return idx, err
-	}
-	req.Header.Set("User-Agent", "SekaiText-PluginMarket")
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return idx, err
+		return idx, fmt.Errorf("index fetch failed: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return idx, fmt.Errorf("index fetch failed: HTTP %d", resp.StatusCode)
-	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return idx, err
@@ -136,10 +200,16 @@ func (m *MarketService) Install(url, id, hostVersion string) (PluginManifest, er
 	if entry == nil {
 		return zero, errors.New("plugin not found in market: " + id)
 	}
+	return m.installEntry(entry, hostVersion)
+}
+
+// installEntry downloads the entry's .sekplugin (mirror-aware), verifies its
+// mandatory sha256, and installs it via PluginStore. Shared by Install + AutoUpdate.
+func (m *MarketService) installEntry(entry *MarketEntry, hostVersion string) (PluginManifest, error) {
+	var zero PluginManifest
 	if strings.TrimSpace(entry.Download) == "" {
 		return zero, errors.New("market entry missing download url")
 	}
-
 	tmp, err := m.downloadToTemp(entry.Download)
 	if err != nil {
 		return zero, err
@@ -161,20 +231,57 @@ func (m *MarketService) Install(url, id, hostVersion string) (PluginManifest, er
 	return m.store.Install(tmp, hostVersion, entry.ID)
 }
 
-func (m *MarketService) downloadToTemp(url string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+// PluginUpdateResult is one plugin's outcome in an AutoUpdate sweep.
+type PluginUpdateResult struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	FromVersion string `json:"fromVersion,omitempty"`
+	ToVersion   string `json:"toVersion,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// AutoUpdateSummary reports an AutoUpdate sweep: which installed plugins were
+// upgraded and which failed (per-plugin failures are non-fatal).
+type AutoUpdateSummary struct {
+	Updated []PluginUpdateResult `json:"updated"`
+	Failed  []PluginUpdateResult `json:"failed"`
+}
+
+// AutoUpdate fetches the index once and reinstalls every installed plugin that has
+// a newer version available. The index fetch is the only hard error; per-plugin
+// failures are collected rather than aborting the sweep.
+func (m *MarketService) AutoUpdate(url, hostVersion string) (AutoUpdateSummary, error) {
+	var sum AutoUpdateSummary
+	idx, err := m.FetchIndex(url)
 	if err != nil {
-		return "", err
+		return sum, err
 	}
-	req.Header.Set("User-Agent", "SekaiText-PluginMarket")
-	resp, err := m.client.Do(req)
+	installed, _ := m.store.List()
+	have := map[string]string{}
+	for _, p := range installed {
+		have[p.ID] = p.Version
+	}
+	for i := range idx.Plugins {
+		e := idx.Plugins[i]
+		cur, ok := have[e.ID]
+		if !ok || !versionNewer(e.Version, cur) {
+			continue
+		}
+		if _, err := m.installEntry(&e, hostVersion); err != nil {
+			sum.Failed = append(sum.Failed, PluginUpdateResult{ID: e.ID, Name: e.Name, FromVersion: cur, ToVersion: e.Version, Error: err.Error()})
+			continue
+		}
+		sum.Updated = append(sum.Updated, PluginUpdateResult{ID: e.ID, Name: e.Name, FromVersion: cur, ToVersion: e.Version})
+	}
+	return sum, nil
+}
+
+func (m *MarketService) downloadToTemp(url string) (string, error) {
+	resp, err := m.fetch(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
-	}
 	f, err := os.CreateTemp("", "sekplugin-*.sekplugin")
 	if err != nil {
 		return "", err

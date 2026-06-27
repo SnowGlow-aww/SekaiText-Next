@@ -342,14 +342,29 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams) (*EngineTimi
 	em.timingJob = job
 	em.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if _, err := em.request(ctx, "subtitle.start", p); err != nil {
-		em.mu.Lock()
-		em.timingJob = nil
-		em.mu.Unlock()
-		return nil, err
-	}
+	// Fire subtitle.start asynchronously and return the taskId now. The engine
+	// awaits EnsureResource (first-run download of VideoProcess templates/fonts)
+	// before acking, which on a fresh machine with a slow network can take minutes;
+	// blocking the HTTP start that long would freeze the UI and, worse, leave it
+	// unable to cancel. A start failure instead surfaces through the job's terminal
+	// state, which the progress poll reads.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		defer cancel()
+		if _, err := em.request(ctx, "subtitle.start", p); err != nil {
+			job.Mu.Lock()
+			if job.Status == "running" {
+				job.Status = "error"
+				job.Error = "启动打轴失败: " + err.Error()
+			}
+			job.Mu.Unlock()
+			em.mu.Lock()
+			if em.timingJob == job {
+				em.timingJob = nil
+			}
+			em.mu.Unlock()
+		}
+	}()
 	return job, nil
 }
 
@@ -406,14 +421,25 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams) (*Engine
 	em.suppressJob = job
 	em.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if _, err := em.request(ctx, "suppress.start", p); err != nil {
-		em.mu.Lock()
-		em.suppressJob = nil
-		em.mu.Unlock()
-		return nil, err
-	}
+	// Async start (see StartTiming): return the taskId immediately so the UI stays
+	// responsive and cancelable; a start failure surfaces via the job's terminal state.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		defer cancel()
+		if _, err := em.request(ctx, "suppress.start", p); err != nil {
+			job.Mu.Lock()
+			if job.Status == "running" {
+				job.Status = "error"
+				job.Error = "启动压制失败: " + err.Error()
+			}
+			job.Mu.Unlock()
+			em.mu.Lock()
+			if em.suppressJob == job {
+				em.suppressJob = nil
+			}
+			em.mu.Unlock()
+		}
+	}()
 	return job, nil
 }
 
@@ -429,6 +455,14 @@ func (em *EngineManager) Cancel(domain string) error {
 		method = "suppress.stop"
 	default:
 		return fmt.Errorf("unknown domain: %s", domain)
+	}
+	// Nothing to cancel if the engine isn't running — don't spawn a fresh one just
+	// to fire a stop into the void (ensureStarted would otherwise relaunch it).
+	em.mu.Lock()
+	started := em.started
+	em.mu.Unlock()
+	if !started {
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -537,6 +571,10 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 			if p.Reason == "Completed" || p.Reason == "ReadFailed" {
 				j.Status = "done"
 				j.Percent = 100
+				// A transient per-frame error (below ExceptionThreshold) can emit
+				// subtitle.error mid-run while the run still completes; clear that
+				// stale message so the terminal state isn't a done+error contradiction.
+				j.Error = ""
 			} else if p.Reason == "Canceled" {
 				j.Status = "canceled"
 			} else {
@@ -545,6 +583,9 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 					j.Error = "打轴未正常完成: " + p.Reason
 				}
 			}
+			// The last preview frame is a multi-MB base64 jpeg and useless once the
+			// run is terminal — drop it so it doesn't sit resident until the next run.
+			j.PreviewB64 = ""
 			j.Mu.Unlock()
 		}
 	case method == "subtitle.error":

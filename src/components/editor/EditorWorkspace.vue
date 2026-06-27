@@ -408,10 +408,13 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
     <div
       ref="workspaceRef"
       @scroll="onWorkspaceScroll"
-      class="flex-1 overflow-y-auto border border-[var(--color-border)] rounded-lg bg-[var(--color-surface)]"
+      class="flex-1 overflow-y-auto border border-[var(--color-border)] rounded-[var(--radius-card)] bg-[var(--color-surface)]"
     >
-      <!-- Column headers -->
-      <div class="grid grid-cols-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] sticky top-0 z-10">
+      <!-- Column headers. rounded-t matches the panel: a position:sticky child
+           gets its own compositing layer in WKWebView and escapes the parent's
+           border-radius clip, so without its own rounding its square top corners
+           poke past the rounded panel. -->
+      <div class="grid grid-cols-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] rounded-t-[var(--radius-card)] sticky top-0 z-10">
         <div class="flex items-center justify-between px-3 py-2">
           <span class="font-semibold text-sm text-[var(--color-text-secondary)]">原文</span>
           <span v-if="story.scenarioId" class="text-xs text-[var(--color-text-secondary)]">{{ story.scenarioId }}</span>

@@ -1,0 +1,89 @@
+name: Release Manifest
+
+# Generates app-release.json (consumed by the in-app self-updater) from a
+# published GitHub Release's installer assets — version from the tag, download
+# URLs from the release's .dmg/.exe/.msi. The DMG is built + uploaded locally
+# (CI can't reproduce the bundled SekaiToolsEngine), so this decouples manifest
+# bookkeeping from the heavy build: just publish a release and this fills in the
+# manifest. Re-runnable via workflow_dispatch against an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v4.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    env:
+      # secrets.* cannot be used in step `if:` directly; surface presence as env.
+      HAS_MANIFEST_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN != '' }}
+      # owner/repo of the manifest repo (where the in-app default URL points).
+      MANIFEST_REPO: snowglow-aww/sekaitext-plugins
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag + version
+        id: tag
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then echo "::error::no tag resolved"; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate app-release.json from release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="$(gh release view "$TAG" --repo "$REPO" --json body -q '.body // ""')"
+          pub="$(date -u +%Y-%m-%d)"
+          # Map each installer asset to a CurrentPlatform() key by filename.
+          # Match the installers release.yml actually publishes (.dmg + NSIS .exe),
+          # one per arch → unique platform keys (from_entries stays deterministic).
+          downloads="$(gh release view "$TAG" --repo "$REPO" --json assets -q '
+            [ .assets[]
+              | select(.name | test("\\.(dmg|exe)$"; "i"))
+              | { key:
+                    ( if   (.name | test("\\.dmg$"; "i"))               then "darwin-aarch64"
+                      elif (.name | test("(arm64|aarch64).*\\.exe$"; "i")) then "windows-aarch64"
+                      else "windows-amd64" end ),
+                  value: .url } ]
+            | from_entries')"
+          jq -n \
+            --arg v "$VERSION" --arg n "$notes" --arg p "$pub" --argjson d "${downloads:-{}}" \
+            '{version: $v, notes: $n, pubDate: $p, downloads: $d}' > app-release.json
+          echo "----- app-release.json -----"
+          cat app-release.json
+          if [ "$(jq '.downloads | length' app-release.json)" -eq 0 ]; then
+            echo "::warning::no .dmg/.exe/.msi assets on $TAG — manifest has empty downloads"
+          fi
+
+      - name: Attach app-release.json to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.tag.outputs.tag }}" app-release.json --repo "${{ github.repository }}" --clobber
+
+      - name: Publish app-release.json to the manifest repo
+        if: env.HAS_MANIFEST_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${MANIFEST_REPO}.git" manifest-repo
+          cp app-release.json manifest-repo/app-release.json
+          cd manifest-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app-release.json
+          git commit -m "chore: app-release.json ${{ steps.tag.outputs.version }}" || { echo "no manifest change"; exit 0; }
+          git push
