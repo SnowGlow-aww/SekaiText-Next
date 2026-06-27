@@ -14,12 +14,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          # Engine RIDs are osx-arm64;win-x64 only. aarch64-pc-windows-msvc is dropped:
+          # the engine's native libcvextern (OpenCV/EmguCV) has no win-arm64 build, so the
+          # auto-timing/压制 sidecar cannot be bundled there.
+          #
+          # macOS runner is PINNED to macos-14 (Apple silicon / arm64). macos-latest is a
+          # moving alias and was historically x64 (macos-12/13); an x64 runner would (a)
+          # mismatch the osx-arm64 self-contained publish native libs and (b) fail to even
+          # run the arm64 static ffmpeg `-version` check (no Rosetta for arm64-on-x64).
+          - platform: macos-14
             target: aarch64-apple-darwin
+            rid: osx-arm64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-          - platform: windows-latest
-            target: aarch64-pc-windows-msvc
+            rid: win-x64
 
     runs-on: ${{ matrix.platform }}
     env:
@@ -27,8 +35,25 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       # secrets.* cannot be used in step `if:` directly; surface presence as env.
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      # build-engine.mjs (run by `npx tauri build` via beforeBuildCommand) reads ENGINE_DIR
+      # = the SekaiToolsEngine self-contained publish dir for this RID. The native libs
+      # (libSkiaSharp/libHarfBuzzSharp/libcvextern) sit as SEPARATE files alongside the
+      # single-file engine binary in that dir.
+      ENGINE_DIR: ${{ github.workspace }}/engine-src/SekaiToolsEngine/bin/Release/net10.0/${{ matrix.rid }}/publish
     steps:
       - uses: actions/checkout@v4
+
+      # Auto-timing/压制 engine source (SnowGlow-aww/SekaiTools-Avalonia). The whole solution
+      # is needed: SekaiToolsEngine has ProjectReferences to Core/Base/DataFetch/Platform and
+      # Compile-links 4 files from SekaiToolsApp/Services.
+      - name: Checkout SekaiToolsEngine source
+        uses: actions/checkout@v4
+        with:
+          repository: SnowGlow-aww/SekaiTools-Avalonia
+          # NOTE: 'main' is a moving target -> non-reproducible releases. Pin to a release tag
+          # or commit SHA, and make sure that ref actually contains the recognition-restore fix.
+          ref: main
+          path: engine-src
 
       - uses: actions/setup-node@v4
         with:
@@ -38,6 +63,10 @@ jobs:
         with:
           go-version: "1.24"
           cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,6 +86,59 @@ jobs:
 
       - name: Build Go backend sidecar
         run: node scripts/build-go.mjs
+
+      # Publish the SekaiToolsEngine sidecar self-contained for the target RID into ENGINE_DIR.
+      # Native libs land as SEPARATE files next to the single-file binary, which is exactly what
+      # build-engine.mjs expects (it copies the engine exe + every native lib, skipping .pdb).
+      # IMPORTANT: do NOT pass -p:IncludeNativeLibrariesForSelfExtract=true — that embeds the
+      # native libs for self-extract (what the avalonia App workflow does) and is the WRONG
+      # output for this sidecar. PublishSingleFile/SelfContained are also set in the csproj.
+      #
+      # `-o "${{ env.ENGINE_DIR }}"` pins the output to exactly ENGINE_DIR. Without it we rely on
+      # the default bin/<Config>/<TFM>/<RID>/publish path, which silently breaks if the foreign
+      # repo changes its TargetFramework or opts into UseArtifactsOutput (output -> artifacts/...).
+      - name: Publish SekaiToolsEngine sidecar
+        run: dotnet publish engine-src/SekaiToolsEngine/SekaiToolsEngine.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o "${{ env.ENGINE_DIR }}"
+
+      # Static ffmpeg WITH libass for ASS subtitle burn-in (build-engine.mjs FFMPEG_BIN).
+      # macOS arm64: self-hosted, already-validated, ad-hoc-signed static build pinned by tag
+      # + sha256 on this repo's releases (immutable, no quarantine xattr via curl). Falls back
+      # to the martin-riedl release channel (also static + libass) if the asset is unavailable.
+      - name: Fetch static ffmpeg (macOS arm64, libass)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ffmpeg-bin"
+          FF="$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg"
+          SHA="22a02449174a956e2b72f54a652913794af6eb8c5400b98760263fd2caf24f77"
+          if curl -fL -o "$FF" "https://github.com/SnowGlow-aww/SekaiText-Next/releases/download/ffmpeg-bin-v8.1/ffmpeg-arm64"; then
+            echo "$SHA  $FF" | shasum -a 256 -c -
+          else
+            echo "::warning::self-hosted ffmpeg asset unavailable; falling back to martin-riedl release channel"
+            curl -fL -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+            unzip -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" ffmpeg -d "$GITHUB_WORKSPACE/ffmpeg-bin"
+          fi
+          chmod +x "$FF"
+          "$FF" -hide_banner -version > "$GITHUB_WORKSPACE/ffver.txt" 2>&1
+          grep -q -- enable-libass "$GITHUB_WORKSPACE/ffver.txt" && echo "libass OK" || { echo "::error::ffmpeg missing libass"; exit 1; }
+          echo "FFMPEG_BIN=$FF" >> "$GITHUB_ENV"
+
+      # Windows x64: BtbN static GPL build (rolling `latest` tag, libass enabled). Uses pwsh so
+      # `curl.exe` (not the Invoke-WebRequest alias) and Expand-Archive avoid tar/unzip pitfalls.
+      # shell: pwsh is pinned explicitly so Out-File -Encoding utf8 writes NO BOM (PowerShell 7),
+      # avoiding a BOM corrupting the FFMPEG_BIN line written to $GITHUB_ENV under Windows PowerShell 5.1.
+      - name: Fetch static ffmpeg (Windows x64, libass)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -fL -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
+          $bin = (Get-ChildItem -Path ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\ffmpeg-bin" | Out-Null
+          Copy-Item $bin "$env:GITHUB_WORKSPACE\ffmpeg-bin\ffmpeg.exe" -Force
+          $ver = & "$env:GITHUB_WORKSPACE\ffmpeg-bin\ffmpeg.exe" -hide_banner -version
+          if ($ver -match 'enable-libass') { Write-Host 'libass OK' } else { Write-Error 'ffmpeg missing libass'; exit 1 }
+          "FFMPEG_BIN=$env:GITHUB_WORKSPACE\ffmpeg-bin\ffmpeg.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Import Apple Developer ID certificate
         if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
@@ -125,3 +207,4 @@ jobs:
             **/*.deb
             **/*.dmg
             **/*.exe
+            **/*.msi
