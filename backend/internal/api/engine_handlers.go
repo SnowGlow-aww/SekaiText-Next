@@ -84,11 +84,14 @@ func (h *Handler) EngineTimingProgress(w http.ResponseWriter, r *http.Request) {
 		"percent":     job.Percent,
 		"fps":         job.Fps,
 		"eta":         job.Eta,
-		"dialogTotal": job.DialogTotal,
-		"bannerTotal": job.BannerTotal,
-		"markerTotal": job.MarkerTotal,
-		"matched":     job.Matched,
-		"error":       job.Error,
+		"dialogTotal":   job.DialogTotal,
+		"bannerTotal":   job.BannerTotal,
+		"markerTotal":   job.MarkerTotal,
+		"matched":       job.Matched,
+		"matchedDialog": job.MatchedDialog,
+		"matchedBanner": job.MatchedBanner,
+		"matchedMarker": job.MatchedMarker,
+		"error":         job.Error,
 	}
 	job.Mu.Unlock()
 	writeJSON(w, http.StatusOK, snap)

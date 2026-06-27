@@ -82,8 +82,11 @@ type EngineTimingJob struct {
 	DialogTotal  int
 	BannerTotal  int
 	MarkerTotal  int
-	Matched      int    // dialogs+banners+markers finalized so far
-	PreviewB64   string // latest preview jpeg (served on a separate endpoint)
+	Matched       int    // dialogs+banners+markers finalized so far (合计, 向后兼容)
+	MatchedDialog int    // 已匹配对话数
+	MatchedBanner int    // 已匹配 banner 数
+	MatchedMarker int    // 已匹配 marker 数
+	PreviewB64    string // latest preview jpeg (served on a separate endpoint)
 	FinishReason string
 	Error        string
 }
@@ -512,6 +515,14 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 		if j := em.activeTiming(); j != nil {
 			j.Mu.Lock()
 			j.Matched++
+			switch method {
+			case "subtitle.dialog":
+				j.MatchedDialog++
+			case "subtitle.banner":
+				j.MatchedBanner++
+			case "subtitle.marker":
+				j.MatchedMarker++
+			}
 			j.Mu.Unlock()
 		}
 	case method == "subtitle.finished":
