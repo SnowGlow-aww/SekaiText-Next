@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"runtime"
 )
 
 // AppConfig holds all path configurations.
@@ -25,6 +26,12 @@ type AppConfig struct {
 	// frontend dist is read-only in the packaged app). NOTE: no first-party
 	// seeding from the read-only bundle is performed on startup.
 	PluginsDir string
+	// EnginePath / FfmpegPath point at the bundled SekaiToolsEngine sidecar and the
+	// libass-enabled ffmpeg used for 压制. They live under {baseDir}/engine/ so the
+	// .NET apphost sits beside its native dylibs (Tauri bundle.resources maps the
+	// whole publish folder there). Empty/missing => the 打轴/压制 feature is disabled.
+	EnginePath string
+	FfmpegPath string
 }
 
 // NewAppConfig creates an AppConfig.
@@ -33,6 +40,10 @@ type AppConfig struct {
 func NewAppConfig(baseDir, dataDir string) *AppConfig {
 	if dataDir == "" {
 		dataDir = baseDir
+	}
+	engineName, ffmpegName := "SekaiToolsEngine", "ffmpeg"
+	if runtime.GOOS == "windows" {
+		engineName, ffmpegName = "SekaiToolsEngine.exe", "ffmpeg.exe"
 	}
 	return &AppConfig{
 		BaseDir:        baseDir,
@@ -43,6 +54,8 @@ func NewAppConfig(baseDir, dataDir string) *AppConfig {
 		ImagesChrDir:   filepath.Join(baseDir, "resources", "images", "chr"),
 		Live2DLocalDir: filepath.Join(dataDir, "resources", "live2d"),
 		PluginsDir:     filepath.Join(dataDir, "plugins"),
+		EnginePath:     filepath.Join(baseDir, "engine", engineName),
+		FfmpegPath:     filepath.Join(baseDir, "engine", ffmpegName),
 	}
 }
 
