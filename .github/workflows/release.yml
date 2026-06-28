@@ -50,9 +50,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: SnowGlow-aww/SekaiTools-Avalonia
-          # NOTE: 'main' is a moving target -> non-reproducible releases. Pin to a release tag
-          # or commit SHA, and make sure that ref actually contains the recognition-restore fix.
-          ref: main
+          # The engine (NDJSON sidecar + recognition-100% fix) lives on this branch,
+          # NOT main. For a fully reproducible release, pin to a commit SHA instead
+          # (e.g. ref: 116a419) and bump it when the engine is updated.
+          ref: feat/engine-ipc-for-sekaitext
           path: engine-src
 
       - uses: actions/setup-node@v4
