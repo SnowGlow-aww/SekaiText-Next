@@ -71,6 +71,17 @@ pub fn run() {
         #[cfg(not(target_os = "windows"))]
         let sidecar_path = exe_dir.join("sekaitext-backend");
 
+        // A previous instance (an older version the user didn't quit, or a sidecar
+        // orphaned by a crash) may still hold port 9800. Kill any leftover backend
+        // first so OUR freshly-spawned one — which matches this frontend — owns the
+        // port; otherwise the frontend silently talks to the stale old backend (which
+        // lacks newer routes and 404s the update check). The Go side retries the bind
+        // to cover the brief moment between the kill and the port being released.
+        #[cfg(not(target_os = "windows"))]
+        let _ = StdCommand::new("pkill").args(["-f", "sekaitext-backend"]).status();
+        #[cfg(target_os = "windows")]
+        let _ = StdCommand::new("taskkill").args(["/F", "/IM", "sekaitext-backend.exe"]).status();
+
         let mut cmd = StdCommand::new(&sidecar_path);
         cmd.args([
           "--port", "9800",

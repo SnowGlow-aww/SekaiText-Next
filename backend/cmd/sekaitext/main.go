@@ -4,9 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"sekaitext/backend/internal/api"
 	"sekaitext/backend/internal/config"
@@ -52,9 +54,32 @@ func main() {
 	log.Printf("Resource directory: %s", cfg.BaseDir)
 	log.Printf("Data directory: %s", cfg.DataBaseDir)
 
-	if err := http.ListenAndServe(addr, router); err != nil {
+	// Retry the bind briefly: during an in-place upgrade the new sidecar may start
+	// while a just-killed old instance still holds the port for a moment. Without
+	// this the new sidecar would Fatal and the frontend would fall back to the stale
+	// old backend (which lacks newer routes → 404s).
+	ln, err := listenWithRetry(addr, 25, 200*time.Millisecond)
+	if err != nil {
+		log.Fatalf("Server failed to bind %s: %v", addr, err)
+	}
+	if err := http.Serve(ln, router); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// listenWithRetry binds addr, retrying briefly so a port momentarily held by a
+// just-killed previous sidecar doesn't fail the launch.
+func listenWithRetry(addr string, attempts int, delay time.Duration) (net.Listener, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+	return nil, lastErr
 }
 
 func ensureDir(path string) {
