@@ -20,6 +20,9 @@ permissions:
 
 jobs:
   manifest:
+    # Only process app version releases (v*). Skip auxiliary releases such as the
+    # ffmpeg-bin-* CI asset, which carry no installer and would just noise-fail.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
     env:
       # secrets.* cannot be used in step `if:` directly; surface presence as env.
