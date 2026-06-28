@@ -77,44 +77,6 @@ func (e *EditorService) LoadFile(filepath string) ([]model.DstTalk, *model.SaveM
 	return e.LoadContent(string(data))
 }
 
-// SaveFile serializes dstTalks to translation .txt format.
-func (e *EditorService) SaveFile(filepath string, dsttalks []model.DstTalk, saveN bool) error {
-	var out strings.Builder
-	for _, talk := range dsttalks {
-		switch talk.Speaker {
-		case "场景", "左上场景", "选项", "":
-			if (talk.Speaker == "场景" || talk.Speaker == "左上场景") && talk.Text == "" {
-				talk.Text = talk.Speaker
-			} else if talk.Speaker == "选项" && !strings.Contains(talk.Text, "/") {
-				talk.Text = talk.Text + "/"
-			}
-			if talk.Speaker == "" && talk.Text != "" {
-				out.WriteString(talk.Text)
-			} else {
-				out.WriteString(talk.Text)
-			}
-			out.WriteString("\n")
-
-		default:
-			if talk.Start {
-				out.WriteString(talk.Speaker + "：")
-			}
-			lines := strings.Split(talk.Text, "\n")
-			out.WriteString(lines[0])
-			if !talk.End {
-				if saveN {
-					out.WriteString("\\N")
-				}
-			} else {
-				out.WriteString("\n")
-			}
-		}
-	}
-
-	result := strings.TrimRight(out.String(), "\n")
-	return os.WriteFile(filepath, []byte(result), 0644)
-}
-
 // LoadContent parses translation content from a string instead of a file.
 // Returns the parsed talks and any embedded SaveMetadata (nil if absent).
 func (e *EditorService) LoadContent(content string) ([]model.DstTalk, *model.SaveMetadata, error) {
@@ -742,18 +704,6 @@ func (e *EditorService) ReplaceBrackets(talks []model.DstTalk, dstTalks []model.
 	return talks, dstTalks
 }
 
-// ShowDiff updates proofread row visibility based on showDiff state.
-func (e *EditorService) ShowDiff(talks []model.DstTalk) {
-	// Frontend handles visibility; this is a no-op in the service
-}
-
-// CheckProofread toggles the checked state on a row.
-func (e *EditorService) CheckProofread(talks []model.DstTalk, row int, checked bool) {
-	if row < len(talks) {
-		talks[row].Checked = checked
-	}
-}
-
 // checkText validates text content and returns fixed text, pass/fail, and warning message.
 func (e *EditorService) checkText(speaker, text string) (string, bool, string) {
 	var msg string
@@ -845,20 +795,6 @@ func (e *EditorService) checkText(speaker, text string) (string, bool, string) {
 	}
 
 	return text, check, msg
-}
-
-// UpdateHiddenRowMap builds compression/decompression maps for hidden rows.
-func (e *EditorService) UpdateHiddenRowMap(talks []model.DstTalk) (compressMap, decompressMap []int) {
-	current := 0
-	for idx, talk := range talks {
-		compressMap = append(compressMap, current)
-		if talk.Proofread != nil && !*talk.Proofread {
-			continue
-		}
-		decompressMap = append(decompressMap, idx)
-		current++
-	}
-	return
 }
 
 // lineLength calculates display width (half-width for ASCII).

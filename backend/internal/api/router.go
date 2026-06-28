@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,6 +35,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		AllowCredentials: true,
 	})
 	r.Use(corsHandler.Handler)
+	r.Use(capabilityToken(cfg.AuthToken))
 
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +222,41 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 	})
 
 	return r
+}
+
+// capabilityToken rejects mutating requests that don't carry the per-launch
+// X-Sekai-Token (set by the Tauri shell, forwarded by the frontend fetch wrapper
+// in main.ts). Enforced only when token != "" (production). GET/HEAD/OPTIONS and a
+// few routes that can't carry the header are exempt: recovery/clear (sendBeacon),
+// and the plugin-driven engine/live2d routes — none of which are part of the
+// settings → download → open RCE surface this guards.
+func capabilityToken(token string) func(http.Handler) http.Handler {
+	exempt := map[string]bool{
+		"/api/v1/recovery/clear": true, // sendBeacon on beforeunload (headers impossible)
+		"/api/v1/live2d/import":  true, // invoked by the Live2D plugin bundle
+	}
+	mutating := func(m string) bool {
+		switch m {
+		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+			return true
+		}
+		return false
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token != "" && mutating(r.Method) &&
+				!exempt[r.URL.Path] && !strings.HasPrefix(r.URL.Path, "/api/v1/engine/") {
+				got := r.Header.Get("X-Sekai-Token")
+				if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					w.Write([]byte(`{"error":"missing or invalid capability token"}`))
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // requestLogger is a custom middleware that logs requests and writes to the log buffer.

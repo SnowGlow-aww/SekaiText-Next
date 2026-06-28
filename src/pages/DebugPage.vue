@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Terminal, Save, Trash2 } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
@@ -67,15 +67,23 @@ watch(logs, () => {
   scrollToBottom()
 }, { deep: true })
 
-onMounted(() => {
-  mergeLogs()
-  fetchServerLogs()
-  pollTimer = setInterval(fetchServerLogs, 2000)
-})
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
 
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+onMounted(mergeLogs)
+// Under <keep-alive> (App.vue) onUnmounted does not fire on navigation, so the
+// 2s poll is tied to activation — otherwise it keeps hitting /debug/logs forever
+// after the page is left once.
+onActivated(() => {
+  fetchServerLogs()
+  if (!pollTimer) pollTimer = setInterval(fetchServerLogs, 2000)
 })
+onDeactivated(stopPolling)
+onUnmounted(stopPolling)
 
 async function saveLogs() {
   const lines = mergedLogs.value.map(e => {

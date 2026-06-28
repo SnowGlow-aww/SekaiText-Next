@@ -322,11 +322,3 @@ func (fb *FlashbackAnalyzer) getCardHints(words []string) []string {
 	hints = append(hints, charName+" ☆"+stars+" "+ep)
 	return hints
 }
-
-// NoClue returns a placeholder for unknown event info.
-func (fb *FlashbackAnalyzer) NoClue() EventEntry {
-	return EventEntry{
-		ID:    -1,
-		Title: "未知剧情",
-	}
-}

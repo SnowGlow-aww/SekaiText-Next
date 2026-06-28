@@ -80,11 +80,11 @@ onMounted(async () => {
   // (effective next launch) and check for a newer app version (→ UpdateBanner).
   // Both swallow offline/mirror failures so a cold start is never blocked.
   void appUpdate.autoUpdatePlugins().then((sum) => {
-    if (sum && sum.updated.length) {
+    if (sum && sum.updated?.length) {
       const names = sum.updated.map((p) => p.name || p.id).join('、')
       toast.show(`已自动更新 ${sum.updated.length} 个插件（${names}），重启后生效`, 'success', 6000)
     }
-  })
+  }).catch(() => {})
   void appUpdate.check()
 })
 </script>

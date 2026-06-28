@@ -10,6 +10,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct SidecarProcess(Mutex<Option<Child>>);
 
+// Per-launch capability token. The Go sidecar requires it (header X-Sekai-Token)
+// on mutating requests, so a stray web page hitting 127.0.0.1:9800 cannot drive
+// state changes (settings → download → open). Empty in dev: the sidecar is an
+// external process there and enforcement is off.
+struct AppToken(String);
+
+#[tauri::command]
+fn auth_token(state: tauri::State<AppToken>) -> String {
+  state.0.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut ctx = tauri::generate_context!();
@@ -21,6 +32,7 @@ pub fn run() {
 
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
+    .invoke_handler(tauri::generate_handler![auth_token])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -29,6 +41,17 @@ pub fn run() {
             .build(),
         )?;
       }
+
+      // Generate the per-launch capability token (random in release; empty in dev
+      // where the sidecar is external and enforcement is off).
+      let token = if cfg!(debug_assertions) {
+        String::new()
+      } else {
+        let mut b = [0u8; 16];
+        getrandom::getrandom(&mut b).expect("failed to generate auth token");
+        b.iter().map(|x| format!("{:02x}", x)).collect::<String>()
+      };
+      app.manage(AppToken(token.clone()));
 
       // Spawn Go backend in release mode (dev uses external server)
       if !cfg!(debug_assertions) {
@@ -53,6 +76,7 @@ pub fn run() {
           "--port", "9800",
           "--dir", &resource_dir.to_string_lossy(),
           "--data-dir", &data_dir.to_string_lossy(),
+          "--auth-token", &token,
         ]);
 
         #[cfg(target_os = "windows")]

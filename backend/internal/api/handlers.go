@@ -683,7 +683,7 @@ func (h *Handler) SpeakerCount(w http.ResponseWriter, r *http.Request) {
 		speakerMap[srcSpeaker] = entry
 	}
 
-	var speakers []model.SpeakerEntry
+	speakers := []model.SpeakerEntry{} // non-nil so the JSON is [] not null (FE does .map on it)
 	for _, entry := range speakerMap {
 		speakers = append(speakers, model.SpeakerEntry{
 			Japanese: entry.japanese,
@@ -879,6 +879,7 @@ func (h *Handler) OpenDataDir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "open failed: "+err.Error())
 		return
 	}
+	go func() { _ = cmd.Wait() }() // reap the launcher so it doesn't linger as a zombie
 	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
 }
 

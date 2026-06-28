@@ -24,6 +24,24 @@ const DefaultMarketURL = "https://raw.githubusercontent.com/snowglow-aww/sekaite
 // mirror errors or returns non-200 (see MarketService.fetch). Keep the trailing /.
 const GitHubProxyPrefix = "https://ghfast.top/"
 
+// githubProxyPrefix is the effective mirror prefix, overridable at launch via the
+// SEKAITEXT_GH_PROXY env var ("off"/"none"/"" disables the mirror and goes direct;
+// any other value is used as the prefix). Defaults to GitHubProxyPrefix. Lets a user
+// swap or disable a dead-but-resolving mirror without a rebuild.
+var githubProxyPrefix = func() string {
+	v, ok := os.LookupEnv("SEKAITEXT_GH_PROXY")
+	if !ok {
+		return GitHubProxyPrefix
+	}
+	if v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "none") {
+		return ""
+	}
+	if !strings.HasSuffix(v, "/") {
+		v += "/"
+	}
+	return v
+}()
+
 // githubHosts are the GitHub-owned hosts worth routing through the mirror. Other
 // hosts (a self-hosted index/CDN via Settings.PluginMarketURL) are left untouched.
 var githubHosts = map[string]bool{
@@ -39,11 +57,11 @@ var githubHosts = map[string]bool{
 // just itself, so a self-hosted index/CDN is unaffected.
 func mirrorCandidates(rawurl string) []string {
 	u, err := url.Parse(rawurl)
-	if err != nil || !githubHosts[strings.ToLower(u.Hostname())] {
+	if err != nil || githubProxyPrefix == "" || !githubHosts[strings.ToLower(u.Hostname())] {
 		return []string{rawurl}
 	}
 	// ghfast.top expects the full original URL (scheme included) appended.
-	return []string{GitHubProxyPrefix + rawurl, rawurl}
+	return []string{githubProxyPrefix + rawurl, rawurl}
 }
 
 // mirrorFetch GETs rawurl, trying each mirrorCandidates URL in order until one
@@ -251,7 +269,10 @@ type AutoUpdateSummary struct {
 // a newer version available. The index fetch is the only hard error; per-plugin
 // failures are collected rather than aborting the sweep.
 func (m *MarketService) AutoUpdate(url, hostVersion string) (AutoUpdateSummary, error) {
-	var sum AutoUpdateSummary
+	// Initialize as empty (non-nil) slices so the JSON response is always
+	// {"updated":[],"failed":[]} and never null — the frontend reads
+	// sum.updated.length / sum.failed unguarded.
+	sum := AutoUpdateSummary{Updated: []PluginUpdateResult{}, Failed: []PluginUpdateResult{}}
 	idx, err := m.FetchIndex(url)
 	if err != nil {
 		return sum, err
@@ -288,7 +309,12 @@ func (m *MarketService) downloadToTemp(url string) (string, error) {
 	}
 	// Cap download at 128 MiB.
 	_, err = io.Copy(f, io.LimitReader(resp.Body, 128<<20))
-	f.Close()
+	// A final-flush failure on Close() (e.g. disk full) must not be swallowed,
+	// or a truncated temp file is returned as success and only surfaces later
+	// as a misleading sha256 mismatch.
+	if cerr := f.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
 	if err != nil {
 		os.Remove(f.Name())
 		return "", err

@@ -59,54 +59,6 @@ const (
 	ColorBlue
 )
 
-// EventInfo represents an event from events.json.
-type EventInfo struct {
-	ID               int                    `json:"id"`
-	Title            string                 `json:"title"`
-	EventType        string                 `json:"eventType,omitempty"`
-	Chapters         []ChapterInfo          `json:"chapters"`
-	InferredVoiceIDs map[string]interface{} `json:"inferredVoiceIDs,omitempty"`
-}
-
-// ChapterInfo represents a single chapter within an event or story.
-type ChapterInfo struct {
-	Title string `json:"title"`
-}
-
-// MainStoryInfo represents a main story entry from mainStory.json.
-type MainStoryInfo struct {
-	Unit     string        `json:"unit"`
-	Chapters []ChapterInfo `json:"chapters"`
-}
-
-// CardInfo represents a card entry from cards.json.
-type CardInfo struct {
-	ID    int    `json:"id"`
-	Title string `json:"title"`
-}
-
-// FestivalInfo represents a festival entry.
-type FestivalInfo struct {
-	ID    int    `json:"id"`
-	Title string `json:"title"`
-}
-
-// AreaTalkInfo represents an area talk entry.
-type AreaTalkInfo struct {
-	ID int `json:"id"`
-}
-
-// GreetInfo represents a greet entry.
-type GreetInfo struct {
-	ID int `json:"id"`
-}
-
-// SpecialInfo represents a special story entry.
-type SpecialInfo struct {
-	ID    int    `json:"id"`
-	Title string `json:"title"`
-}
-
 // StoryType defines the type of story.
 type StoryType string
 
@@ -333,13 +285,6 @@ type FlashbackAnalyzeRequest struct {
 // FlashbackAnalyzeResponse contains flashback analysis results.
 type FlashbackAnalyzeResponse struct {
 	SourceTalks []SourceTalk `json:"sourceTalks"`
-}
-
-// VoiceURLRequest gets the URL for a voice file.
-type VoiceURLRequest struct {
-	ScenarioID string `json:"scenarioId"`
-	VoiceID    string `json:"voiceId"`
-	Source     string `json:"source"`
 }
 
 // VoiceURLResponse contains the voice playback URL.

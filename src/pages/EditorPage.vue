@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useEditorStore } from '../stores/editor'
 import { useStoryStore } from '../stores/story'
@@ -93,11 +93,26 @@ function onKeyDown(e: KeyboardEvent) {
   if (hit('redo')) { e.preventDefault(); doRedo(); return }
 }
 
-onMounted(async () => {
+// The global keydown/resize listeners and the 30s autosave interval are bound
+// per-activation, not per-mount: App.vue keeps every page alive, so onUnmounted
+// never fires on navigation. Tying these to mount/unmount left the editor's
+// keydown handler bound on every other page (firing open/save dialogs, undo/redo
+// off-screen) and the autosave interval running forever after leaving the editor.
+function activate() {
   autoSave.start()
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('resize', measureSearchAlign)
   nextTick(measureSearchAlign)
+}
+function deactivate() {
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('resize', measureSearchAlign)
+  autoSave.stop()
+}
+
+onMounted(async () => {
+  // One-time setup only (registering onCloseRequested on every activation would
+  // stack duplicate handlers); the listeners/autosave live in activate().
   team.refreshStatus().catch(() => {})
   if (!isTauri) return
   try {
@@ -114,6 +129,10 @@ onMounted(async () => {
     tauriErr.value = `init: ${e.message || e}`
   }
 })
+
+// onActivated also runs immediately after the initial onMounted.
+onActivated(activate)
+onDeactivated(deactivate)
 
 async function handleCloseSave() {
   try {
@@ -459,11 +478,7 @@ async function handleFullCheck() {
   if (hasIssues) { toast.show('发现 ' + msgs.length + ' 个问题', 'error') }
   else { toast.show('全文检查通过', 'success') }
 }
-onUnmounted(() => {
-  window.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('resize', measureSearchAlign)
-  autoSave.stop() // stop the recovery interval when leaving the editor
-})
+onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the real work
 </script>
 
 <template>

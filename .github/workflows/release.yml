@@ -60,6 +60,18 @@ jobs:
         with:
           node-version: 22
 
+      # Guard: the built app bakes package.json's version into __APP_VERSION__ (the
+      # self-updater's "current"). Fail fast if it drifts from the release tag, which
+      # would otherwise ship a perpetual "update available" or hide a real update.
+      - name: Verify package.json version matches the tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG=${GITHUB_REF_NAME#v}
+          echo "package.json=$PKG tag=$TAG"
+          [ "$PKG" = "$TAG" ] || { echo "::error::package.json version ($PKG) != tag ($TAG)"; exit 1; }
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"

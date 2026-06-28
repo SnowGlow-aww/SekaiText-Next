@@ -2,7 +2,6 @@ package service
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -120,13 +119,14 @@ func (d *Downloader) DownloadJSON(url, fileName string) (string, error) {
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	// Write to a temp file first, then rename, so a mid-stream failure never
-	// leaves a partial file that the cache check would later return as a hit.
-	tmpPath := filePath + ".part"
-	out, err := os.Create(tmpPath)
+	// Write to a unique temp file first, then rename, so a mid-stream failure never
+	// leaves a partial file that the cache check would later return as a hit, and
+	// concurrent downloads of the same fileName can't clobber each other's .part.
+	out, err := os.CreateTemp(filepath.Dir(filePath), filepath.Base(filePath)+".*.part")
 	if err != nil {
 		return "", fmt.Errorf("failed to create file: %w", err)
 	}
+	tmpPath := out.Name()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		out.Close()
@@ -183,13 +183,14 @@ func (d *Downloader) DownloadJSONToDir(url, dir, fileName string, progress Downl
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	// Write to a temp file first, then rename, so a mid-stream failure never
-	// leaves a partial file that the cache check would later return as a hit.
-	tmpPath := filePath + ".part"
-	out, err := os.Create(tmpPath)
+	// Write to a unique temp file first, then rename, so a mid-stream failure never
+	// leaves a partial file that the cache check would later return as a hit, and
+	// concurrent downloads of the same fileName can't clobber each other's .part.
+	out, err := os.CreateTemp(dir, filepath.Base(filePath)+".*.part")
 	if err != nil {
 		return "", fmt.Errorf("failed to create file: %w", err)
 	}
+	tmpPath := out.Name()
 
 	var reader io.Reader = resp.Body
 	if progress != nil && resp.ContentLength > 0 {
@@ -232,21 +233,6 @@ func (p *progressReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// DownloadAndParseJSON downloads a JSON file and parses it.
-func (d *Downloader) DownloadAndParseJSON(url, fileName string, target interface{}) error {
-	filePath, err := d.DownloadJSON(url, fileName)
-	if err != nil {
-		return err
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read downloaded file: %w", err)
-	}
-
-	return json.Unmarshal(data, target)
-}
-
 // Get performs a streaming GET against url and returns the live response. The
 // caller owns resp.Body and must close it. Used by the Live2D asset proxy so the
 // frontend (which cannot reach some CDNs directly due to CORS/sandbox network
@@ -255,7 +241,13 @@ func (d *Downloader) Get(url string) (*http.Response, error) {
 	return d.client.Get(url)
 }
 
-// UpdateAll performs a full metadata update from CDN.
+// UpdateAll performs a full metadata update from CDN. It single-flights: a second
+// concurrent call returns immediately, so two background refreshes can't race-append
+// the shared metadata slices (which can panic and crash the sidecar).
 func (lm *ListManager) UpdateAll(catalogDir string, pt *ProgressTracker) {
+	if !lm.updateMu.TryLock() {
+		return
+	}
+	defer lm.updateMu.Unlock()
 	lm.UpdateAllFromCDN(catalogDir, pt)
 }

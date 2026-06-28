@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // PluginManifest is the metadata every installed plugin carries in its
@@ -37,6 +38,7 @@ type PluginInfo struct {
 // plugin id. Enable-state lives in {dir}/state.json (a map id->enabled) so it
 // survives across reinstalls and never mutates the plugin payloads themselves.
 type PluginStore struct {
+	mu  sync.Mutex // guards the state.json read-modify-write in SetEnabled/Uninstall
 	dir string
 }
 
@@ -128,6 +130,8 @@ func (s *PluginStore) SetEnabled(id string, enabled bool) error {
 	if !validPluginID(id) {
 		return errors.New("invalid plugin id")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	state := s.loadState()
 	state[id] = enabled
 	return s.saveState(state)
@@ -141,6 +145,8 @@ func (s *PluginStore) Uninstall(id string) error {
 	if !validPluginID(id) {
 		return errors.New("invalid plugin id")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	target := filepath.Join(s.dir, id)
 	if err := os.RemoveAll(target); err != nil {
 		return err
@@ -272,6 +278,14 @@ func zipHasFile(zr *zip.ReadCloser, name string) bool {
 // extractZip writes all archive entries under dst, guarding against zip-slip.
 func extractZip(zr *zip.ReadCloser, dst string) error {
 	dstClean := filepath.Clean(dst)
+	// Guard against zip-bombs: cap entry count and total uncompressed bytes (the
+	// per-entry LimitReader below already caps any single file at 64 MiB).
+	const maxEntries = 4000
+	const maxTotalSize = 256 << 20
+	if len(zr.File) > maxEntries {
+		return errors.New("plugin package has too many entries")
+	}
+	var written int64
 	for _, f := range zr.File {
 		target := filepath.Join(dst, filepath.Clean("/"+f.Name))
 		if target != dstClean && !strings.HasPrefix(target, dstClean+string(filepath.Separator)) {
@@ -295,11 +309,15 @@ func extractZip(zr *zip.ReadCloser, dst string) error {
 			rc.Close()
 			return err
 		}
-		_, err = io.Copy(out, io.LimitReader(rc, 64<<20))
+		n, err := io.Copy(out, io.LimitReader(rc, 64<<20))
 		out.Close()
 		rc.Close()
 		if err != nil {
 			return err
+		}
+		written += n
+		if written > maxTotalSize {
+			return errors.New("plugin package exceeds the uncompressed size limit")
 		}
 	}
 	return nil

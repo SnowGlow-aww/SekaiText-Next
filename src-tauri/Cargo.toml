@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "4.1.0"
+version = "4.1.1"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -25,3 +25,4 @@ tauri = { version = "2.10.3", features = ["image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+getrandom = "0.2"

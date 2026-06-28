@@ -127,9 +127,29 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
+	// Resolve symlinks BEFORE the containment check so a symlink planted inside
+	// Downloads can't point `open` at a target outside it.
+	if real, e := filepath.EvalSymlinks(p); e == nil {
+		p = real
+	}
+	// Only ever launch an installer file type, never an arbitrary executable that
+	// merely happens to sit under Downloads.
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".dmg", ".pkg", ".exe", ".msi":
+	default:
+		writeError(w, http.StatusForbidden, "只允许打开安装包文件（.dmg/.pkg/.exe/.msi）")
+		return
+	}
 	allowed := false
 	for _, base := range []string{h.downloadsDir(), h.cfg.DataDir} {
-		if b, err := filepath.Abs(base); err == nil && strings.HasPrefix(p, b+string(filepath.Separator)) {
+		b, e := filepath.Abs(base)
+		if e != nil {
+			continue
+		}
+		if real, e := filepath.EvalSymlinks(b); e == nil {
+			b = real
+		}
+		if p == b || strings.HasPrefix(p, b+string(filepath.Separator)) {
 			allowed = true
 			break
 		}
@@ -155,5 +175,6 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "打开失败: "+err.Error())
 		return
 	}
+	go func() { _ = cmd.Wait() }() // reap the launcher so it doesn't linger as a zombie
 	writeJSON(w, http.StatusOK, map[string]string{"opened": p})
 }

@@ -60,8 +60,7 @@ jobs:
             [ .assets[]
               | select(.name | test("\\.(dmg|exe)$"; "i"))
               | { key:
-                    ( if   (.name | test("\\.dmg$"; "i"))               then "darwin-aarch64"
-                      elif (.name | test("(arm64|aarch64).*\\.exe$"; "i")) then "windows-aarch64"
+                    ( if (.name | test("\\.dmg$"; "i")) then "darwin-aarch64"
                       else "windows-amd64" end ),
                   value: .url } ]
             | from_entries')"

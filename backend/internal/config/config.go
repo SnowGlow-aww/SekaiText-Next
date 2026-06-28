@@ -32,6 +32,11 @@ type AppConfig struct {
 	// whole publish folder there). Empty/missing => the 打轴/压制 feature is disabled.
 	EnginePath string
 	FfmpegPath string
+	// AuthToken is the per-launch capability token the Tauri shell passes via
+	// --auth-token. When non-empty, mutating API requests must carry a matching
+	// X-Sekai-Token header (see the capabilityToken middleware). Empty in dev =
+	// enforcement off.
+	AuthToken string
 }
 
 // NewAppConfig creates an AppConfig.
@@ -57,9 +62,4 @@ func NewAppConfig(baseDir, dataDir string) *AppConfig {
 		EnginePath:     filepath.Join(baseDir, "engine", engineName),
 		FfmpegPath:     filepath.Join(baseDir, "engine", ffmpegName),
 	}
-}
-
-// DefaultBaseDir returns "."
-func DefaultBaseDir() string {
-	return "."
 }

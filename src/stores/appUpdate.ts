@@ -71,7 +71,10 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
     phase.value = 'downloading'
     try {
       const { taskId } = await api.appUpdateDownload(currentVersion())
-      for (;;) {
+      // Bounded poll: the backend caps the download at 30 min, so ~42 min of polls
+      // is a safe ceiling that prevents an unbounded loop if a task never terminates.
+      const maxPolls = 5000
+      for (let i = 0; i < maxPolls; i++) {
         await delay(500)
         const p = await api.appUpdateDownloadProgress(taskId)
         read.value = p.read
@@ -87,6 +90,8 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
           return
         }
       }
+      errorMsg.value = '下载超时'
+      phase.value = 'error'
     } catch (e: any) {
       errorMsg.value = e?.message || '下载失败'
       phase.value = 'error'

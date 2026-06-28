@@ -38,5 +38,3 @@ export const EditorModeLabel: Record<EditorMode, string> = {
   1: '校对',
   2: '合意',
 }
-
-export type TalkColor = 'white' | 'red' | 'yellow' | 'green' | 'blue'

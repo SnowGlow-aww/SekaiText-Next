@@ -14,6 +14,8 @@ import (
 
 func main() {
 	port := flag.Int("port", 9800, "server port")
+	host := flag.String("host", "127.0.0.1", "interface to bind; 127.0.0.1 keeps the sidecar local-only. Use 0.0.0.0 to deliberately expose it to the LAN.")
+	authToken := flag.String("auth-token", "", "capability token required on mutating requests (X-Sekai-Token header); empty disables enforcement (dev)")
 	dir := flag.String("dir", ".", "base directory for read-only resources (images)")
 	dataDir := flag.String("data-dir", "", "base directory for writable data (catalog, settings); defaults to --dir")
 	flag.Parse()
@@ -35,6 +37,7 @@ func main() {
 	}
 
 	cfg := config.NewAppConfig(baseDir, *dataDir)
+	cfg.AuthToken = *authToken
 
 	// Ensure writable directories exist
 	ensureDir(cfg.CatalogDir)
@@ -44,7 +47,7 @@ func main() {
 
 	router := api.NewRouter(cfg)
 
-	addr := fmt.Sprintf(":%d", *port)
+	addr := fmt.Sprintf("%s:%d", *host, *port)
 	log.Printf("SekaiText server starting on %s", addr)
 	log.Printf("Resource directory: %s", cfg.BaseDir)
 	log.Printf("Data directory: %s", cfg.DataBaseDir)

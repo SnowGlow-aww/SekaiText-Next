@@ -8,12 +8,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"sekaitext/backend/internal/model"
 )
 
 // ListManager manages story metadata (events, cards, main story, etc.).
 type ListManager struct {
+	updateMu sync.Mutex // single-flights UpdateAll so two CDN refreshes can't race-append the slices below
+
 	Events     []EventEntry
 	Festivals  []FestivalEntry
 	Cards      []CardEntry

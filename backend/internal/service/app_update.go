@@ -57,9 +57,11 @@ func NewAppUpdateService() *AppUpdateService {
 	return &AppUpdateService{
 		fast: &http.Client{Timeout: 25 * time.Second},
 		dl: &http.Client{
-			// No total timeout (a large installer over a slow link is legitimate);
-			// the transport's ResponseHeaderTimeout still fails a dead mirror fast.
-			Timeout: 0,
+			// Generous total cap so a mirror that returns headers then stalls
+			// mid-body can't hang the download goroutine forever (installers are
+			// ≤512 MiB, so 30 min covers slow links). ResponseHeaderTimeout still
+			// fails a dead mirror fast, before any byte arrives.
+			Timeout: 30 * time.Minute,
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
 				ResponseHeaderTimeout: 25 * time.Second,
@@ -111,6 +113,12 @@ func (u *AppUpdateService) DownloadUpdate(downloadURL, destDir string, progress 
 	if strings.TrimSpace(downloadURL) == "" {
 		return "", errors.New("缺少下载地址")
 	}
+	// The downloaded file is later launched via `open`, so restrict the source to
+	// GitHub release hosts: a tampered/attacker manifest can't point the self-updater
+	// at arbitrary bytes. (ghfast.top wraps these same GitHub URLs, so it still works.)
+	if !isTrustedReleaseHost(downloadURL) {
+		return "", errors.New("下载地址的主机不在信任列表内，已拒绝")
+	}
 	resp, err := mirrorFetch(u.dl, u.dl, downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("下载更新失败: %w", err)
@@ -159,4 +167,19 @@ func updateFileName(rawurl string) string {
 		}
 	}
 	return filepath.Base(name)
+}
+
+// isTrustedReleaseHost restricts installer downloads to GitHub release hosts so a
+// tampered/attacker manifest can't point the self-updater at arbitrary bytes.
+func isTrustedReleaseHost(rawurl string) bool {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	switch h {
+	case "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com":
+		return true
+	}
+	return strings.HasSuffix(h, ".githubusercontent.com")
 }

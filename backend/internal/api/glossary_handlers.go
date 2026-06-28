@@ -2,12 +2,15 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"sekaitext/backend/internal/model"
@@ -107,6 +110,16 @@ func (h *Handler) GlossaryImport(w http.ResponseWriter, r *http.Request) {
 	if abs, err := filepath.Abs(src); err == nil {
 		src = abs
 	}
+	// Cap the file size before handing it to excelize, whose zip inflation is
+	// otherwise unbounded (xlsx decompression bomb). Real glossary workbooks are
+	// small; 64 MiB is generous.
+	if fi, err := os.Stat(src); err != nil || fi.IsDir() {
+		writeError(w, http.StatusBadRequest, "文件不存在")
+		return
+	} else if fi.Size() > 64<<20 {
+		writeError(w, http.StatusBadRequest, "文件过大（>64MiB），已拒绝")
+		return
+	}
 	entries, appellations, grammar, report, err := service.ParseWorkbook(src)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -150,7 +163,22 @@ func (h *Handler) GlossarySync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "remoteUrl must be an http(s) URL")
 		return
 	}
-	resp, err := http.Get(url)
+	// Bounded client: a Timeout so a slow/hanging remote can't pin a goroutine, and
+	// a redirect cap that re-validates the scheme each hop (blocks redirect to
+	// file:// and similar). Private/LAN hosts stay allowed by design (self-hosting).
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return errors.New("redirect to non-http(s) blocked")
+			}
+			return nil
+		},
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch failed: "+err.Error())
 		return
