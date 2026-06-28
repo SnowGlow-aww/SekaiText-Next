@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2 } from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settings'
+import { useAppUpdateStore } from '../stores/appUpdate'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { api } from '../api/client'
@@ -18,8 +19,27 @@ const toast = useToast()
 const { confirm } = useConfirm()
 const pluginRegistry = usePluginRegistry()
 const plugins = usePluginsStore()
+const appUpdate = useAppUpdateStore()
 
 const appVersion = __APP_VERSION__
+const checking = ref(false)
+
+async function checkUpdate() {
+  if (checking.value) return
+  checking.value = true
+  try {
+    const r = await appUpdate.check({ manual: true })
+    if (r === 'available') {
+      toast.show(`发现新版本 v${appUpdate.info?.latest ?? ''}，见顶部更新提示`, 'success', 5000)
+    } else if (r === 'latest') {
+      toast.show('已是最新版本', 'success')
+    } else {
+      toast.show('检查更新失败，请稍后再试', 'error')
+    }
+  } finally {
+    checking.value = false
+  }
+}
 
 // Load the installed-plugins listing for the management panel.
 onMounted(() => { plugins.refresh().catch(() => {}) })
@@ -425,7 +445,14 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
           <div class="section-title">关于</div>
         </div>
         <div class="text-sm font-medium">SekaiText Next by 雪莹ちゃん</div>
-        <div class="app-help mt-1 font-mono">v{{ appVersion }}</div>
+        <div class="flex items-center gap-3 mt-1">
+          <span class="app-help font-mono">v{{ appVersion }}</span>
+          <button @click="checkUpdate" :disabled="checking"
+            class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
+            <RotateCcw :size="12" :class="checking ? 'animate-spin' : ''" />
+            {{ checking ? '检查中…' : '检查更新' }}
+          </button>
+        </div>
       </section>
 
       <div class="flex justify-end gap-2 border-t border-[var(--color-border)] pt-6">

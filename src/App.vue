@@ -86,5 +86,13 @@ onMounted(async () => {
     }
   }).catch(() => {})
   void appUpdate.check()
+
+  // Re-check for app updates when the user refocuses the window (throttled), so a
+  // long-running session surfaces a new release without needing a restart.
+  const recheck = () => { void appUpdate.maybeRecheck() }
+  window.addEventListener('focus', recheck)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') recheck()
+  })
 })
 </script>

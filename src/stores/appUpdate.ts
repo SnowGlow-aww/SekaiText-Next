@@ -42,6 +42,8 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
   const total = ref(0)
   const downloadedPath = ref('')
   const errorMsg = ref('')
+  const lastCheckAt = ref(0)
+  const RECHECK_THROTTLE_MS = 30 * 60 * 1000 // refocus re-check at most every 30 min
 
   const percent = computed(() =>
     total.value > 0 ? Math.min(100, Math.round((read.value / total.value) * 100)) : 0,
@@ -49,17 +51,31 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
   // Banner shows once an update is available and the user hasn't dismissed it.
   const show = computed(() => !dismissed.value && phase.value !== 'idle' && !!info.value?.updateAvailable)
 
-  // Silent on-boot check. Network/mirror failure is swallowed (offline is normal).
-  async function check(): Promise<void> {
+  // Check the manifest. Returns the outcome so a manual trigger can toast; the
+  // silent boot/refocus callers ignore it. manual=true re-shows a dismissed banner
+  // and never clobbers an in-flight download/ready phase.
+  async function check(opts?: { manual?: boolean }): Promise<'available' | 'latest' | 'error'> {
     try {
       const got = await api.appUpdateCheck(currentVersion())
+      lastCheckAt.value = Date.now()
       if (got.updateAvailable) {
         info.value = got
-        phase.value = 'available'
+        if (opts?.manual) dismissed.value = false
+        if (phase.value === 'idle' || phase.value === 'available') phase.value = 'available'
+        return 'available'
       }
+      return 'latest'
     } catch {
-      /* offline / mirror down — stay silent */
+      return 'error'
     }
+  }
+
+  // Re-check on window refocus, throttled, so a long-running app still notices a
+  // release without a restart. Skips while a download is in flight or ready.
+  async function maybeRecheck(): Promise<void> {
+    if (phase.value === 'downloading' || phase.value === 'ready') return
+    if (lastCheckAt.value && Date.now() - lastCheckAt.value < RECHECK_THROTTLE_MS) return
+    await check()
   }
 
   // Download the installer (mirror-accelerated) with progress, then mark ready.
@@ -133,6 +149,7 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
     percent,
     show,
     check,
+    maybeRecheck,
     download,
     install,
     dismiss,
