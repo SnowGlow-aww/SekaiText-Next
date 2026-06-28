@@ -118,7 +118,7 @@ npm run build:tauri
 ## 开源协议
 
 本项目采用 [MIT](LICENSE) 协议。
-- 原项目地址 https://github.com/Is14w/SekaiText
-- 现项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
+- 创意来源 https://github.com/Is14w/SekaiText
+- 本项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
 
 *「プロジェクトセカイ カラフルステージ！ feat. 初音ミク」是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。*
