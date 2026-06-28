@@ -26,8 +26,8 @@ type AppConfig struct {
 	// frontend dist is read-only in the packaged app). NOTE: no first-party
 	// seeding from the read-only bundle is performed on startup.
 	PluginsDir string
-	// EnginePath / FfmpegPath point at the bundled SekaiToolsEngine sidecar and the
-	// libass-enabled ffmpeg used for 压制. They live under {baseDir}/engine/ so the
+	// EnginePath / FfmpegPath point at the bundled SekaiCoreEngine sidecar and
+	// the libass-enabled ffmpeg used for 压制. They live under {baseDir}/engine/ so the
 	// .NET apphost sits beside its native dylibs (Tauri bundle.resources maps the
 	// whole publish folder there). Empty/missing => the 打轴/压制 feature is disabled.
 	EnginePath string
@@ -46,9 +46,9 @@ func NewAppConfig(baseDir, dataDir string) *AppConfig {
 	if dataDir == "" {
 		dataDir = baseDir
 	}
-	engineName, ffmpegName := "SekaiToolsEngine", "ffmpeg"
+	engineName, ffmpegName := "SekaiCoreEngine", "ffmpeg"
 	if runtime.GOOS == "windows" {
-		engineName, ffmpegName = "SekaiToolsEngine.exe", "ffmpeg.exe"
+		engineName, ffmpegName = "SekaiCoreEngine.exe", "ffmpeg.exe"
 	}
 	return &AppConfig{
 		BaseDir:        baseDir,

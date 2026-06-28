@@ -3,18 +3,18 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"sekaitext/backend/internal/service"
 )
 
-// Engine endpoints drive the bundled SekaiToolsEngine sidecar: auto-timing (打轴)
+// Engine endpoints drive the bundled SekaiCoreEngine sidecar: auto-timing (打轴)
 // and video-suppress (压制). They follow the same trigger+poll job pattern as the
 // JSON download endpoints (taskId -> a /progress poll -> terminal status).
 
@@ -68,7 +68,7 @@ func (h *Handler) EngineStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil || !h.engine.Available() {
-		writeError(w, http.StatusServiceUnavailable, "打轴引擎未安装")
+		writeError(w, http.StatusServiceUnavailable, "打轴内核未安装")
 		return
 	}
 	var req service.TimingParams
@@ -150,7 +150,7 @@ func (h *Handler) EngineTimingPreview(w http.ResponseWriter, r *http.Request) {
 // the data dir, returning the file path (ready to feed into 压制).
 func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil || !h.engine.Available() {
-		writeError(w, http.StatusServiceUnavailable, "打轴引擎未安装")
+		writeError(w, http.StatusServiceUnavailable, "打轴内核未安装")
 		return
 	}
 	// Bind export to a specific finished task so a second timing run (or a still-
@@ -162,22 +162,36 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	}
 	job.Mu.Lock()
 	status := job.Status
+	scriptPath := job.ScriptPath
 	job.Mu.Unlock()
 	if status != "done" {
 		writeError(w, http.StatusConflict, "打轴尚未完成，无法导出")
 		return
 	}
+	// Optional JSON body: a user-chosen output directory. A missing/empty body
+	// falls back to the default subtitles dir under the app data dir.
+	var body struct {
+		OutputDir string `json:"outputDir"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
+
 	content, err := h.engine.Export()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "导出字幕失败: "+err.Error())
 		return
 	}
-	outDir := filepath.Join(h.cfg.DataDir, "subtitles")
+
+	outDir := strings.TrimSpace(body.OutputDir)
+	if outDir == "" {
+		outDir = filepath.Join(h.cfg.DataDir, "subtitles")
+	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		writeError(w, http.StatusInternalServerError, "创建输出目录失败: "+err.Error())
 		return
 	}
-	assPath := filepath.Join(outDir, fmt.Sprintf("timing-%s.ass", newTaskID()))
+	// Name the .ass after the scenario script (event_206_05.json -> event_206_05.ass)
+	// rather than an opaque timing-<id>.ass; fall back to a timestamp if unknown.
+	assPath := filepath.Join(outDir, assFileNameFor(scriptPath))
 	if err := os.WriteFile(assPath, []byte(content), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "写入字幕失败: "+err.Error())
 		return
@@ -185,11 +199,42 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"assPath": assPath, "chars": len(content)})
 }
 
+// assFileNameFor derives the export filename from the scenario script path: its
+// base name with the extension swapped to .ass. Path separators and other unsafe
+// characters are stripped so a crafted script path can't escape outDir.
+func assFileNameFor(scriptPath string) string {
+	base := filepath.Base(scriptPath)
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	base = sanitizeBaseName(base)
+	if base == "" {
+		return "timing-" + newTaskID() + ".ass"
+	}
+	return base + ".ass"
+}
+
+// sanitizeBaseName drops path separators, control chars, and characters that are
+// illegal in filenames on common platforms.
+func sanitizeBaseName(s string) string {
+	s = strings.TrimSpace(s)
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', 0:
+			return -1
+		}
+		if r < 0x20 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // --- Suppress ---
 
 func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil || !h.engine.Available() {
-		writeError(w, http.StatusServiceUnavailable, "压制引擎未安装")
+		writeError(w, http.StatusServiceUnavailable, "压制内核未安装")
 		return
 	}
 	var req service.SuppressParams
@@ -248,7 +293,7 @@ func (h *Handler) EngineSuppressProgress(w http.ResponseWriter, r *http.Request)
 // EngineCancel stops the active run in a domain ("timing" | "suppress").
 func (h *Handler) EngineCancel(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil {
-		writeError(w, http.StatusServiceUnavailable, "引擎未安装")
+		writeError(w, http.StatusServiceUnavailable, "内核未安装")
 		return
 	}
 	domain := r.URL.Query().Get("domain")

@@ -17,6 +17,16 @@ const dlFloat = useDownloadFloat()
 
 const outputDir = ref(settings.settings.jsonDownloadDir || '')
 
+// Persist the chosen output directory so it survives an app restart. Previously
+// it was read from settings on mount but never written back, so a typed path was
+// lost on exit. Debounced to avoid a settings PUT on every keystroke.
+let saveDirTimer: ReturnType<typeof setTimeout> | null = null
+watch(outputDir, (v) => {
+  settings.settings.jsonDownloadDir = v
+  if (saveDirTimer) clearTimeout(saveDirTimer)
+  saveDirTimer = setTimeout(() => { settings.saveSettings().catch(() => {}) }, 600)
+})
+
 const displayIndices = computed(() => {
   if (settings.settings.indexOrder === 'desc') {
     return [...story.indices].reverse()

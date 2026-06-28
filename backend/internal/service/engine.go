@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// EngineManager drives the bundled SekaiToolsEngine — a headless .NET sidecar
+// EngineManager drives the bundled SekaiCoreEngine — a headless .NET sidecar
 // that speaks newline-delimited JSON (NDJSON) over stdio. It wraps the auto-timing
 // (自动打轴, subtitle.*) and video-suppress (压制, suppress.*) handlers so the Go
 // backend can run them as long jobs and surface progress to the frontend.
@@ -75,6 +75,7 @@ type ipcEnvelope struct {
 type EngineTimingJob struct {
 	Mu           sync.Mutex
 	TaskID       string
+	ScriptPath   string // scenario JSON path; used to name the exported .ass
 	Status       string // running, done, error, canceled
 	Percent      float64
 	Fps          int
@@ -226,7 +227,7 @@ func (em *EngineManager) onExit() {
 		timing.Mu.Lock()
 		if timing.Status == "running" {
 			timing.Status = "error"
-			timing.Error = "引擎进程已退出"
+			timing.Error = "内核进程已退出"
 			timing.FinishReason = "EngineExited"
 		}
 		timing.Mu.Unlock()
@@ -235,7 +236,7 @@ func (em *EngineManager) onExit() {
 		suppress.Mu.Lock()
 		if suppress.Status == "running" {
 			suppress.Status = "error"
-			suppress.Error = "引擎进程已退出"
+			suppress.Error = "内核进程已退出"
 			suppress.FinishReason = "EngineExited"
 		}
 		suppress.Mu.Unlock()
@@ -325,7 +326,7 @@ type TimingParams struct {
 // StartTiming launches an auto-timing run and registers the active job. The
 // engine returns "ok" immediately; matching runs async and streams notifications.
 func (em *EngineManager) StartTiming(taskID string, p TimingParams) (*EngineTimingJob, error) {
-	job := &EngineTimingJob{TaskID: taskID, Status: "running"}
+	job := &EngineTimingJob{TaskID: taskID, ScriptPath: p.ScriptPath, Status: "running"}
 	em.mu.Lock()
 	// Single-flight: refuse a second run rather than overwriting the active job
 	// pointer (which would orphan the old job and let its notifications bleed into
@@ -370,7 +371,9 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams) (*EngineTimi
 
 // Export pulls the assembled ASS subtitle from the active timing run.
 func (em *EngineManager) Export() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Subtitle assembly from already-collected frame sets can take a while on a long
+	// video / large dialog set; a tight 30s would spuriously fail an otherwise-fine export.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	res, err := em.request(ctx, "subtitle.export", nil)
 	if err != nil {

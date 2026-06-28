@@ -1,10 +1,10 @@
-// Assemble src-tauri/resources/engine/ for the Tauri bundle: the SekaiToolsEngine
+// Assemble src-tauri/resources/engine/ for the Tauri bundle: the SekaiCoreEngine
 // sidecar (打轴/压制) + its native libs + a static libass ffmpeg, ad-hoc signed on
 // macOS (no Apple cert). The packaged backend resolves EnginePath = <Resources>/engine/.
 //
 // Inputs (env):
 //   TAURI_TARGET  target triple (auto-detected from os when unset)
-//   ENGINE_DIR    dir holding SekaiToolsEngine[.exe] + native libs (dotnet publish output).
+//   ENGINE_DIR    dir holding SekaiCoreEngine[.exe] + native libs (dotnet publish output).
 //                 Defaults to ../backend/engine. In CI this is the avalonia engine artifact.
 //   FFMPEG_BIN    path to the static libass ffmpeg for this target (osxexperts arm64 / BtbN win).
 import { execSync } from 'child_process'
@@ -26,7 +26,7 @@ const engineSrc = process.env.ENGINE_DIR || join(root, 'backend', 'engine')
 const ffmpegBin = process.env.FFMPEG_BIN
 const outDir = join(root, 'src-tauri', 'resources', 'engine')
 
-const engExe = isWin ? 'SekaiToolsEngine.exe' : 'SekaiToolsEngine'
+const engExe = isWin ? 'SekaiCoreEngine.exe' : 'SekaiCoreEngine'
 const libExt = isMac ? '.dylib' : isWin ? '.dll' : '.so'
 const ffName = isWin ? 'ffmpeg.exe' : 'ffmpeg'
 

@@ -200,7 +200,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		r.Post("/update", h.Update)
 		r.Get("/update/progress", h.UpdateProgress)
 
-		// Auto-timing (打轴) + suppress (压制) via the SekaiToolsEngine sidecar
+		// Auto-timing (打轴) + suppress (压制) via the SekaiCoreEngine sidecar
 		r.Route("/engine", func(r chi.Router) {
 			r.Get("/status", h.EngineStatus)
 			r.Post("/timing/start", h.EngineTimingStart)
