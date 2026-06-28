@@ -10,7 +10,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <img alt="Version" src="https://img.shields.io/badge/version-4.0.0-blue?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-4.2.0-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
@@ -113,12 +113,17 @@ npm run build:tauri
 
 ## 版本
 
-当前版本：**4.0.0** (stable)
+当前版本：**4.2.0** (stable)
 
 ## 开源协议
 
 本项目采用 [MIT](LICENSE) 协议。
 - 创意来源 https://github.com/Is14w/SekaiText
 - 本项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
+
+## 致谢名单
+
+- 感谢 [Cinea](https://github.com/Cinea4678/) 提供的技术与账户支持
+- 感谢 [星雲希凪](https://github.com/MejiroRina) 提供的UI优化
 
 *「プロジェクトセカイ カラフルステージ！ feat. 初音ミク」是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。*
