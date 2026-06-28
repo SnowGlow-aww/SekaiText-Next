@@ -9,13 +9,13 @@
 @source "../backend/plugins";
 
 /* Bundled default UI font — 荆南麦圆体 (Jingnan Maiyuan). Vite fingerprints the
-   .otf and copies it into dist/assets; the body default stack below leads with
+   .ttf and copies it into dist/assets; the body default stack below leads with
    this family so the app ships with it out of the box. The settings font picker
    ('default' option) leaves --app-font-family unset, so this stays the default;
    choosing another font overrides --app-font-family and supersedes it. */
 @font-face {
   font-family: 'Jingnan Maiyuan';
-  src: url('./assets/fonts/jingnan-maiyuan.otf') format('opentype');
+  src: url('./assets/fonts/jingnan-maiyuan.ttf') format('truetype');
   font-weight: 100 900;
   font-display: swap;
 }
