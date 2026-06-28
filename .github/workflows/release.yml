@@ -209,3 +209,16 @@ jobs:
             **/*.dmg
             **/*.exe
             **/*.msi
+
+  # Fully automatic self-updater manifest: after the release exists, generate
+  # app-release.json from its assets and (with MANIFEST_REPO_TOKEN) push it to the
+  # plugins repo the app polls. A release.yml-created release does NOT fire
+  # `on: release` (GITHUB_TOKEN anti-recursion), so we call the reusable workflow
+  # explicitly rather than relying on a trigger.
+  manifest:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/release-manifest.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

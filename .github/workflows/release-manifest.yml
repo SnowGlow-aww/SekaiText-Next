@@ -1,14 +1,20 @@
 name: Release Manifest
 
-# Generates app-release.json (consumed by the in-app self-updater) from a
-# published GitHub Release's installer assets — version from the tag, download
-# URLs from the release's .dmg/.exe/.msi. The DMG is built + uploaded locally
-# (CI can't reproduce the bundled SekaiToolsEngine), so this decouples manifest
-# bookkeeping from the heavy build: just publish a release and this fills in the
-# manifest. Re-runnable via workflow_dispatch against an existing tag.
+# Generates app-release.json (consumed by the in-app self-updater) from a GitHub
+# Release's installer assets — version from the tag, download URLs from the
+# release's .dmg/.exe. Reusable: release.yml calls it (workflow_call) right after
+# creating the release, so a tag push is fully automatic; also runnable manually
+# (workflow_dispatch) to backfill the manifest for an existing tag.
+# NOTE: deliberately NOT triggered by `on: release` — a release created with
+# GITHUB_TOKEN does not fire release events (GitHub anti-recursion), so the call
+# path from release.yml is explicit instead.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v4.1.0)"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -20,9 +26,6 @@ permissions:
 
 jobs:
   manifest:
-    # Only process app version releases (v*). Skip auxiliary releases such as the
-    # ffmpeg-bin-* CI asset, which carry no installer and would just noise-fail.
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
     env:
       # secrets.* cannot be used in step `if:` directly; surface presence as env.
@@ -35,7 +38,7 @@ jobs:
       - name: Resolve tag + version
         id: tag
         run: |
-          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then echo "::error::no tag resolved"; exit 1; fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
@@ -62,8 +65,13 @@ jobs:
                       else "windows-amd64" end ),
                   value: .url } ]
             | from_entries')"
+          # from_entries on an empty match already yields {}, so downloads is valid
+          # JSON; default only if the gh query produced nothing. (Do NOT inline a
+          # ${downloads:-{}} default — bash mis-parses the braces and appends a
+          # stray } that corrupts the JSON when there ARE assets.)
+          [ -n "$downloads" ] || downloads='{}'
           jq -n \
-            --arg v "$VERSION" --arg n "$notes" --arg p "$pub" --argjson d "${downloads:-{}}" \
+            --arg v "$VERSION" --arg n "$notes" --arg p "$pub" --argjson d "$downloads" \
             '{version: $v, notes: $n, pubDate: $p, downloads: $d}' > app-release.json
           echo "----- app-release.json -----"
           cat app-release.json
