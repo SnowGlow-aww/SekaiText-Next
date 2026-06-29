@@ -87,22 +87,29 @@ function srcTalkCharIndex(talk: DstTalk) {
 }
 
 // ---- Live2D jump anchor ----
-// Rows the editor renders that are NOT dialogue/旁白 (scene location banners,
-// top-left scene labels, choice/option rows, and empty placeholders). This is the
-// same classification the source-side icon/edit logic uses (see line ~459 / ~534),
-// so the Live2D talk numbering stays consistent with what the editor treats as a
-// spoken line.
-const NON_TALK_SPEAKERS = ['场景', '左上场景', '选项', '']
+// Speakers whose rows are NEVER spoken/旁白 lines and so must NOT receive a
+// talkIndex ordinal: scene location banners, top-left scene labels, and
+// choice/option rows. NOTE: '' (empty speaker) is intentionally NOT in this set —
+// an empty-speaker row is narration (旁白), a REAL SourceTalk line (non-empty text)
+// that the Live2D plugin's dialogLineForTalkIndex counts. The only empty-speaker
+// rows to skip are synthetic separators (empty speaker AND empty text); those are
+// excluded explicitly in talkOrdinalBySrcIdx below. Previously '' lived here, which
+// dropped every narration line from the count and shifted the ordinal by the number
+// of preceding 旁白 rows (breaking the voiceless-line fallback).
+const NON_TALK_SPEAKERS = ['场景', '左上场景', '选项']
 
 // Maps a source-talk array index -> the 0-based ordinal of that row among the
-// story's spoken/Talk lines (display order). Non-Talk rows (NON_TALK_SPEAKERS)
-// are skipped and not assigned an ordinal. Precomputed once per story so the
-// per-row lookup below is O(1) instead of O(n) (avoids O(n^2) over all groups).
+// story's spoken/Talk lines (display order), counting narration (旁白) the same way
+// the plugin does. Scene/option rows and synthetic separators (empty speaker AND
+// empty text) are skipped and not assigned an ordinal. Precomputed once per story
+// so the per-row lookup below is O(1) instead of O(n) (avoids O(n^2) over groups).
 const talkOrdinalBySrcIdx = computed(() => {
   const map = new Map<number, number>()
   let ord = 0
   story.sourceTalks.forEach((t, i) => {
-    if (!NON_TALK_SPEAKERS.includes(t.speaker)) {
+    // Synthetic separator: empty speaker with no body — not a spoken line.
+    const isSeparator = t.speaker === '' && (t.text ?? '').trim() === ''
+    if (!NON_TALK_SPEAKERS.includes(t.speaker) && !isSeparator) {
       map.set(i, ord)
       ord++
     }

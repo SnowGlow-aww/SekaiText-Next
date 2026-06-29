@@ -18,10 +18,15 @@ const panel = computed(() => registry.dockPanels[0] ?? null)
 
 const isVertical = computed(() => props.placement === 'right') // resize along x
 
+// dock.size is shared across axes (width when right, height when top/bottom), so a
+// wide right-dock size carried over to a top/bottom placement could collapse the
+// workspace to ~0px. Cap the rendered extent at 72% of the container along the
+// active axis so the editor can never be squeezed out — the drag still writes the
+// raw size, we just bound what's painted.
 const boxStyle = computed(() =>
   isVertical.value
-    ? { width: dock.size + 'px' }
-    : { height: dock.size + 'px' },
+    ? { width: dock.size + 'px', maxWidth: '72%' }
+    : { height: dock.size + 'px', maxHeight: '72%' },
 )
 
 // ── Drag-to-resize ──────────────────────────────────────────────────────────

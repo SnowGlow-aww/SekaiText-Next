@@ -47,7 +47,11 @@ const dockSide = computed<'top' | 'right' | 'bottom' | null>(() => {
   if (!live2dDock.visible) return null
   if (!pluginRegistry.isLoaded('live2d')) return null
   const p = live2dDock.placement()
-  return p === 'window' ? null : p
+  // 独立窗口 normally has no edge dock — UNLESS opening the window failed and the
+  // store forced a fallback dock (forcedDock), in which case mount that side so the
+  // jump isn't silently dropped.
+  if (p === 'window') return live2dDock.forcedDock ?? null
+  return p
 })
 
 // Resolve a lucide icon by name for plugin-contributed sidebar items; fall back

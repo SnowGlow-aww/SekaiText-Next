@@ -80,7 +80,13 @@ func (s *GlossaryStore) load() error {
 	for _, e := range gd.Entries {
 		e.ID = makeEntryID(e)
 		if idx, ok := pos[e.ID]; ok {
-			out[idx] = e
+			// Collision on the migrated id: the "user rows always survive" invariant
+			// must hold. Only overwrite when the existing row is NOT user-authored, or
+			// the incoming row IS — i.e. never let an import/remote entry clobber a
+			// user-authored one. (Among same-origin collisions, last occurrence wins.)
+			if out[idx].Origin != model.OriginUser || e.Origin == model.OriginUser {
+				out[idx] = e
+			}
 			continue
 		}
 		pos[e.ID] = len(out)
