@@ -42,11 +42,20 @@ function applyFontSize(size: number) {
   document.documentElement.style.setProperty('--editor-font-size', size + 'px')
 }
 
+// UI font size scales the whole interface by setting the root font-size; all
+// rem-based Tailwind/DaisyUI sizing follows it. The editor uses an absolute px
+// var (--editor-font-size), so it stays independent of this control.
+function applyUiFontSize(size: number) {
+  const px = Math.min(Math.max(Number(size) || 16, 12), 25)
+  document.documentElement.style.fontSize = px + 'px'
+}
+
 function applyDebug(enabled: boolean) {
   if (enabled) initConsoleCapture()
 }
 
 watch(() => settings.settings.fontSize, applyFontSize, { immediate: true })
+watch(() => settings.settings.uiFontSize, applyUiFontSize, { immediate: true })
 watch(() => settings.settings.debugEnabled, (v) => { enabled.value = v; applyDebug(v) })
 
 onMounted(async () => {
@@ -65,6 +74,7 @@ onMounted(async () => {
   enabled.value = settings.settings.debugEnabled
   applyDebug(settings.settings.debugEnabled)
   applyFontSize(settings.settings.fontSize)
+  applyUiFontSize(settings.settings.uiFontSize)
 
   // Check for autosave recovery
   try {

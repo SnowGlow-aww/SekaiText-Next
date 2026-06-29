@@ -102,6 +102,7 @@ type JsonPathResult struct {
 // Settings represents application settings.
 type Settings struct {
 	FontSize                  int    `json:"fontSize"`
+	UIFontSize                int    `json:"uiFontSize"`
 	DownloadSource            string `json:"downloadSource"`
 	SaveLineBreakN            bool   `json:"saveN"`
 	SaveVoice                 bool   `json:"saveVoice"`
@@ -142,6 +143,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	return Settings{
 		FontSize:                  18,
+		UIFontSize:                16,
 		DownloadSource:            "best",
 		SaveLineBreakN:            true,
 		SaveVoice:                 false,

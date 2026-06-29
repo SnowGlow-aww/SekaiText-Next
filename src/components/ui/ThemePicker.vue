@@ -2,11 +2,13 @@
 import { computed, ref } from 'vue'
 import { Monitor, Sun, Moon, Check, Upload, X, ImagePlus, Trash2 } from 'lucide-vue-next'
 import { useAppStore, FONT_OPTIONS, BG_VEIL_MIN } from '../../stores/app'
+import { useSettingsStore } from '../../stores/settings'
 import { ACCENT_GROUPS, ACCENT_NAME_BY_COLOR } from '../../data/characterColors'
 import type { ThemeMode } from '../../stores/app'
 import SkSelect from './SkSelect.vue'
 
 const app = useAppStore()
+const settings = useSettingsStore()
 
 const modes: { value: ThemeMode; label: string; icon: typeof Monitor }[] = [
   { value: 'system', label: '跟随系统', icon: Monitor },
@@ -70,22 +72,33 @@ async function onBgFile(e: Event) {
 
 <template>
   <div class="space-y-5">
-    <!-- Theme mode -->
-    <div>
-      <div class="app-label mb-2">主题模式</div>
-      <div class="inline-flex p-1 rounded-[var(--radius-control)] bg-[var(--color-bg)] border border-[var(--color-border)] gap-1">
-        <button
-          v-for="m in modes"
-          :key="m.value"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-[0.45rem] text-xs font-medium transition-colors"
-          :class="app.themeMode === m.value
-            ? 'bg-[var(--color-surface)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
-            : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'"
-          @click="app.themeMode = m.value"
-        >
-          <component :is="m.icon" :size="14" />
-          {{ m.label }}
-        </button>
+    <!-- Theme mode + UI font size -->
+    <div class="flex flex-wrap items-start gap-x-8 gap-y-4">
+      <div>
+        <div class="app-label mb-2">主题模式</div>
+        <div class="inline-flex p-1 rounded-[var(--radius-control)] bg-[var(--color-bg)] border border-[var(--color-border)] gap-1">
+          <button
+            v-for="m in modes"
+            :key="m.value"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-[0.45rem] text-xs font-medium transition-colors"
+            :class="app.themeMode === m.value
+              ? 'bg-[var(--color-surface)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
+              : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]'"
+            @click="app.themeMode = m.value"
+          >
+            <component :is="m.icon" :size="14" />
+            {{ m.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- UI font size: scales the whole interface (editor 字号 is separate) -->
+      <div>
+        <div class="app-label mb-2">界面字号</div>
+        <div class="flex items-center gap-2 h-9">
+          <input v-model.number="settings.settings.uiFontSize" type="range" min="12" max="25" step="1" class="range range-primary range-xs w-28" />
+          <span class="text-sm w-6 text-center font-mono">{{ settings.settings.uiFontSize }}</span>
+        </div>
       </div>
     </div>
 

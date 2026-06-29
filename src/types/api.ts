@@ -1,5 +1,6 @@
 export interface Settings {
   fontSize: number
+  uiFontSize: number
   downloadSource: string
   saveN: boolean
   saveVoice: boolean

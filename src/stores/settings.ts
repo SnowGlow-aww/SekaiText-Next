@@ -6,6 +6,7 @@ import type { Settings } from '../types/api'
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<Settings>({
     fontSize: 18,
+    uiFontSize: 16,
     downloadSource: 'haruki',
     saveN: true,
     saveVoice: false,
@@ -26,7 +27,11 @@ export const useSettingsStore = defineStore('settings', () => {
   async function fetchSettings() {
     loading.value = true
     try {
-      settings.value = await api.getSettings()
+      const s = await api.getSettings()
+      // Migrate configs saved before uiFontSize existed (absent → 0): keep the
+      // browser-default 16px so the UI doesn't collapse to a 0px root font.
+      if (!s.uiFontSize) s.uiFontSize = 16
+      settings.value = s
     } finally {
       loading.value = false
     }
