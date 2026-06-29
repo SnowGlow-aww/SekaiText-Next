@@ -130,6 +130,10 @@ type Settings struct {
 	LastChapter     int    `json:"lastChapter,omitempty"`
 	LastDataSource  string `json:"lastDataSource,omitempty"`
 
+	// Live2DPosition places the Live2D dock relative to the editor:
+	// "top" | "right" | "bottom" | "window". Empty falls back to "right".
+	Live2DPosition string `json:"live2dPosition,omitempty"`
+
 	// PluginMarketURL overrides the plugin marketplace index URL. Empty falls
 	// back to the built-in default (service.DefaultMarketURL).
 	PluginMarketURL string `json:"pluginMarketUrl,omitempty"`
@@ -155,6 +159,7 @@ func DefaultSettings() Settings {
 		PreserveStoryOnModeSwitch: true,
 		UndoDepth:                 20,
 		KeepHighlightWhenCompareOff: true,
+		Live2DPosition:            "right",
 	}
 }
 

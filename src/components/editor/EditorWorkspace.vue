@@ -8,6 +8,7 @@ import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 import { useUndo } from '../../composables/useUndo'
 import VoicePlayButton from './VoicePlayButton.vue'
+import Live2DJumpButton from './Live2DJumpButton.vue'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
 import { useGlossaryMatcher } from '../../composables/useGlossaryMatcher'
 import { useGlossaryTooltip } from '../../composables/useGlossaryTooltip'
@@ -83,6 +84,39 @@ function flashbackItem(talk: DstTalk) {
 
 function srcTalkCharIndex(talk: DstTalk) {
   return srcTalk(talk)?.charIndex ?? -1
+}
+
+// ---- Live2D jump anchor ----
+// Rows the editor renders that are NOT dialogue/旁白 (scene location banners,
+// top-left scene labels, choice/option rows, and empty placeholders). This is the
+// same classification the source-side icon/edit logic uses (see line ~459 / ~534),
+// so the Live2D talk numbering stays consistent with what the editor treats as a
+// spoken line.
+const NON_TALK_SPEAKERS = ['场景', '左上场景', '选项', '']
+
+// Maps a source-talk array index -> the 0-based ordinal of that row among the
+// story's spoken/Talk lines (display order). Non-Talk rows (NON_TALK_SPEAKERS)
+// are skipped and not assigned an ordinal. Precomputed once per story so the
+// per-row lookup below is O(1) instead of O(n) (avoids O(n^2) over all groups).
+const talkOrdinalBySrcIdx = computed(() => {
+  const map = new Map<number, number>()
+  let ord = 0
+  story.sourceTalks.forEach((t, i) => {
+    if (!NON_TALK_SPEAKERS.includes(t.speaker)) {
+      map.set(i, ord)
+      ord++
+    }
+  })
+  return map
+})
+
+// The integer passed to the Live2D plugin as `talkIndex`: the 0-based index of
+// THIS dialogue among the story's spoken/Talk lines in display order. Returns -1
+// for non-Talk rows (scene/option/empty), which the template uses to hide the
+// jump button there. NOTE: this is only the FALLBACK anchor — the plugin prefers
+// matching by voiceId (exact); talkIndex disambiguates voiceless Talk lines.
+function talkIndexFor(talk: DstTalk): number {
+  return talkOrdinalBySrcIdx.value.get(srcIdx(talk)) ?? -1
 }
 
 // Group consecutive dest lines sharing the same source idx
@@ -482,14 +516,28 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                     </div>
                   </div>
 
-                  <VoicePlayButton
-                    v-if="(srcTalk(group.items[0].talk)?.voices?.length ?? 0) > 0"
-                    :scenario-id="story.scenarioId"
-                    :voice-ids="(srcTalk(group.items[0].talk)?.voices ?? []) as string[]"
-                    :volume="srcTalk(group.items[0].talk).volume"
-                    :source="story.selectedSource"
-                    :chara2d="srcTalk(group.items[0].talk)?.chara2d"
-                  />
+                  <!-- Per-line button stack: flat 扁长方形 controls, voice on top
+                       and the Live2D jump below. items-stretch keeps both the same
+                       width so it reads as a tidy 2-row control. -->
+                  <div class="flex flex-col gap-1 items-stretch flex-shrink-0">
+                    <VoicePlayButton
+                      v-if="(srcTalk(group.items[0].talk)?.voices?.length ?? 0) > 0"
+                      :scenario-id="story.scenarioId"
+                      :voice-ids="(srcTalk(group.items[0].talk)?.voices ?? []) as string[]"
+                      :volume="srcTalk(group.items[0].talk).volume"
+                      :source="story.selectedSource"
+                      :chara2d="srcTalk(group.items[0].talk)?.chara2d"
+                    />
+                    <!-- talk-index = 0-based ordinal of this dialogue among the
+                         story's spoken/Talk lines (talkIndexFor). Only rendered for
+                         real Talk rows (>= 0); the plugin prefers voice-id. -->
+                    <Live2DJumpButton
+                      v-if="talkIndexFor(group.items[0].talk) >= 0"
+                      :scenario-id="story.scenarioId"
+                      :talk-index="talkIndexFor(group.items[0].talk)"
+                      :voice-id="srcTalk(group.items[0].talk)?.voices?.[0]"
+                    />
+                  </div>
                 </div>
               </div>
 

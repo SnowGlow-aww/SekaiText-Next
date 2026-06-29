@@ -107,7 +107,9 @@ async function doBulkUpload() {
     const data = await api.glossaryExport()
     const total = data.entries?.length ?? 0
     if (total === 0) { err('本地术语库为空，没有可上传的条目'); return }
-    const r = await api.teamBulkImport(data.entries)
+    // Send the FULL local glossary (entries + appellations + grammar); the server
+    // upserts each. data is GlossaryData straight from glossaryExport().
+    const r = await api.teamBulkImport(data)
     ok(`已上传 ${r.upserted} / ${total} 条到服务器（v${r.version}）`)
     await team.sync(true)
     await refreshLocal()

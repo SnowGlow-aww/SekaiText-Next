@@ -4,11 +4,12 @@ import type { Pinia } from 'pinia'
 import { useStoryStore } from '../stores/story'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
+import { useLive2dDockStore } from '../stores/live2dDock'
 import { api } from '../api/client'
 import { useToast } from '../composables/useToast'
 import { usePluginRegistry } from './registry'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
-import type { SekaiHost, PluginSidebarItem, PluginSettingsSection } from './types'
+import type { SekaiHost, PluginSidebarItem, PluginSettingsSection, PluginDockPanel } from './types'
 
 declare const __APP_VERSION__: string
 
@@ -64,6 +65,19 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
     registry.addSettingsSection(pluginId, section)
   }
 
+  const registerDockPanel = (pluginId: string, panel: PluginDockPanel) => {
+    const registry = usePluginRegistry(pinia)
+    if (typeof pluginId !== 'string' || !pluginId) {
+      console.error('[plugin] registerDockPanel(pluginId, panel): pluginId 必须是字符串', pluginId)
+      return
+    }
+    if (!panel || typeof panel !== 'object' || typeof panel.id !== 'string' || !panel.component) {
+      console.error(`[plugin] ${pluginId} registerDockPanel: panel 无效（需要 {id, component}）`, panel)
+      return
+    }
+    registry.addDockPanel(pluginId, panel)
+  }
+
   const host: SekaiHost = {
     version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0',
     vue: VueRuntime,
@@ -73,6 +87,7 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
       story: () => useStoryStore(pinia),
       app: () => useAppStore(pinia),
       settings: () => useSettingsStore(pinia),
+      live2dDock: () => useLive2dDockStore(pinia),
     },
     api,
     ui: { toast },
@@ -93,6 +108,7 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
     registerRoute,
     registerSidebarItem,
     registerSettingsSection,
+    registerDockPanel,
   }
 
   window.__SEKAI_HOST__ = host

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, markRaw } from 'vue'
-import type { PluginSidebarItem, PluginSettingsSection } from './types'
+import type { PluginSidebarItem, PluginSettingsSection, PluginDockPanel } from './types'
 
 // Tracks plugin contributions at runtime so the sidebar/router reflect them
 // reactively, and so unloading a plugin can reverse exactly what it added.
@@ -9,6 +9,8 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
   const sidebarByPlugin = ref<Record<string, PluginSidebarItem[]>>({})
   // pluginId -> contributed settings-page sections
   const settingsByPlugin = ref<Record<string, PluginSettingsSection[]>>({})
+  // pluginId -> contributed dock panels (e.g. the Live2D player)
+  const dockPanelsByPlugin = ref<Record<string, PluginDockPanel[]>>({})
   // pluginId -> route paths it added (for removeRoute on unload)
   const routesByPlugin = ref<Record<string, string[]>>({})
   // ids of plugins whose setup() has run
@@ -35,6 +37,13 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   )
 
+  // Flattened dock panels across all plugins (same defensive stamping/filtering).
+  const dockPanels = computed<PluginDockPanel[]>(() =>
+    Object.entries(dockPanelsByPlugin.value)
+      .flatMap(([pluginId, panels]) => (panels ?? []).map((p) => ({ ...p, pluginId })))
+      .filter((p) => !!p && typeof p === 'object' && !!p.component),
+  )
+
   function addSidebarItem(pluginId: string, item: PluginSidebarItem) {
     const list = sidebarByPlugin.value[pluginId] ?? []
     if (!list.some((i) => i.id === item.id)) {
@@ -49,6 +58,14 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
     if (!list.some((s) => s.id === section.id)) {
       const safe = { ...section, component: markRaw(section.component) }
       settingsByPlugin.value = { ...settingsByPlugin.value, [pluginId]: [...list, safe] }
+    }
+  }
+
+  function addDockPanel(pluginId: string, panel: PluginDockPanel) {
+    const list = dockPanelsByPlugin.value[pluginId] ?? []
+    if (!list.some((p) => p.id === panel.id)) {
+      const safe = { ...panel, component: markRaw(panel.component) }
+      dockPanelsByPlugin.value = { ...dockPanelsByPlugin.value, [pluginId]: [...list, safe] }
     }
   }
 
@@ -74,6 +91,8 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
     sidebarByPlugin.value = restS
     const { [pluginId]: _set, ...restSet } = settingsByPlugin.value
     settingsByPlugin.value = restSet
+    const { [pluginId]: _d, ...restD } = dockPanelsByPlugin.value
+    dockPanelsByPlugin.value = restD
     const { [pluginId]: _r, ...restR } = routesByPlugin.value
     routesByPlugin.value = restR
     loaded.value = loaded.value.filter((id) => id !== pluginId)
@@ -84,8 +103,8 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
   }
 
   return {
-    sidebarByPlugin, settingsByPlugin, routesByPlugin, loaded,
-    sidebarItems, settingsSections,
-    addSidebarItem, addSettingsSection, trackRoute, markLoaded, isLoaded, forget, routePaths,
+    sidebarByPlugin, settingsByPlugin, dockPanelsByPlugin, routesByPlugin, loaded,
+    sidebarItems, settingsSections, dockPanels,
+    addSidebarItem, addSettingsSection, addDockPanel, trackRoute, markLoaded, isLoaded, forget, routePaths,
   }
 })

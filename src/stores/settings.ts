@@ -21,6 +21,7 @@ export const useSettingsStore = defineStore('settings', () => {
     indexOrder: 'asc',
     shortcuts: {},
     hideAgreementImportHint: false,
+    live2dPosition: 'right',
   })
   const loading = ref(false)
 
@@ -31,6 +32,8 @@ export const useSettingsStore = defineStore('settings', () => {
       // Migrate configs saved before uiFontSize existed (absent → 0): keep the
       // browser-default 16px so the UI doesn't collapse to a 0px root font.
       if (!s.uiFontSize) s.uiFontSize = 16
+      // Default the Live2D dock to the right edge for pre-existing configs.
+      if (!s.live2dPosition) s.live2dPosition = 'right'
       settings.value = s
     } finally {
       loading.value = false

@@ -22,6 +22,9 @@ export interface Settings {
   lastChapter?: number
   lastDataSource?: string
 
+  /** Where the Live2D dock sits relative to the editor: 'top' | 'right' | 'bottom' | 'window'. */
+  live2dPosition?: string
+
   /** Override the plugin marketplace index URL. Empty = built-in default. */
   pluginMarketUrl?: string
 

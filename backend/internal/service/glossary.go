@@ -72,6 +72,21 @@ func (s *GlossaryStore) load() error {
 			return err
 		}
 	}
+	// Migrate entry ids to the current makeEntryID scheme (older files keyed
+	// entries by (source,category) only) and drop any rows that now resolve to the
+	// same id, so the in-memory set always has unique ids for the frontend :key.
+	out := make([]model.GlossaryEntry, 0, len(gd.Entries))
+	pos := make(map[string]int, len(gd.Entries))
+	for _, e := range gd.Entries {
+		e.ID = makeEntryID(e)
+		if idx, ok := pos[e.ID]; ok {
+			out[idx] = e
+			continue
+		}
+		pos[e.ID] = len(out)
+		out = append(out, e)
+	}
+	gd.Entries = out
 	s.mu.Lock()
 	s.entries = gd.Entries
 	s.appellations = gd.Appellations
@@ -262,13 +277,24 @@ func makeID(source, category string) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// makeEntryID derives a stable id from the fields that distinguish one entry from
+// another: source + category + subCategory. Keying on (source,category) alone
+// collapsed genuinely-distinct entries — e.g. the same term under different
+// subcategories — onto one id, so they overwrote each other on import and the
+// frontend (keyed by id) rendered only one. Re-importing identical content still
+// yields the same id, so dedup/update-in-place stays idempotent.
+func makeEntryID(e model.GlossaryEntry) string {
+	h := sha1.Sum([]byte(e.Source + "\x00" + e.Category + "\x00" + e.SubCategory))
+	return hex.EncodeToString(h[:8])
+}
+
 // AddEntry inserts a user-authored entry (Origin=user) and persists.
 func (s *GlossaryStore) AddEntry(e model.GlossaryEntry) (model.GlossaryEntry, error) {
 	e.Origin = model.OriginUser
 	if e.Category == "" {
 		e.Category = "自定义"
 	}
-	e.ID = makeID(e.Source, e.Category)
+	e.ID = makeEntryID(e)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Replace if an entry with the same id already exists, else append.
@@ -305,9 +331,9 @@ func (s *GlossaryStore) UpdateEntry(id string, patch model.GlossaryEntry) (model
 			// "user rows always survive" rule protects it from being dropped
 			// on the next re-import/remote sync.
 			cur.Origin = model.OriginUser
-			// Keep the id consistent with the makeID(source,category) invariant
-			// that import/dedup relies on (source or category may have changed).
-			cur.ID = makeID(cur.Source, cur.Category)
+			// Keep the id consistent with the makeEntryID invariant that
+			// import/dedup relies on (source/category/subCategory may have changed).
+			cur.ID = makeEntryID(*cur)
 			return *cur, true, s.persist()
 		}
 	}
@@ -327,49 +353,44 @@ func (s *GlossaryStore) DeleteEntry(id string) (bool, error) {
 	return false, nil
 }
 
-// MergeImport replaces all import|remote entries whose category is in the
-// imported set, while preserving user entries (and untouched categories). The
-// imported appellations fully replace the stored ones (the 人称表 is a single
-// authoritative matrix, not user-accreted). origin is OriginImport or
-// OriginRemote.
+// MergeImport merges imported entries into the store ADDITIVELY: each imported
+// row updates the existing row with the same id, or is appended if new. It never
+// DELETES local rows. An earlier version dropped every import|remote row in any
+// category the import also contained, then re-added the import's set — which
+// silently wiped a user's locally-imported library whenever the synced server
+// set was smaller/incomplete (the "after sync only one entry shows" bug, since
+// the shared server glossary was nearly empty). Server-side deletions are
+// therefore not propagated — a stray stale term is far less harmful than losing
+// the whole library; an explicit clear is the way to remove entries. A local
+// user-authored entry always wins over an incoming row with the same id.
+// Appellations/grammar still fully replace, but only when the import carries
+// them. origin is OriginImport or OriginRemote.
 func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations []model.Appellation, grammar []model.GrammarUsage, origin string) error {
 	// Stamp + id the incoming entries.
-	touched := map[string]bool{}
 	for i := range imported {
 		imported[i].Origin = origin
-		imported[i].ID = makeID(imported[i].Source, imported[i].Category)
-		touched[imported[i].Category] = true
+		imported[i].ID = makeEntryID(imported[i])
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	kept := make([]model.GlossaryEntry, 0, len(s.entries))
-	for _, e := range s.entries {
-		// Drop old import|remote rows in categories we're re-importing; keep
-		// everything else (user rows always survive; other categories survive).
-		if touched[e.Category] && e.Origin != model.OriginUser {
-			continue
-		}
-		kept = append(kept, e)
-	}
-
-	// Avoid clobbering a user entry that shares an id with an imported row:
-	// user wins, imported duplicate is skipped.
-	userIDs := map[string]bool{}
-	for _, e := range kept {
-		if e.Origin == model.OriginUser {
-			userIDs[e.ID] = true
-		}
+	byID := make(map[string]int, len(s.entries))
+	for i := range s.entries {
+		byID[s.entries[i].ID] = i
 	}
 	for _, e := range imported {
-		if userIDs[e.ID] {
+		if idx, ok := byID[e.ID]; ok {
+			if s.entries[idx].Origin == model.OriginUser {
+				continue // local user entry wins; never clobbered by an import
+			}
+			s.entries[idx] = e // refresh the existing import/remote row in place
 			continue
 		}
-		kept = append(kept, e)
+		s.entries = append(s.entries, e)
+		byID[e.ID] = len(s.entries) - 1
 	}
 
-	s.entries = kept
 	if len(appellations) > 0 {
 		s.appellations = appellations
 	}

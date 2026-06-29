@@ -42,9 +42,9 @@ function applyFontSize(size: number) {
   document.documentElement.style.setProperty('--editor-font-size', size + 'px')
 }
 
-// UI font size scales the whole interface by setting the root font-size; all
-// rem-based Tailwind/DaisyUI sizing follows it. The editor uses an absolute px
-// var (--editor-font-size), so it stays independent of this control.
+// UI zoom scales the whole interface by setting the root font-size; all rem-based
+// Tailwind/DaisyUI sizing follows it. 16 = browser default = no change. The editor
+// body text uses the absolute px var --editor-font-size, so it stays independent.
 function applyUiFontSize(size: number) {
   const px = Math.min(Math.max(Number(size) || 16, 12), 25)
   document.documentElement.style.fontSize = px + 'px'

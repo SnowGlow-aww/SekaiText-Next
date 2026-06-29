@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Monitor, Sun, Moon, Check, Upload, X, ImagePlus, Trash2 } from 'lucide-vue-next'
 import { useAppStore, FONT_OPTIONS, BG_VEIL_MIN } from '../../stores/app'
 import { useSettingsStore } from '../../stores/settings'
@@ -10,10 +10,26 @@ import SkSelect from './SkSelect.vue'
 const app = useAppStore()
 const settings = useSettingsStore()
 
+// Commit the UI zoom on release (@change), not on every drag tick — applying the
+// root font-size live would reflow the whole page (and this slider) under the
+// cursor, which feels jittery/over-sensitive. The draft drives the live number
+// readout while dragging; the zoom commits when the user lets go.
+const uiFontDraft = ref(settings.settings.uiFontSize)
+watch(() => settings.settings.uiFontSize, (v) => { uiFontDraft.value = v })
+
 const modes: { value: ThemeMode; label: string; icon: typeof Monitor }[] = [
   { value: 'system', label: '跟随系统', icon: Monitor },
   { value: 'light', label: '浅色', icon: Sun },
   { value: 'dark', label: '深色', icon: Moon },
+]
+
+// Live2D dock placement (left intentionally omitted — that edge is the nav).
+// Effective only with the Live2D plugin installed; harmless otherwise.
+const live2dPositionOptions = [
+  { value: 'right', label: '右侧' },
+  { value: 'top', label: '顶部' },
+  { value: 'bottom', label: '底部' },
+  { value: 'window', label: '独立窗口' },
 ]
 
 const currentName = computed(() => ACCENT_NAME_BY_COLOR[app.accentColor.toLowerCase()] ?? '自定义')
@@ -92,12 +108,25 @@ async function onBgFile(e: Event) {
         </div>
       </div>
 
-      <!-- UI font size: scales the whole interface (editor 字号 is separate) -->
+      <!-- UI zoom: scales the whole interface; committed on release (see uiFontDraft) -->
       <div>
-        <div class="app-label mb-2">界面字号</div>
+        <div class="app-label mb-2">界面缩放</div>
         <div class="flex items-center gap-2 h-9">
-          <input v-model.number="settings.settings.uiFontSize" type="range" min="12" max="25" step="1" class="range range-primary range-xs w-28" />
-          <span class="text-sm w-6 text-center font-mono">{{ settings.settings.uiFontSize }}</span>
+          <input v-model.number="uiFontDraft" type="range" min="12" max="25" step="1" @change="settings.settings.uiFontSize = uiFontDraft" class="range range-primary range-xs w-[200px]" />
+          <span class="text-sm w-8 text-center font-mono">{{ uiFontDraft }}</span>
+        </div>
+      </div>
+
+      <!-- Live2D dock placement: where the player sits relative to the editor -->
+      <div>
+        <div class="app-label mb-2">Live2D 对照位置</div>
+        <div class="h-9 flex items-center">
+          <SkSelect
+            class="w-[200px]"
+            :model-value="settings.settings.live2dPosition || 'right'"
+            @update:model-value="settings.settings.live2dPosition = $event as string"
+            :options="live2dPositionOptions"
+          />
         </div>
       </div>
     </div>

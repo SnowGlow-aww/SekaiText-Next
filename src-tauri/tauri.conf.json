@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SekaiText Next",
-  "version": "4.2.3",
+  "version": "4.3.0",
   "identifier": "com.snowglow-aww.sekaitext-next",
   "build": {
     "frontendDist": "../dist",
@@ -61,7 +61,9 @@
       "entitlements": "engine.entitlements"
     },
     "windows": {
-      "nsis": {}
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      }
     }
   }
 }

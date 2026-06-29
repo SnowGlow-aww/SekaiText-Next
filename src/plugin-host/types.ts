@@ -33,6 +33,18 @@ export interface PluginSettingsSection {
   pluginId?: string
 }
 
+// A dockable panel contributed by a plugin. The host mounts `component` into the
+// editor dock region (top/right/bottom edge, chosen in settings) so the user can
+// keep e.g. the Live2D player visible beside the translation. The component
+// receives the full editor width/height of its docked strip and should fill it.
+// It drives playback by reading the shared dock store (host.stores.live2dDock()).
+export interface PluginDockPanel {
+  id: string // unique, namespaced by plugin (e.g. "live2d:dock")
+  component: any // a Vue component (resolved via host.vue)
+  // Stamped by the registry when flattening so the host can key the v-for.
+  pluginId?: string
+}
+
 // What the host exposes to every plugin's setup(host).
 export interface SekaiHost {
   // Host version (semver) so a plugin can check minHostVersion.
@@ -48,6 +60,11 @@ export interface SekaiHost {
     story: () => any
     app: () => any
     settings: () => any
+    // Shared Live2D dock state: the editor's jump button publishes a pending jump
+    // here and the plugin's docked panel/player watches `pendingJump` to act. The
+    // store is host-owned so host and plugin coordinate through one reactive
+    // singleton without sharing imports. See src/stores/live2dDock.ts.
+    live2dDock: () => any
   }
   // The API client (same instance the core uses).
   api: any
@@ -71,6 +88,9 @@ export interface SekaiHost {
   registerRoute: (pluginId: string, route: RouteRecordRaw) => void
   registerSidebarItem: (pluginId: string, item: PluginSidebarItem) => void
   registerSettingsSection: (pluginId: string, section: PluginSettingsSection) => void
+  // Contribute a dockable panel (e.g. the Live2D player) the host mounts in the
+  // editor dock region. Tracked under the plugin id so unload reverses it.
+  registerDockPanel: (pluginId: string, panel: PluginDockPanel) => void
 }
 
 // The shape a plugin's ESM entry must export.

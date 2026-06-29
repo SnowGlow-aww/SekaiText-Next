@@ -19,6 +19,8 @@ import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
+import Live2DDock from '../components/live2d/Live2DDock.vue'
+import { useLive2dDockStore } from '../stores/live2dDock'
 import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
@@ -35,6 +37,18 @@ const autoSave = useAutoSave()
 const undo = useUndo()
 const pluginRegistry = usePluginRegistry()
 const team = useTeamStore()
+const live2dDock = useLive2dDockStore()
+
+// Which edge (if any) the Live2D dock occupies around the workspace. Shown only
+// when the user picked a docked placement (not 独立窗口), the panel is toggled
+// visible, and the Live2D plugin is actually loaded. 'left' is never returned —
+// the left edge belongs to the story navigator.
+const dockSide = computed<'top' | 'right' | 'bottom' | null>(() => {
+  if (!live2dDock.visible) return null
+  if (!pluginRegistry.isLoaded('live2d')) return null
+  const p = live2dDock.placement()
+  return p === 'window' ? null : p
+})
 
 // Resolve a lucide icon by name for plugin-contributed sidebar items; fall back
 // to a generic puzzle icon if the name is unknown.
@@ -550,7 +564,15 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
              wallpaper instead of butting a bordered rounded card straight into
              the square toolbar/sidebar (which left a hard full-width seam + cut
              corner notches). Off → unchanged full-bleed layout. -->
-        <main class="flex-1 min-h-0" :class="{ 'p-2.5': app.bgEnabled }"><EditorWorkspace ref="workspace"/></main>
+        <main
+          class="flex-1 min-h-0 flex"
+          :class="[{ 'p-2.5': app.bgEnabled }, dockSide === 'top' || dockSide === 'bottom' ? 'flex-col' : 'flex-row']"
+        >
+          <Live2DDock v-if="dockSide === 'top'" placement="top" />
+          <div class="flex-1 min-w-0 min-h-0"><EditorWorkspace ref="workspace"/></div>
+          <Live2DDock v-if="dockSide === 'right'" placement="right" />
+          <Live2DDock v-if="dockSide === 'bottom'" placement="bottom" />
+        </main>
       </div>
     </div>
     <SpeakerCountDialog v-if="showSpeakerCount" @close="showSpeakerCount = false"/>

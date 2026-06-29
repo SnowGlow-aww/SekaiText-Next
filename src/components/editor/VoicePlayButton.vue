@@ -62,15 +62,18 @@ async function play() {
 </script>
 
 <template>
+  <!-- Flat 扁长方形 (wide+short) control: icon + tiny label, full-width within the
+       per-line button stack (items-stretch makes it match the Live2D button). -->
   <button
     @click="play"
     :disabled="loading"
-    class="grid place-items-center w-8 h-8 rounded-full border border-[var(--color-border)] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+    class="flex items-center justify-center gap-1.5 h-7 px-2.5 w-full rounded-[var(--radius-control)] border border-[var(--color-border)] text-xs leading-none text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
     :class="{ 'bg-[var(--color-primary)] text-[var(--color-primary-content)] border-[var(--color-primary)] hover:text-[var(--color-primary-content)]': playing }"
     :title="loading ? '加载中...' : playing ? '停止' : '播放语音'"
   >
     <span v-if="loading" class="loading loading-spinner loading-xs" />
-    <Square v-else-if="playing" :size="13" fill="currentColor" />
-    <Play v-else :size="13" fill="currentColor" />
+    <Square v-else-if="playing" :size="12" fill="currentColor" />
+    <Play v-else :size="12" fill="currentColor" />
+    <span>{{ playing ? '停止' : '语音' }}</span>
   </button>
 </template>

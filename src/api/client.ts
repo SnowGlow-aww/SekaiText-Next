@@ -519,8 +519,16 @@ export const api = {
 
   // Bulk-upload the entire LOCAL glossary to the server (superadmin only; the
   // server upserts by entry ID and bumps the version once so every client re-syncs).
-  teamBulkImport: (entries: import('../types/glossary').GlossaryEntry[]) =>
+  // Accepts the full GlossaryData (entries + appellations + grammar) — the server
+  // now also upserts appellations/grammar. Appellations/grammar are always sent
+  // (as [] when absent) so the older entries-only path keeps working unchanged.
+  teamBulkImport: (data: import('../types/glossary').GlossaryData) =>
     request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
-      method: 'POST', body: JSON.stringify({ entries }),
+      method: 'POST',
+      body: JSON.stringify({
+        entries: data.entries,
+        appellations: data.appellations ?? [],
+        grammar: data.grammar ?? [],
+      }),
     }),
 }
