@@ -97,7 +97,8 @@ func (h *Handler) TeamSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "invalid remote payload: "+err.Error())
 		return
 	}
-	if err := h.glossary.MergeImport(gd.Entries, gd.Appellations, gd.Grammar, model.OriginRemote); err != nil {
+	removed, err := h.glossary.MergeImport(gd.Entries, gd.Appellations, gd.Grammar, model.OriginRemote)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -105,6 +106,7 @@ func (h *Handler) TeamSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "synced", "version": remoteVer, "changed": true,
 		"entries": len(gd.Entries), "appellations": len(gd.Appellations), "grammar": len(gd.Grammar),
+		"removed": removed,
 	})
 }
 

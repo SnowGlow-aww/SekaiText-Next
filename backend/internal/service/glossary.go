@@ -359,19 +359,29 @@ func (s *GlossaryStore) DeleteEntry(id string) (bool, error) {
 	return false, nil
 }
 
-// MergeImport merges imported entries into the store ADDITIVELY: each imported
-// row updates the existing row with the same id, or is appended if new. It never
-// DELETES local rows. An earlier version dropped every import|remote row in any
-// category the import also contained, then re-added the import's set — which
-// silently wiped a user's locally-imported library whenever the synced server
-// set was smaller/incomplete (the "after sync only one entry shows" bug, since
-// the shared server glossary was nearly empty). Server-side deletions are
-// therefore not propagated — a stray stale term is far less harmful than losing
-// the whole library; an explicit clear is the way to remove entries. A local
-// user-authored entry always wins over an incoming row with the same id.
-// Appellations/grammar still fully replace, but only when the import carries
-// them. origin is OriginImport or OriginRemote.
-func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations []model.Appellation, grammar []model.GrammarUsage, origin string) error {
+// MergeImport merges imported entries into the store. Each incoming row updates
+// the existing row with the same id, or is appended if new; a local user-authored
+// entry always wins over an incoming row with the same id.
+//
+// File imports (OriginImport) are purely ADDITIVE — nothing local is deleted. This
+// guards the "after sync only one entry shows" wipe: a smaller/incomplete import
+// must never drop a user's locally-built library.
+//
+// Remote SYNC (OriginRemote) treats the server as authoritative for the rows IT
+// owns, so stale entries ARE pruned: a local OriginRemote entry absent from the
+// incoming set is deleted (a term removed on the team server disappears on the
+// next sync — without this, deleting upstream was meaningless). The prune is
+// deliberately scoped to avoid the historical data loss:
+//   - OriginUser (hand-authored) rows are never touched.
+//   - OriginImport (file-imported) rows are never touched — a separate local
+//     library, not this server's to delete.
+//   - It is skipped entirely when the incoming set is EMPTY, so a wrong URL or a
+//     momentarily-empty server can't wipe the synced library (the original
+//     data-loss trigger). A non-empty payload is trusted as the user syncs
+//     deliberately; the pruned count is returned so the UI can surface it.
+// Appellations/grammar fully replace, but only when the import carries them.
+// Returns the number of stale remote entries pruned.
+func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations []model.Appellation, grammar []model.GrammarUsage, origin string) (int, error) {
 	// Stamp + id the incoming entries.
 	for i := range imported {
 		imported[i].Origin = origin
@@ -380,6 +390,26 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	incoming := make(map[string]bool, len(imported))
+	for i := range imported {
+		incoming[imported[i].ID] = true
+	}
+
+	// Remote sync prunes stale remote-origin rows (see doc). Skipped on an empty
+	// payload so an error/misconfig can't wipe the synced library.
+	pruned := 0
+	if origin == model.OriginRemote && len(imported) > 0 {
+		kept := s.entries[:0]
+		for _, e := range s.entries {
+			if e.Origin == model.OriginRemote && !incoming[e.ID] {
+				pruned++
+				continue // removed on the server -> drop locally
+			}
+			kept = append(kept, e)
+		}
+		s.entries = kept
+	}
 
 	byID := make(map[string]int, len(s.entries))
 	for i := range s.entries {
@@ -409,7 +439,7 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 		}
 		s.grammar = grammar
 	}
-	return s.persist()
+	return pruned, s.persist()
 }
 
 // --- appellations (人称表 lookup) ---
