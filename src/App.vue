@@ -22,7 +22,7 @@ import { useAppStore } from './stores/app'
 import { useAppUpdateStore } from './stores/appUpdate'
 import { useToast } from './composables/useToast'
 import { useDebugLog } from './composables/useDebugLog'
-import { api, BASE_URL } from './api/client'
+import { api, ORIGIN } from './api/client'
 import Toast from './components/Toast.vue'
 import UpdateBanner from './components/ui/UpdateBanner.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
@@ -59,13 +59,18 @@ watch(() => settings.settings.uiFontSize, applyUiFontSize, { immediate: true })
 watch(() => settings.settings.debugEnabled, (v) => { enabled.value = v; applyDebug(v) })
 
 onMounted(async () => {
-  // Clear recovery file on normal exit so only crashes leave it behind.
-  // Use the absolute backend origin: in the packaged Tauri app a relative
-  // /api path resolves against tauri://localhost and the beacon never arrives.
-  window.addEventListener('beforeunload', () => {
-    navigator.sendBeacon(`${BASE_URL}/recovery/clear`, '')
-  })
-
+  // Recovery is cleared on normal exit by the Tauri shell in RELEASE (Rust sends
+  // DELETE /api/v1/recovery/clear on RunEvent::Exit — on macOS an Apple-event quit
+  // fires ONLY Exit, not ExitRequested, so Exit is the single reliable quit hook).
+  // A beforeunload sendBeacon can't reliably reach a custom-scheme backend,
+  // so it's gone there. In DEV (dev:web / dev:tauri talk to the backend over TCP and
+  // have no Rust quit hook), keep a dev-only beacon so a clean exit still clears
+  // recovery. In-app explicit "clear recovery" actions still go through the api client.
+  if (import.meta.env.DEV) {
+    window.addEventListener('beforeunload', () => {
+      navigator.sendBeacon(`${ORIGIN}/api/v1/recovery/clear`)
+    })
+  }
   try {
     await settings.fetchSettings()
   } catch {

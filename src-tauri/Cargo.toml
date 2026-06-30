@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "4.3.1"
+version = "5.0.0"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -25,4 +25,8 @@ tauri = { version = "2.10.3", features = ["image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
-getrandom = "0.2"
+
+# Second-launch focuses the existing window instead of spawning a competing
+# backend (desktop-only). Usage is further gated to release in lib.rs.
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-single-instance = "2"

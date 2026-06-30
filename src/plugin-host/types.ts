@@ -49,6 +49,11 @@ export interface PluginDockPanel {
 export interface SekaiHost {
   // Host version (semver) so a plugin can check minHostVersion.
   version: string
+  // The backend origin (no trailing slash), injected as window.__SEKAI_ORIGIN__:
+  // the custom scheme (sekai://localhost / http://sekai.localhost) in packaged
+  // builds, or http://localhost:9800 in dev. Plugins read this instead of
+  // hard-coding the origin for asset/voice/proxy URLs.
+  backendOrigin: string
   // The host's Vue runtime — plugins call host.vue.defineComponent/h/ref/... and
   // SFCs are compiled with vue externalized so they resolve to THIS instance.
   vue: typeof VueRuntime

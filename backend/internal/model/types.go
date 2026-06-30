@@ -4,16 +4,16 @@ import "sync"
 
 // SourceTalk represents a source text entry parsed from Unity JSON.
 type SourceTalk struct {
-	Speaker  string   `json:"speaker"`
-	Text     string   `json:"text"`
-	Voices   []string `json:"voices,omitempty"`
-	Volume   []int    `json:"volume,omitempty"`
-	CharIdx  int      `json:"charIndex"`
+	Speaker string   `json:"speaker"`
+	Text    string   `json:"text"`
+	Voices  []string `json:"voices,omitempty"`
+	Volume  []int    `json:"volume,omitempty"`
+	CharIdx int      `json:"charIndex"`
 	// Chara2d is the speaking character's Character2dId for the FIRST voice clip
 	// of this line (the one the player plays). Resolves the partvoice_ bundle
 	// subdir for card stories; 0 when the line has no voice.
-	Chara2d  int      `json:"chara2d,omitempty"`
-	Clues    []string `json:"clues,omitempty"`
+	Chara2d int      `json:"chara2d,omitempty"`
+	Clues   []string `json:"clues,omitempty"`
 	// FlashbackLines is parallel to Clues: FlashbackLines[k] is the 1-based
 	// physical line where Clues[k]'s flashback sentence appears in its source
 	// scenario file (0 = could not locate / not resolved).
@@ -22,17 +22,17 @@ type SourceTalk struct {
 
 // DstTalk represents a translation entry in the editor.
 type DstTalk struct {
-	Idx       int    `json:"idx"`
-	Speaker   string `json:"speaker"`
-	Text      string `json:"text"`
-	Start     bool   `json:"start"`
-	End       bool   `json:"end"`
-	Checked   bool   `json:"checked"`
-	Save      bool   `json:"save"`
-	Message   string `json:"message,omitempty"`
-	DstIdx    int    `json:"dstidx"`
-	ReferID   int    `json:"referid,omitempty"`
-	Proofread *bool  `json:"proofread,omitempty"`
+	Idx       int        `json:"idx"`
+	Speaker   string     `json:"speaker"`
+	Text      string     `json:"text"`
+	Start     bool       `json:"start"`
+	End       bool       `json:"end"`
+	Checked   bool       `json:"checked"`
+	Save      bool       `json:"save"`
+	Message   string     `json:"message,omitempty"`
+	DstIdx    int        `json:"dstidx"`
+	ReferID   int        `json:"referid,omitempty"`
+	Proofread *bool      `json:"proofread,omitempty"`
 	CheckMode bool       `json:"checkmode,omitempty"`
 	DiffParts []DiffPart `json:"diff,omitempty"`
 	// Baseline holds the comparison source for this row: the original
@@ -52,7 +52,7 @@ const (
 type TalkColor int
 
 const (
-	ColorWhite  TalkColor = iota
+	ColorWhite TalkColor = iota
 	ColorRed
 	ColorYellow
 	ColorGreen
@@ -93,28 +93,28 @@ type StoryChapter struct {
 
 // JsonPathResult contains CDN URL and filename for loading a story.
 type JsonPathResult struct {
-	URL         string `json:"url"`
-	FileName    string `json:"fileName"`
-	SaveTitle   string `json:"saveTitle"`
+	URL          string `json:"url"`
+	FileName     string `json:"fileName"`
+	SaveTitle    string `json:"saveTitle"`
 	ChapterTitle string `json:"chapterTitle"`
 }
 
 // Settings represents application settings.
 type Settings struct {
-	FontSize                  int    `json:"fontSize"`
-	UIFontSize                int    `json:"uiFontSize"`
-	DownloadSource            string `json:"downloadSource"`
-	SaveLineBreakN            bool   `json:"saveN"`
-	SaveVoice                 bool   `json:"saveVoice"`
-	DisableSSL                bool   `json:"disableSSL"`
-	VoiceOutputDir            string `json:"voiceOutputDir,omitempty"`
-	JsonDownloadDir           string `json:"jsonDownloadDir,omitempty"`
-	SaveBaseDir               string `json:"saveBaseDir,omitempty"`
-	DebugEnabled              bool   `json:"debugEnabled"`
-	IndexOrder                string `json:"indexOrder"`
-	PreserveStoryOnModeSwitch bool   `json:"preserveStoryOnModeSwitch"`
-	UndoDepth                 int    `json:"undoDepth"`
-	KeepHighlightWhenCompareOff bool `json:"keepHighlightWhenCompareOff"`
+	FontSize                    int    `json:"fontSize"`
+	UIFontSize                  int    `json:"uiFontSize"`
+	DownloadSource              string `json:"downloadSource"`
+	SaveLineBreakN              bool   `json:"saveN"`
+	SaveVoice                   bool   `json:"saveVoice"`
+	DisableSSL                  bool   `json:"disableSSL"`
+	VoiceOutputDir              string `json:"voiceOutputDir,omitempty"`
+	JsonDownloadDir             string `json:"jsonDownloadDir,omitempty"`
+	SaveBaseDir                 string `json:"saveBaseDir,omitempty"`
+	DebugEnabled                bool   `json:"debugEnabled"`
+	IndexOrder                  string `json:"indexOrder"`
+	PreserveStoryOnModeSwitch   bool   `json:"preserveStoryOnModeSwitch"`
+	UndoDepth                   int    `json:"undoDepth"`
+	KeepHighlightWhenCompareOff bool   `json:"keepHighlightWhenCompareOff"`
 
 	// Shortcuts maps a shortcut action id to a combo string (e.g. "mod+o").
 	// Empty/absent entries fall back to the frontend registry defaults.
@@ -124,11 +124,11 @@ type Settings struct {
 	// shown when entering 合意 mode.
 	HideAgreementImportHint bool `json:"hideAgreementImportHint,omitempty"`
 
-	LastStoryType   string `json:"lastStoryType,omitempty"`
-	LastStorySort   string `json:"lastStorySort,omitempty"`
-	LastStoryIndex  string `json:"lastStoryIndex,omitempty"`
-	LastChapter     int    `json:"lastChapter,omitempty"`
-	LastDataSource  string `json:"lastDataSource,omitempty"`
+	LastStoryType  string `json:"lastStoryType,omitempty"`
+	LastStorySort  string `json:"lastStorySort,omitempty"`
+	LastStoryIndex string `json:"lastStoryIndex,omitempty"`
+	LastChapter    int    `json:"lastChapter,omitempty"`
+	LastDataSource string `json:"lastDataSource,omitempty"`
 
 	// Live2DPosition places the Live2D dock relative to the editor:
 	// "top" | "right" | "bottom" | "window". Empty falls back to "right".
@@ -146,20 +146,20 @@ type Settings struct {
 // DefaultSettings returns sensible defaults.
 func DefaultSettings() Settings {
 	return Settings{
-		FontSize:                  18,
-		UIFontSize:                16,
-		DownloadSource:            "best",
-		SaveLineBreakN:            true,
-		SaveVoice:                 false,
-		DisableSSL:                false,
-		JsonDownloadDir:           "./downloads/json",
-		SaveBaseDir:               "/Users/amia/Documents/Translation/PJS字幕组",
-		DebugEnabled:              false,
-		IndexOrder:                "asc",
-		PreserveStoryOnModeSwitch: true,
-		UndoDepth:                 20,
+		FontSize:                    18,
+		UIFontSize:                  16,
+		DownloadSource:              "best",
+		SaveLineBreakN:              true,
+		SaveVoice:                   false,
+		DisableSSL:                  false,
+		JsonDownloadDir:             "./downloads/json",
+		SaveBaseDir:                 "/Users/amia/Documents/Translation/PJS字幕组",
+		DebugEnabled:                false,
+		IndexOrder:                  "asc",
+		PreserveStoryOnModeSwitch:   true,
+		UndoDepth:                   20,
 		KeepHighlightWhenCompareOff: true,
-		Live2DPosition:            "right",
+		Live2DPosition:              "right",
 	}
 }
 
@@ -209,9 +209,9 @@ type TranslationSaveRequest struct {
 
 // EditorChangeTextRequest edits text in a talk entry.
 type EditorChangeTextRequest struct {
-	Row        int      `json:"row"`
-	Text       string   `json:"text"`
-	EditorMode int      `json:"editorMode"`
+	Row        int       `json:"row"`
+	Text       string    `json:"text"`
+	EditorMode int       `json:"editorMode"`
 	Talks      []DstTalk `json:"talks"`
 	DstTalks   []DstTalk `json:"dstTalks"`
 	ReferTalks []DstTalk `json:"referTalks"`
@@ -219,10 +219,10 @@ type EditorChangeTextRequest struct {
 
 // EditorAddLineRequest adds a sub-line.
 type EditorAddLineRequest struct {
-	Row         int        `json:"row"`
-	Talks       []DstTalk  `json:"talks"`
-	DstTalks    []DstTalk  `json:"dstTalks"`
-	IsProofread bool       `json:"isProofreading"`
+	Row         int       `json:"row"`
+	Talks       []DstTalk `json:"talks"`
+	DstTalks    []DstTalk `json:"dstTalks"`
+	IsProofread bool      `json:"isProofreading"`
 }
 
 // EditorRemoveLineRequest removes a sub-line.
@@ -237,7 +237,7 @@ type EditorReplaceBracketsRequest struct {
 	Row      int       `json:"row"`
 	Brackets string    `json:"brackets"`
 	Talks    []DstTalk `json:"talks"`
-		DstTalks []DstTalk `json:"dstTalks"`
+	DstTalks []DstTalk `json:"dstTalks"`
 }
 
 // CheckLinesRequest aligns and validates loaded talks.
@@ -268,7 +268,7 @@ type CompareRequest struct {
 
 // SpeakerCountRequest counts lines per speaker.
 type SpeakerCountRequest struct {
-	Talks []DstTalk    `json:"talks"`
+	Talks       []DstTalk    `json:"talks"`
 	SourceTalks []SourceTalk `json:"sourceTalks"`
 }
 
@@ -327,13 +327,29 @@ type JsonDownloadRequest struct {
 // Mu guards the mutable fields below, which are written by the download
 // goroutine and read concurrently by the progress HTTP handler.
 type DownloadTaskProgress struct {
-	Mu        sync.Mutex `json:"-"`
-	TaskID    string `json:"taskId"`
-	Status    string `json:"status"` // downloading, done, error
-	Read      int64  `json:"read"`
-	Total     int64  `json:"total"`
-	FilePath  string `json:"filePath,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Mu       sync.Mutex `json:"-"`
+	TaskID   string     `json:"taskId"`
+	Status   string     `json:"status"` // downloading, done, error
+	Read     int64      `json:"read"`
+	Total    int64      `json:"total"`
+	FilePath string     `json:"filePath,omitempty"`
+	Error    string     `json:"error,omitempty"`
+}
+
+// Live2DSyncProgress tracks an async Live2D online-asset sync (download the
+// locally-missing models + their motion data from the CDNs into the local
+// mirror). Mu guards the mutable fields, written by the sync goroutine and read
+// concurrently by the progress HTTP handler.
+type Live2DSyncProgress struct {
+	Mu           sync.Mutex `json:"-"`
+	TaskID       string     `json:"taskId"`
+	Status       string     `json:"status"`  // checking|downloading|done|error
+	Total        int        `json:"total"`   // number of missing models to download
+	Current      int        `json:"current"` // models processed so far
+	CurrentModel string     `json:"currentModel"`
+	Files        int        `json:"files"` // files written so far
+	Bytes        int64      `json:"bytes"` // bytes written so far
+	Error        string     `json:"error,omitempty"`
 }
 
 // RecoveryData is the autosave recovery payload stored on disk.
@@ -378,4 +394,3 @@ type DiffPart struct {
 	Text string `json:"text"`
 	Type string `json:"type"` // "same", "add", "remove"
 }
-

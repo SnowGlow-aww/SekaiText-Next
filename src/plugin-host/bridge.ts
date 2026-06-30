@@ -5,7 +5,7 @@ import { useStoryStore } from '../stores/story'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
 import { useLive2dDockStore } from '../stores/live2dDock'
-import { api } from '../api/client'
+import { api, ORIGIN } from '../api/client'
 import { useToast } from '../composables/useToast'
 import { usePluginRegistry } from './registry'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
@@ -80,6 +80,9 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
 
   const host: SekaiHost = {
     version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0',
+    // Backend origin (= window.__SEKAI_ORIGIN__) so plugins read it from the host
+    // instead of hard-coding localhost:9800.
+    backendOrigin: ORIGIN,
     vue: VueRuntime,
     router,
     pinia,

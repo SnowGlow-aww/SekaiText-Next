@@ -1,4 +1,10 @@
-export const BASE_URL = 'http://localhost:9800/api/v1'
+// Backend origin is injected by the Tauri shell (Rust `initialization_script`)
+// as window.__SEKAI_ORIGIN__, which runs before the app JS. In packaged builds it
+// points at the custom scheme (sekai://localhost or http://sekai.localhost); in
+// dev (plain browser / vite) the global is absent so we fall back to the TCP
+// backend on localhost:9800. No platform branching needed here.
+export const ORIGIN = (window as any).__SEKAI_ORIGIN__ || 'http://localhost:9800'
+export const BASE_URL = ORIGIN + '/api/v1'
 
 class ApiError extends Error {
   status: number

@@ -81,15 +81,34 @@ const exporting = ref(false)
 async function handleExport() {
   exporting.value = true
   try {
+    // Always fetch the export payload over the api client (custom scheme in the
+    // packaged app, TCP in dev) and serialize it ourselves.
     const data = await api.glossaryExport()
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'glossary.json'
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.show('已导出 glossary.json', 'success')
+    const json = JSON.stringify(data, null, 2)
+    if (isTauri) {
+      // A custom-scheme webview can't trigger a browser download. The Rust command
+      // opens the native save dialog and writes the file — the path comes from the
+      // OS picker (never from JS), so this can't be used to write arbitrary paths.
+      // It returns the chosen path, or null if the user cancelled.
+      const { invoke } = await import('@tauri-apps/api/core')
+      const saved = await invoke<string | null>('save_text_dialog', {
+        defaultName: 'glossary.json',
+        contents: json,
+      })
+      if (!saved) return // user cancelled the save dialog
+      const name = saved.split(/[\\/]/).pop() || 'glossary.json'
+      toast.show(`已导出 ${name}`, 'success')
+    } else {
+      // Web-dev fallback: trigger a browser blob download.
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'glossary.json'
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.show('已导出 glossary.json', 'success')
+    }
   } catch (e: any) {
     toast.show(e.message || '导出失败', 'error')
   } finally {

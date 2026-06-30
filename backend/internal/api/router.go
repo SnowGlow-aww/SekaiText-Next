@@ -138,6 +138,12 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		// Import a folder of Live2D assets into the local mirror
 		r.Post("/live2d/import", h.ImportLive2D)
 
+		// Download/update the online Live2D asset library: diff the upstream
+		// model_list against the local mirror and fetch the missing models +
+		// their motion data. Start returns {taskId}; poll sync-progress.
+		r.Post("/live2d/sync", h.Live2DSync)
+		r.Get("/live2d/sync-progress", h.Live2DSyncProgress)
+
 		// Glossary (term library): search, browse, CRUD, import, sync, appellations
 		r.Route("/glossary", func(r chi.Router) {
 			r.Get("/search", h.GlossarySearch)
@@ -232,8 +238,10 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 // settings → download → open RCE surface this guards.
 func capabilityToken(token string) func(http.Handler) http.Handler {
 	exempt := map[string]bool{
-		"/api/v1/recovery/clear": true, // sendBeacon on beforeunload (headers impossible)
-		"/api/v1/live2d/import":  true, // invoked by the Live2D plugin bundle
+		"/api/v1/recovery/clear":       true, // sendBeacon on beforeunload (headers impossible)
+		"/api/v1/live2d/import":        true, // invoked by the Live2D plugin bundle
+		"/api/v1/live2d/sync":          true, // invoked by the Live2D plugin bundle
+		"/api/v1/live2d/sync-progress": true, // GET; listed for parity (GET is never token-checked)
 	}
 	mutating := func(m string) bool {
 		switch m {

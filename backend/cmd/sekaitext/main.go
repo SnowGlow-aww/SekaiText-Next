@@ -12,6 +12,7 @@ import (
 
 	"sekaitext/backend/internal/api"
 	"sekaitext/backend/internal/config"
+	"sekaitext/backend/internal/ipc"
 )
 
 func main() {
@@ -20,6 +21,7 @@ func main() {
 	authToken := flag.String("auth-token", "", "capability token required on mutating requests (X-Sekai-Token header); empty disables enforcement (dev)")
 	dir := flag.String("dir", ".", "base directory for read-only resources (images)")
 	dataDir := flag.String("data-dir", "", "base directory for writable data (catalog, settings); defaults to --dir")
+	ipcMode := flag.Bool("ipc", false, "serve over stdio framing (Tauri sekai:// custom scheme) instead of binding TCP; release transport. No TCP port, no capability token.")
 	flag.Parse()
 
 	// Resolve base directory:
@@ -39,7 +41,12 @@ func main() {
 	}
 
 	cfg := config.NewAppConfig(baseDir, *dataDir)
-	cfg.AuthToken = *authToken
+	// In ipc (stdio) mode the channel is process-private — no external page can
+	// reach it — so the capability token is pointless and stays "" (the token
+	// middleware then no-ops). TCP mode keeps the per-launch token.
+	if !*ipcMode {
+		cfg.AuthToken = *authToken
+	}
 
 	// Ensure writable directories exist
 	ensureDir(cfg.CatalogDir)
@@ -48,6 +55,19 @@ func main() {
 	ensureDir(cfg.PluginsDir)
 
 	router := api.NewRouter(cfg)
+
+	if *ipcMode {
+		// Stdio transport (Tauri sekai:// custom scheme): no TCP bind. Logs go to
+		// stderr (set inside ipc.Serve) so they never corrupt the stdout frame
+		// stream. Returns on stdin EOF when the Rust shell closes the pipe.
+		log.Printf("SekaiText server starting in IPC (stdio) mode")
+		log.Printf("Resource directory: %s", cfg.BaseDir)
+		log.Printf("Data directory: %s", cfg.DataBaseDir)
+		if err := ipc.Serve(router); err != nil {
+			log.Fatalf("IPC server failed: %v", err)
+		}
+		return
+	}
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	log.Printf("SekaiText server starting on %s", addr)

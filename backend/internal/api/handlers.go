@@ -24,21 +24,22 @@ import (
 
 // Handler holds shared dependencies for all HTTP handlers.
 type Handler struct {
-	cfg           *config.AppConfig
-	lm            *service.ListManager
-	editor        *service.EditorService
-	jsonLoader    *service.JsonLoaderService
-	fb            *service.FlashbackAnalyzer
-	dl            *service.Downloader
-	progress      *service.ProgressTracker
-	logBuf        *service.LogBuffer
-	glossary      *service.GlossaryStore
-	plugins       *service.PluginStore
-	market        *service.MarketService
-	appUpdate     *service.AppUpdateService
-	team          *service.TeamService
-	engine        *service.EngineManager
-	downloadTasks sync.Map // map[string]*model.DownloadTaskProgress
+	cfg             *config.AppConfig
+	lm              *service.ListManager
+	editor          *service.EditorService
+	jsonLoader      *service.JsonLoaderService
+	fb              *service.FlashbackAnalyzer
+	dl              *service.Downloader
+	progress        *service.ProgressTracker
+	logBuf          *service.LogBuffer
+	glossary        *service.GlossaryStore
+	plugins         *service.PluginStore
+	market          *service.MarketService
+	appUpdate       *service.AppUpdateService
+	team            *service.TeamService
+	engine          *service.EngineManager
+	downloadTasks   sync.Map // map[string]*model.DownloadTaskProgress
+	live2dSyncTasks sync.Map // map[string]*model.Live2DSyncProgress
 }
 
 // NewHandler creates a new Handler with all services initialized.
