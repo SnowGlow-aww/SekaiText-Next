@@ -2,7 +2,7 @@
 import { ref, onMounted, watch, computed, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ArrowLeft, Search, Upload, Plus, Trash2, Pencil, Check, X, Download, Lock, Unlock } from 'lucide-vue-next'
+import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock } from 'lucide-vue-next'
 import { useGlossaryStore } from '../stores/glossary'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
@@ -17,7 +17,6 @@ const glossary = useGlossaryStore()
 const team = useTeamStore()
 const toast = useToast()
 const { confirm } = useConfirm()
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 const tab = ref<'search' | 'appellation'>('search')
 const showProposals = ref(false)
@@ -76,46 +75,6 @@ async function refreshView() {
   }
 }
 
-// --- export ---
-const exporting = ref(false)
-async function handleExport() {
-  exporting.value = true
-  try {
-    // Always fetch the export payload over the api client (custom scheme in the
-    // packaged app, TCP in dev) and serialize it ourselves.
-    const data = await api.glossaryExport()
-    const json = JSON.stringify(data, null, 2)
-    if (isTauri) {
-      // A custom-scheme webview can't trigger a browser download. The Rust command
-      // opens the native save dialog and writes the file — the path comes from the
-      // OS picker (never from JS), so this can't be used to write arbitrary paths.
-      // It returns the chosen path, or null if the user cancelled.
-      const { invoke } = await import('@tauri-apps/api/core')
-      const saved = await invoke<string | null>('save_text_dialog', {
-        defaultName: 'glossary.json',
-        contents: json,
-      })
-      if (!saved) return // user cancelled the save dialog
-      const name = saved.split(/[\\/]/).pop() || 'glossary.json'
-      toast.show(`已导出 ${name}`, 'success')
-    } else {
-      // Web-dev fallback: trigger a browser blob download.
-      const blob = new Blob([json], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'glossary.json'
-      a.click()
-      URL.revokeObjectURL(url)
-      toast.show('已导出 glossary.json', 'success')
-    }
-  } catch (e: any) {
-    toast.show(e.message || '导出失败', 'error')
-  } finally {
-    exporting.value = false
-  }
-}
-
 // --- add / edit ---
 // editUnlocked: edits to existing entries (inline edit + delete) are locked by
 // default to prevent accidental changes; the lock toggle lives top-right by
@@ -126,11 +85,12 @@ const draft = ref<Partial<GlossaryEntry>>({ source: '', translation: '', note: '
 const editingId = ref<string | null>(null)
 const editDraft = ref<Partial<GlossaryEntry>>({})
 
-// When the edit/delete controls show:
-//   readonly   → never (view-only mode)
-//   logged-in  → always (local entries delete directly; remote entries route to a proposal)
-//   pure-local → only when the lock is unlocked (guards against accidental edits)
-const canShowControls = computed(() => !team.readonly && (editUnlocked.value || team.loggedIn))
+// The edit/delete controls on existing entries show only while the lock is OPEN —
+// for everyone, logged in or not — so the lock genuinely guards against accidental
+// changes (its whole point). Read-only mode never shows them. With the lock open, a
+// remote (server) entry still routes its edit/delete through a team proposal; a
+// local (import/user) entry is changed directly.
+const canShowControls = computed(() => !team.readonly && editUnlocked.value)
 
 function toggleEditLock() {
   editUnlocked.value = !editUnlocked.value
@@ -213,33 +173,6 @@ async function removeEntry(id: string) {
   if (!(await confirm({ title: '删除词条', message: `确定删除「${e?.source ?? ''}」这条词条吗？`, detail: '此操作不可撤销。', tone: 'danger', confirmText: '删除' }))) return
   try { await glossary.deleteEntry(id); await refreshView(); toast.show('已删除', 'success') }
   catch (err: any) { toast.show(err.message || '删除失败', 'error') }
-}
-
-// --- import Excel ---
-const importing = ref(false)
-
-async function handleImport() {
-  if (!isTauri) {
-    toast.show('导入需要桌面版（浏览器预览不支持选择本地 xlsx 路径）', 'warn')
-    return
-  }
-  const { open } = await import('@tauri-apps/plugin-dialog')
-  const path = await open({
-    title: '选择术语库 Excel',
-    filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-  })
-  if (!path) return
-  importing.value = true
-  try {
-    const report = await glossary.importExcel(path as string)
-    const ok = report.sheets.filter(s => s.kind !== 'skipped').map(s => `${s.sheet}(${s.count})`).join('、')
-    toast.show(`导入完成：${report.totalEntries} 词条 / ${report.totalAppellations} 称呼 / ${report.totalGrammar} 语法 — ${ok}`, 'success', 6000)
-    await glossary.search(query.value, category.value)
-  } catch (e: any) {
-    toast.show(e.message || '导入失败', 'error')
-  } finally {
-    importing.value = false
-  }
 }
 
 // --- appellation tab ---
@@ -353,23 +286,6 @@ onMounted(async () => {
           >
             <component :is="editUnlocked ? Unlock : Lock" :size="16" />
             {{ editUnlocked ? '编辑中' : '锁定' }}
-          </button>
-          <button
-            @click="handleExport"
-            :disabled="exporting"
-            class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
-          >
-            <Download :size="16" />
-            {{ exporting ? '导出中…' : '导出' }}
-          </button>
-          <button
-            v-if="tab === 'search'"
-            @click="handleImport"
-            :disabled="importing"
-            class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
-          >
-            <Upload :size="16" />
-            {{ importing ? '导入中…' : '导入 Excel' }}
           </button>
         </div>
       </div>
