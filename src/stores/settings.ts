@@ -21,7 +21,7 @@ export const useSettingsStore = defineStore('settings', () => {
     indexOrder: 'asc',
     shortcuts: {},
     hideAgreementImportHint: false,
-    live2dPosition: 'right',
+    live2dPosition: 'window',
   })
   const loading = ref(false)
 
@@ -32,8 +32,12 @@ export const useSettingsStore = defineStore('settings', () => {
       // Migrate configs saved before uiFontSize existed (absent → 0): keep the
       // browser-default 16px so the UI doesn't collapse to a 0px root font.
       if (!s.uiFontSize) s.uiFontSize = 16
-      // Default the Live2D dock to the right edge for pre-existing configs.
-      if (!s.live2dPosition) s.live2dPosition = 'right'
+      // Default the Live2D dock to a standalone window for pre-existing configs.
+      if (!s.live2dPosition) s.live2dPosition = 'window'
+      // The 右侧 (right) placement option was retired; migrate any saved 'right'
+      // to the standalone window so the removed dropdown option can't strand the
+      // layout (or render a blank select for that now-unknown value).
+      if (s.live2dPosition === 'right') s.live2dPosition = 'window'
       settings.value = s
     } finally {
       loading.value = false

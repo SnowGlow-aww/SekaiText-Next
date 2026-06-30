@@ -60,7 +60,10 @@ export const useLive2dDockStore = defineStore('live2dDock', () => {
   function placement(): Live2dPlacement {
     const s = useSettingsStore()
     const p = s.settings.live2dPosition as Live2dPlacement | undefined
-    return p === 'top' || p === 'bottom' || p === 'window' ? p : 'right'
+    // 右侧 (right) was removed as a selectable placement; a missing/legacy/unknown
+    // value (including a persisted 'right') now degrades to the 独立窗口 default so
+    // the retired option can never break the layout.
+    return p === 'top' || p === 'bottom' || p === 'window' ? p : 'window'
   }
 
   // Entry point for the editor's Live2D button. Routes by the user's placement:

@@ -26,7 +26,6 @@ const modes: { value: ThemeMode; label: string; icon: typeof Monitor }[] = [
 // Live2D dock placement (left intentionally omitted — that edge is the nav).
 // Effective only with the Live2D plugin installed; harmless otherwise.
 const live2dPositionOptions = [
-  { value: 'right', label: '右侧' },
   { value: 'top', label: '顶部' },
   { value: 'bottom', label: '底部' },
   { value: 'window', label: '独立窗口' },
@@ -123,7 +122,7 @@ async function onBgFile(e: Event) {
         <div class="h-9 flex items-center">
           <SkSelect
             class="w-[200px]"
-            :model-value="settings.settings.live2dPosition || 'right'"
+            :model-value="settings.settings.live2dPosition || 'window'"
             @update:model-value="settings.settings.live2dPosition = $event as string"
             :options="live2dPositionOptions"
           />

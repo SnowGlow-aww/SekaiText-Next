@@ -79,7 +79,7 @@ const edgeBorder = computed(() => {
 
 <template>
   <div
-    class="relative flex flex-col flex-shrink-0 bg-[var(--color-surface)] overflow-hidden border-[var(--color-border)]"
+    class="relative flex flex-col flex-shrink-0 bg-[var(--color-surface)] overflow-hidden rounded-[var(--radius-card)] border-[var(--color-border)]"
     :class="edgeBorder"
     :style="boxStyle"
   >
