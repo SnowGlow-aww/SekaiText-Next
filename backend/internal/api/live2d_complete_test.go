@@ -60,3 +60,17 @@ func TestLive2DModelComplete(t *testing.T) {
 		}
 	}
 }
+
+// TestLive2DSekaiFallback checks the exmeaning/CDN → sekai.best URL remap used when
+// a body file (e.g. a texture) is missing from exmeaning but present on sekai.best.
+func TestLive2DSekaiFallback(t *testing.T) {
+	rel := "/live2d/model/v1/main/17_kanade/17kanade_black/17kanade_black_t01.2048/texture_00.png"
+	got := live2dSekaiFallback(live2dExmeaning + rel)
+	if want := live2dSekaiBest + rel; got != want {
+		t.Errorf("fallback = %q, want %q", got, want)
+	}
+	// A URL that isn't an exmeaning/CDN body URL (model_list/motion) yields no fallback.
+	if got := live2dSekaiFallback(live2dSekaiBest + "/live2d/model_list.json"); got != "" {
+		t.Errorf("expected no fallback for a sekai.best URL, got %q", got)
+	}
+}

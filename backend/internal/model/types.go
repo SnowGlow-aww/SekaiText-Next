@@ -349,6 +349,7 @@ type Live2DSyncProgress struct {
 	CurrentModel string     `json:"currentModel"`
 	Files        int        `json:"files"` // files written so far
 	Bytes        int64      `json:"bytes"` // bytes written so far
+	Failed       int        `json:"failed"` // models still incomplete after download (asset missing upstream)
 	Error        string     `json:"error,omitempty"`
 }
 

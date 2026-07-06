@@ -129,6 +129,7 @@ func (h *Handler) Live2DSyncProgress(w http.ResponseWriter, r *http.Request) {
 		CurrentModel string `json:"currentModel"`
 		Files        int    `json:"files"`
 		Bytes        int64  `json:"bytes"`
+		Failed       int    `json:"failed"`
 		Error        string `json:"error,omitempty"`
 	}{
 		TaskID:       task.TaskID,
@@ -138,6 +139,7 @@ func (h *Handler) Live2DSyncProgress(w http.ResponseWriter, r *http.Request) {
 		CurrentModel: task.CurrentModel,
 		Files:        task.Files,
 		Bytes:        task.Bytes,
+		Failed:       task.Failed,
 		Error:        task.Error,
 	}
 	task.Mu.Unlock()
@@ -231,12 +233,23 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 			task.CurrentModel = m.modelPath
 			task.Mu.Unlock()
 
-			if err := h.live2dSyncModel(task, m.modelPath, m.modelBase, m.modelFile); err != nil {
+			err := h.live2dSyncModel(task, m.modelPath, m.modelBase, m.modelFile)
+			// nil only means the fatal body files loaded; a best-effort texture/physics
+			// missing on BOTH mirrors still leaves the model incomplete. Re-check the
+			// on-disk set so the tally is honest instead of always reporting success.
+			dir := filepath.Join(root, "model", filepath.FromSlash(m.modelPath))
+			ok := err == nil && live2dModelComplete(dir)
+			if err != nil {
 				log.Printf("[live2d-sync] skip model %s: %v", m.modelPath, err)
+			} else if !ok {
+				log.Printf("[live2d-sync] model %s incomplete after download (asset missing upstream)", m.modelPath)
 			}
 
 			task.Mu.Lock()
 			task.Current++
+			if !ok {
+				task.Failed++
+			}
 			task.Mu.Unlock()
 		}(m)
 	}
@@ -251,6 +264,12 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 
 	task.Mu.Lock()
 	task.Status = "done"
+	if task.Failed > 0 {
+		task.Error = fmt.Sprintf("%d/%d 个模型未能完整下载(个别贴图/资源上游缺失)", task.Failed, task.Total)
+		if task.Failed >= task.Total {
+			task.Status = "error" // nothing usable downloaded — don't report success
+		}
+	}
 	task.Mu.Unlock()
 }
 
@@ -408,10 +427,29 @@ func (h *Handler) live2dSyncMotion(task *model.Live2DSyncProgress, root, modelPa
 	}
 }
 
-// live2dFetch GETs a CDN asset through the shared downloader (which skips the
-// macOS TLS verifier quirk) and returns its body. The host is restricted to the
-// known Live2D asset CDNs (anti-SSRF), reusing live2dAllowedHosts.
+// live2dFetch GETs a model-body asset, trying the exmeaning/CDN URL first and
+// falling back to the sekai.best equivalent on failure. exmeaning mirrors most
+// bodies but is missing some models' textures (which live only on sekai.best);
+// without the fallback those models could never complete and the sync would loop
+// forever reporting them "missing". model_list/motion URLs are already sekai.best
+// so the fallback is a no-op for them.
 func (h *Handler) live2dFetch(url string) ([]byte, error) {
+	body, err := h.live2dFetchOnce(url)
+	if err == nil {
+		return body, nil
+	}
+	if alt := live2dSekaiFallback(url); alt != "" {
+		if body2, err2 := h.live2dFetchOnce(alt); err2 == nil {
+			return body2, nil
+		}
+	}
+	return nil, err
+}
+
+// live2dFetchOnce GETs a single allowed URL through the shared downloader (which
+// skips the macOS TLS verifier quirk) and returns its body (200 only). The host is
+// restricted to the known Live2D asset CDNs (anti-SSRF), reusing live2dAllowedHosts.
+func (h *Handler) live2dFetchOnce(url string) ([]byte, error) {
 	if !live2dHostAllowed(url) {
 		return nil, fmt.Errorf("url host not allowed: %s", url)
 	}
@@ -424,6 +462,17 @@ func (h *Handler) live2dFetch(url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// live2dSekaiFallback maps an exmeaning/CDN model-body URL to its sekai.best
+// equivalent (…/sekai-jp-assets/… → …/sekai-live2d-assets/…, same path after the
+// live2d/ segment, so it resolves to the same local mirror path). Returns "" when
+// the URL isn't an exmeaning/CDN body URL.
+func live2dSekaiFallback(url string) string {
+	if strings.HasPrefix(url, live2dExmeaning+"/") {
+		return live2dSekaiBest + strings.TrimPrefix(url, live2dExmeaning)
+	}
+	return ""
 }
 
 // live2dDownload fetches url and writes it into the local mirror. If the file is
