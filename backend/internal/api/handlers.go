@@ -487,11 +487,25 @@ func (h *Handler) VoiceClues(w http.ResponseWriter, r *http.Request) {
 // --- Live2D ---
 
 var live2dAllowedHosts = []string{
+	"https://sakimizuki.accr.cc/", // project edge CDN (mirror-caches model bodies from exmeaning)
 	"https://storage2.exmeaning.com/",
 	"https://storage.exmeaning.com/",
 	"https://storage.sekai.best/",
 	"https://assets.unipjsk.com/",
 	"https://sekai-assets-bdf29c81.seiunx.net/",
+}
+
+// live2dCDNUpstream rewrites an exmeaning model-body URL to the project's edge CDN so
+// runtime playback fetches also go through the mirror cache (the CDN falls back to
+// exmeaning on a miss). Non-exmeaning URLs (sekai.best model_list/motion) pass
+// through unchanged — sekai.best can't be mirror-fetched from the mainland.
+func live2dCDNUpstream(url string) string {
+	const exm = "https://storage2.exmeaning.com/"
+	const cdn = "https://sakimizuki.accr.cc/"
+	if strings.HasPrefix(url, exm) {
+		return cdn + strings.TrimPrefix(url, exm)
+	}
+	return url
 }
 
 // live2dLocalPath maps an upstream CDN asset URL to its path inside the local
@@ -574,7 +588,7 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.dl.Get(url)
+	resp, err := h.dl.Get(live2dCDNUpstream(url))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+err.Error())
 		return

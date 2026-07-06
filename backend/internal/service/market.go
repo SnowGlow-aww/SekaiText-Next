@@ -15,14 +15,18 @@ import (
 )
 
 // DefaultMarketURL is the built-in plugin marketplace index. Overridable via
-// Settings.PluginMarketURL.
-const DefaultMarketURL = "https://raw.githubusercontent.com/snowglow-aww/sekaitext-plugins/main/index.json"
+// Settings.PluginMarketURL. Served from the project's own OSS-backed edge CDN
+// (sakimizuki.accr.cc) for fast downloads; the plugin .sekplugin files it lists
+// live under the same CDN prefix.
+const DefaultMarketURL = "https://sakimizuki.accr.cc/sekaitext-plugins/index.json"
 
-// GitHubProxyPrefix accelerates plugin-market downloads on networks where direct
-// github.com / raw.githubusercontent.com access is slow or flaky. GitHub URLs are
-// tried through this mirror first and fall back to the original GitHub URL when the
-// mirror errors or returns non-200 (see MarketService.fetch). Keep the trailing /.
-const GitHubProxyPrefix = "https://ghfast.top/"
+// GitHubProxyPrefix is the default prefix for wrapping GitHub download URLs through
+// a mirror. It is now empty: the built-in market/app-update URLs resolve to the
+// project's own edge CDN (see DefaultMarketURL / DefaultAppUpdateURL), so no GitHub
+// proxy is needed by default. It still applies only if a user points
+// PluginMarketURL/AppUpdateURL back at a github.com host. Override at launch via the
+// SEKAITEXT_GH_PROXY env var to re-enable a mirror. Keep the trailing / if set.
+const GitHubProxyPrefix = ""
 
 // githubProxyPrefix is the effective mirror prefix, overridable at launch via the
 // SEKAITEXT_GH_PROXY env var ("off"/"none"/"" disables the mirror and goes direct;
@@ -52,15 +56,16 @@ var githubHosts = map[string]bool{
 	"gist.githubusercontent.com":    true,
 }
 
-// mirrorCandidates returns the URLs to try in order: the ghfast.top mirror first
-// (GitHub hosts only), then the original. A non-GitHub or unparseable URL yields
-// just itself, so a self-hosted index/CDN is unaffected.
+// mirrorCandidates returns the URLs to try in order: the configured mirror first
+// (GitHub hosts only, when githubProxyPrefix is set), then the original. A
+// non-GitHub or unparseable URL yields just itself, so the OSS/edge CDN (and any
+// self-hosted index) is fetched directly, unaffected.
 func mirrorCandidates(rawurl string) []string {
 	u, err := url.Parse(rawurl)
 	if err != nil || githubProxyPrefix == "" || !githubHosts[strings.ToLower(u.Hostname())] {
 		return []string{rawurl}
 	}
-	// ghfast.top expects the full original URL (scheme included) appended.
+	// The mirror expects the full original URL (scheme included) appended.
 	return []string{githubProxyPrefix + rawurl, rawurl}
 }
 

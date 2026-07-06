@@ -24,8 +24,9 @@ import (
 //	  "downloads": { "darwin-aarch64": "https://github.com/<o>/<r>/releases/download/v4.1.0/SekaiText.dmg" }
 //	}
 //
-// The download value is a GitHub release asset, so it is mirror-accelerated too.
-const DefaultAppUpdateURL = "https://raw.githubusercontent.com/snowglow-aww/sekaitext-plugins/main/app-release.json"
+// The download value points at the project's own OSS-backed edge CDN
+// (sakimizuki.accr.cc), the same host that serves this manifest.
+const DefaultAppUpdateURL = "https://sakimizuki.accr.cc/sekaitext-plugins/app-release.json"
 
 // AppReleaseManifest is the remote release document (see DefaultAppUpdateURL).
 type AppReleaseManifest struct {
@@ -47,7 +48,7 @@ type AppUpdateInfo struct {
 }
 
 // AppUpdateService checks the remote app-release manifest and downloads the new
-// installer, both through the GitHub mirror (falling back to the official URL).
+// installer from the project's edge CDN (mirrorFetch falls back to the origin URL).
 type AppUpdateService struct {
 	fast *http.Client // manifest check + fail-fast on a dead mirror
 	dl   *http.Client // installer download — header-timeout fail-fast, long body
@@ -114,8 +115,8 @@ func (u *AppUpdateService) DownloadUpdate(downloadURL, destDir string, progress 
 		return "", errors.New("缺少下载地址")
 	}
 	// The downloaded file is later launched via `open`, so restrict the source to
-	// GitHub release hosts: a tampered/attacker manifest can't point the self-updater
-	// at arbitrary bytes. (ghfast.top wraps these same GitHub URLs, so it still works.)
+	// trusted release hosts (our edge CDN / GitHub): a tampered/attacker manifest
+	// can't point the self-updater at arbitrary bytes.
 	if !isTrustedReleaseHost(downloadURL) {
 		return "", errors.New("下载地址的主机不在信任列表内，已拒绝")
 	}
@@ -169,8 +170,9 @@ func updateFileName(rawurl string) string {
 	return filepath.Base(name)
 }
 
-// isTrustedReleaseHost restricts installer downloads to GitHub release hosts so a
-// tampered/attacker manifest can't point the self-updater at arbitrary bytes.
+// isTrustedReleaseHost restricts installer downloads to the project's own edge CDN
+// and GitHub release hosts so a tampered/attacker manifest can't point the
+// self-updater at arbitrary bytes.
 func isTrustedReleaseHost(rawurl string) bool {
 	u, err := url.Parse(rawurl)
 	if err != nil {
@@ -178,7 +180,8 @@ func isTrustedReleaseHost(rawurl string) bool {
 	}
 	h := strings.ToLower(u.Hostname())
 	switch h {
-	case "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com":
+	case "sakimizuki.accr.cc",
+		"github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com":
 		return true
 	}
 	return strings.HasSuffix(h, ".githubusercontent.com")

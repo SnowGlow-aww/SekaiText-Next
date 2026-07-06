@@ -26,12 +26,19 @@ import (
 	"sekaitext/backend/internal/model"
 )
 
-// CDN bases for the Live2D asset mirror. These MUST match the plugin's
-// constants/live2d.ts (SEKAI_BEST_LIVE2D / EXMEANING_BASE) so the derived URLs
-// — and therefore the local paths — line up with what playback fetches.
+// CDN bases for the Live2D asset mirror. The path structure MUST match the plugin's
+// constants/live2d.ts (SEKAI_BEST_LIVE2D / EXMEANING_BASE) so the derived local
+// paths line up with what playback fetches.
+//
+// Model bodies go through the project's own OSS-backed edge CDN, which mirror-caches
+// them from exmeaning on a miss (bucket rule: prefix sekai-jp-assets/ →
+// storage2.exmeaning.com). The host differs from the plugin's EXMEANING_BASE but the
+// path after the host is identical, so live2dLocalPath still resolves to the same
+// on-disk location. model_list + motion stay on sekai.best — it sits behind
+// Cloudflare and can't be mirror-fetched from the mainland.
 const (
 	live2dSekaiBest = "https://storage.sekai.best/sekai-live2d-assets"
-	live2dExmeaning = "https://storage2.exmeaning.com/sekai-jp-assets"
+	live2dExmeaning = "https://sakimizuki.accr.cc/sekai-jp-assets"
 )
 
 // live2dModelListEntry is one record of model_list.json (sekai.best).
@@ -182,12 +189,16 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 		unique = append(unique, modelRef{e.ModelPath, e.ModelBase, e.ModelFile})
 	}
 
-	// 3. Diff vs the local mirror: a model is missing if its model dir is absent
-	//    or contains no *.moc3.
+	// 3. Diff vs the local mirror: a model needs (re)downloading unless every body
+	//    file playback needs is present on disk — build metadata, model3, moc3, all
+	//    referenced textures, and physics. Checking only the moc3 (the old behaviour)
+	//    missed a deleted/partial texture or physics — the model looked complete but
+	//    wasn't, so the sync reported "done" without restoring the file. See
+	//    live2dModelComplete.
 	var missing []modelRef
 	for _, m := range unique {
 		dir := filepath.Join(root, "model", filepath.FromSlash(m.modelPath))
-		if !live2dHasMoc(dir) {
+		if !live2dModelComplete(dir) {
 			missing = append(missing, m)
 		}
 	}
@@ -467,19 +478,72 @@ func live2dHostAllowed(url string) bool {
 	return false
 }
 
-// live2dHasMoc reports whether dir exists and contains at least one *.moc3 file
-// (the marker that a model body is already mirrored locally).
-func live2dHasMoc(dir string) bool {
+// live2dModelComplete reports whether dir holds a fully-mirrored model body: the
+// build metadata, the model3, its moc3, EVERY texture the model3 references, and
+// physics when declared. It reads the LOCAL model3 (no network) and mirrors the
+// name/case rules live2dSyncModel applies when writing, so a model counts as
+// complete only when every file playback needs is actually on disk. Any unreadable
+// or missing piece → false, so a partially-deleted model gets repaired on next sync.
+//
+// Motion is intentionally excluded: it lives on sekai.best, is fetched best-effort,
+// and a motionless model is still usable (matches live2dSyncModel's "never fatal").
+func live2dModelComplete(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
+	var model3Name string
+	hasBuildData := false
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".moc3") {
-			return true
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".model3") {
+			model3Name = e.Name()
+		} else if e.Name() == "buildmodeldata.json" {
+			hasBuildData = true
 		}
 	}
-	return false
+	if model3Name == "" || !hasBuildData {
+		return false
+	}
+	baseName := strings.TrimSuffix(model3Name, ".model3")
+	data, err := os.ReadFile(filepath.Join(dir, model3Name))
+	if err != nil {
+		return false
+	}
+	var m3 live2dModel3
+	if err := json.Unmarshal(data, &m3); err != nil {
+		return false
+	}
+	exists := func(rel string) bool {
+		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		return err == nil && !info.IsDir() && info.Size() > 0
+	}
+	// moc3
+	if !exists(baseName + ".moc3") {
+		return false
+	}
+	// textures — apply the same case-swap the downloader uses when the model3's Moc
+	// base differs only in case from the model_list-derived baseName.
+	refBase := strings.TrimSuffix(m3.FileReferences.Moc, ".moc3")
+	for _, tex := range m3.FileReferences.Textures {
+		if tex == "" {
+			continue
+		}
+		realTex := tex
+		if refBase != "" && refBase != baseName {
+			realTex = strings.Replace(tex, refBase, baseName, 1)
+		}
+		if !exists(realTex) {
+			return false
+		}
+	}
+	// physics (only when the model3 declares it)
+	if m3.FileReferences.Physics != "" && !exists(baseName+".physics3") {
+		return false
+	}
+	return true
 }
 
 // live2dSyncFail marks a task as errored.
