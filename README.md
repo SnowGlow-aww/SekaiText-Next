@@ -127,7 +127,7 @@ npm run build:tauri
 
 ## 致谢名单
 
-- 感谢 [Cinea](https://github.com/Cinea4678/) 提供的技术与账户支持
+- 感谢 [Cinea](https://github.com/Cinea4678/) 提供的技术/账户/服务器支持
 - 感谢 [星雲希凪](https://github.com/MejiroRina) 提供的UI优化
 
 *「プロジェクトセカイ カラフルステージ！ feat. 初音ミク」是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。*
