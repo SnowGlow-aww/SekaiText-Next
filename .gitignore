@@ -63,3 +63,6 @@ dist-plugins/
 
 # Generated engine sidecar bundle (built by scripts/build-engine.mjs)
 src-tauri/resources/engine/
+
+# website (vitepress)
+website/.vitepress/cache

@@ -1,0 +1,173 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+
+const CDN = 'https://sakimizuki.accr.cc'
+const RELEASES = 'https://github.com/SnowGlow-aww/SekaiText-Next/releases'
+
+function cdnUrl(v: string, suffix: string) {
+  return `${CDN}/sekaitext-releases/v${v}/SekaiText.Next_${v}_${suffix}`
+}
+
+// 构建期兜底（读主仓库 package.json），运行时再从 CDN manifest 刷新
+const version = ref(__APP_VERSION__)
+const downloads = ref({
+  mac: cdnUrl(__APP_VERSION__, 'aarch64.dmg'),
+  win: cdnUrl(__APP_VERSION__, 'x64-setup.exe'),
+})
+const os = ref<'mac' | 'win' | 'other'>('other')
+
+onMounted(async () => {
+  const ua = navigator.userAgent
+  os.value = /Macintosh|Mac OS X/i.test(ua) ? 'mac' : /Windows/i.test(ua) ? 'win' : 'other'
+  try {
+    const r = await fetch(`${CDN}/sekaitext-plugins/app-release.json`, { cache: 'no-store' })
+    if (r.ok) {
+      const j = await r.json()
+      if (j?.version) {
+        version.value = j.version
+        downloads.value = {
+          mac: j.downloads?.['darwin-aarch64'] || cdnUrl(j.version, 'aarch64.dmg'),
+          win: j.downloads?.['windows-amd64'] || cdnUrl(j.version, 'x64-setup.exe'),
+        }
+      }
+    }
+  } catch {
+    // CORS / 网络失败 → 静默使用构建期兜底链接
+  }
+})
+
+const buttons = computed(() => {
+  const mac = {
+    key: 'mac',
+    label: 'macOS 下载',
+    sub: 'Apple Silicon · .dmg',
+    href: downloads.value.mac,
+  }
+  const win = {
+    key: 'win',
+    label: 'Windows 下载',
+    sub: 'x64 · 安装程序',
+    href: downloads.value.win,
+  }
+  // 识别到的系统排前并高亮
+  return os.value === 'win' ? [win, mac] : [mac, win]
+})
+</script>
+
+<template>
+  <div class="dl">
+    <div class="dl-buttons">
+      <a
+        v-for="(b, i) in buttons"
+        :key="b.key"
+        :href="b.href"
+        class="dl-btn"
+        :class="i === 0 ? 'is-primary' : 'is-secondary'"
+      >
+        <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        <span class="dl-text">
+          <span class="dl-os">{{ b.label }}</span>
+          <span class="dl-sub">{{ b.sub }}</span>
+        </span>
+      </a>
+    </div>
+    <p class="dl-meta">
+      当前版本 <code class="dl-ver">v{{ version }}</code>
+      <span class="dl-dot">·</span>
+      <a :href="RELEASES" target="_blank" rel="noreferrer">全部版本与更新日志 ↗</a>
+      <span class="dl-dot">·</span>
+      国内 CDN 加速直链
+    </p>
+  </div>
+</template>
+
+<style scoped>
+.dl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.dl-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px;
+}
+.dl-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 26px;
+  border-radius: 14px;
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  border: 1px solid transparent;
+}
+.dl-btn:hover {
+  transform: translateY(-2px);
+}
+.dl-btn.is-primary {
+  background: var(--st-gradient);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(57, 197, 187, 0.35);
+}
+.dl-btn.is-primary:hover {
+  box-shadow: 0 12px 32px rgba(255, 105, 180, 0.35);
+}
+.dl-btn.is-secondary {
+  background: var(--vp-c-bg-soft);
+  border-color: var(--vp-c-divider);
+  color: var(--vp-c-text-1);
+}
+.dl-btn.is-secondary:hover {
+  border-color: var(--st-teal);
+}
+.dl-icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+.dl-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.25;
+}
+.dl-os {
+  font-weight: 700;
+  font-size: 15px;
+}
+.dl-sub {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.dl-meta {
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  text-align: center;
+  margin: 0;
+}
+.dl-meta a {
+  color: var(--vp-c-brand-1);
+  text-decoration: none;
+}
+.dl-meta a:hover {
+  text-decoration: underline;
+}
+.dl-ver {
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.dl-dot {
+  margin: 0 6px;
+  opacity: 0.5;
+}
+</style>
