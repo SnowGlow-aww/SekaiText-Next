@@ -36,6 +36,10 @@ export function useFileDialog() {
             resolve(null)
           }
         }
+        // The file picker fires no `change` event when the user cancels, so the
+        // Promise would hang forever. Modern browsers emit `cancel` on the input
+        // in that case; listen for it to resolve(null) and release the closure.
+        input.addEventListener('cancel', () => resolve(null))
         input.click()
       })
     }

@@ -65,6 +65,16 @@ func (e *EditorService) CreateFile(srctalks []model.SourceTalk, jp bool) []model
 		dsttalks[i].Speaker = newSpeaker
 	}
 
+	// Assign each row its own DstIdx = position in the slice, same as
+	// LoadContent / CheckLines. Without this every row keeps the zero value 0,
+	// so editing any line via talks[row].DstIdx writes to dstTalks[0] — every
+	// edit silently collapses onto the first line and all other translations are
+	// lost on save. This "从源文本新建翻译" path never runs through CheckLines,
+	// so it must set DstIdx itself.
+	for i := range dsttalks {
+		dsttalks[i].DstIdx = i
+	}
+
 	return dsttalks
 }
 
@@ -519,7 +529,7 @@ func groupByIdx(talks []model.DstTalk) map[int][]model.DstTalk {
 func (e *EditorService) ChangeText(row int, text string, editormode int,
 	talks, dsttalks, refertalks []model.DstTalk) ([]model.DstTalk, []model.DstTalk) {
 
-	if row >= len(talks) {
+	if row < 0 || row >= len(talks) {
 		return talks, dsttalks
 	}
 
@@ -592,7 +602,9 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 
 // AddLine adds a sub-line after the given row.
 func (e *EditorService) AddLine(row int, talks, dsttalks []model.DstTalk, isProofreading bool) ([]model.DstTalk, []model.DstTalk) {
-	if row >= len(talks) {
+	// Bound row on both sides, same as ChangeText / RemoveLine / ReplaceBrackets:
+	// a negative row would panic at talks[row] below.
+	if row < 0 || row >= len(talks) {
 		return talks, dsttalks
 	}
 
@@ -671,11 +683,14 @@ func (e *EditorService) RemoveLine(row int, talks, dsttalks []model.DstTalk) ([]
 // ReplaceBrackets replaces all bracket types with the specified pair
 // on every sub-line that shares the same source idx, and on the corresponding dstTalks.
 func (e *EditorService) ReplaceBrackets(talks []model.DstTalk, dstTalks []model.DstTalk, row int, brackets string) ([]model.DstTalk, []model.DstTalk) {
-	if row >= len(talks) || len(brackets) < 2 {
+	// Guard on rune count, not byte length: a single multi-byte CJK bracket like
+	// "【" has len()==3 but only one rune, so a byte-length check would pass and
+	// then runes[1] would panic. Also bound row on both sides.
+	runes := []rune(brackets)
+	if row < 0 || row >= len(talks) || len(runes) < 2 {
 		return talks, dstTalks
 	}
 	targetIdx := talks[row].Idx
-	runes := []rune(brackets)
 	openB := runes[0]
 	closeB := runes[1]
 

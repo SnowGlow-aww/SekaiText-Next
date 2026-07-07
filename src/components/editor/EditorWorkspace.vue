@@ -182,7 +182,6 @@ function getEditBorder(talk: DstTalk): string {
 async function handleTextChange(row: number, newText: string) {
   if (editTimeout) clearTimeout(editTimeout)
   editTimeout = setTimeout(async () => {
-    undo.pushSnapshot(editor.talks, editor.dstTalks)
     try {
       const result = await api.changeText({
         row,
@@ -210,6 +209,13 @@ function onBlur(e: Event, idx: number) {
   // Real-change guard: blurring without an actual edit must not mark the
   // document dirty or trigger a diff recompute.
   if (editor.talks[idx]?.text === newText) return
+  // Snapshot the PRE-edit state here — before the in-place commit below — so the
+  // first undo actually reverts this edit. pushSnapshot deep-clones on capture,
+  // and the debounced handleTextChange runs AFTER the commit; snapshotting there
+  // recorded the already-applied text (off-by-one: the first undo appeared to do
+  // nothing, every undo lagged one edit). It also survives debounce cancellation
+  // when a second row is edited within 300ms, which previously dropped the snapshot.
+  undo.pushSnapshot(editor.talks, editor.dstTalks)
   // Commit the edit to the talks array SYNCHRONOUSLY before the debounced API
   // call. Previously the text only reached editor.talks when changeText
   // returned; but handleTextChange debounces on a single shared timer, so
@@ -402,6 +408,16 @@ function handleContextMenu(e: MouseEvent, row: number) {
 }
 
 function focusNext(e: KeyboardEvent) {
+  // IME guard: during composition the Enter key confirms the candidate word, so
+  // bail WITHOUT preventDefault to let the IME commit normally. Otherwise the
+  // keystroke is swallowed, focus jumps to the next row and the in-flight
+  // composition is dropped — fatal for a JP→CN tool where every input is IME.
+  // The template deliberately drops `.enter.prevent` for `.enter` alone: the
+  // `.prevent` modifier fires preventDefault unconditionally BEFORE this handler,
+  // which would cancel the candidate commit regardless of this guard. We now
+  // call preventDefault below only for real navigation. keyCode 229 covers
+  // engines that omit isComposing on the composing keydown.
+  if (e.isComposing || (e as any).keyCode === 229) return
   e.preventDefault()
   const container = workspaceRef.value
   if (!container) return
@@ -591,7 +607,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                           style="font-size: var(--editor-font-size)"
                           :class="{ 'cursor-text': item.talk.save && ![''].includes(item.talk.speaker) }"
                           @blur="onBlur($event, item.globalIdx)"
-                          @keydown.enter.prevent="focusNext"
+                          @keydown.enter="focusNext"
                           v-html="renderHighlight(item.talk)"
                         ></div>
                         <div v-if="item.talk.message" class="text-xs text-error mt-0.5">

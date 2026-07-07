@@ -129,7 +129,13 @@ func cellAt(row []string, i int) string {
 // Returns (headerRowIdx, colMap, found). When no header is found, found=false
 // and the caller falls back to a fixed A/B/C layout.
 func resolveColumns(rows [][]string) (int, colMap, bool) {
-	for r := 0; r < len(rows) && r < 5; r++ {
+	// Some term sheets carry several rows of merged titles / disclaimers before
+	// the real 原名/译名 header (the sibling 语法用例 sheet hardcodes its header at
+	// row 8), so scan a generous window instead of only the first few rows —
+	// otherwise a deep header is missed, parseTermSheet falls back to fixed A/B/C
+	// from row 0, and the prefatory rows are imported as garbage entries.
+	const headerScanRows = 15
+	for r := 0; r < len(rows) && r < headerScanRows; r++ {
 		row := rows[r]
 		cm := colMap{source: -1, trans: -1}
 		for i := range row {

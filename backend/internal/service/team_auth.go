@@ -42,6 +42,12 @@ func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, er
 		return nil, fmt.Errorf("login failed (HTTP %d)", resp.StatusCode)
 	}
 	t.mu.Lock()
+	if serverURL != t.serverURL {
+		// Switching servers invalidates the version counter (each server has its
+		// own glossary version sequence); reset so the next non-force TeamSync
+		// can't false-match the previous server's version and skip the merge.
+		t.lastVer = 0
+	}
 	t.serverURL, t.access, t.refresh, t.user = serverURL, tr.AccessToken, tr.RefreshToken, tr.User
 	t.mu.Unlock()
 	t.persist()
@@ -64,6 +70,10 @@ func (t *TeamService) Connect(serverURL string) error {
 		return fmt.Errorf("server unreachable (HTTP %d)", resp.StatusCode)
 	}
 	t.mu.Lock()
+	if serverURL != t.serverURL {
+		// Switching servers invalidates the version counter (see Login).
+		t.lastVer = 0
+	}
 	t.serverURL = serverURL
 	t.mu.Unlock()
 	t.persist()
@@ -87,7 +97,17 @@ func (t *TeamService) doRefresh() error {
 	var tr tokenResp
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = json.Unmarshal(raw, &tr)
-	if resp.StatusCode != http.StatusOK || tr.AccessToken == "" {
+	if resp.StatusCode == http.StatusOK && tr.AccessToken != "" {
+		t.mu.Lock()
+		t.access, t.refresh = tr.AccessToken, tr.RefreshToken
+		if tr.User != nil {
+			t.user = tr.User
+		}
+		t.mu.Unlock()
+		t.persist()
+		return nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		// Refresh was definitively rejected (token expired/revoked, account
 		// disabled, server key rotated): clear the session so LoggedIn() goes
 		// false and the app drops to no-login readonly instead of looping on
@@ -96,16 +116,18 @@ func (t *TeamService) doRefresh() error {
 		t.access, t.refresh, t.user = "", "", nil
 		t.mu.Unlock()
 		t.persist()
+		if tr.Error != "" {
+			return errors.New(tr.Error)
+		}
 		return errors.New("refresh rejected")
 	}
-	t.mu.Lock()
-	t.access, t.refresh = tr.AccessToken, tr.RefreshToken
-	if tr.User != nil {
-		t.user = tr.User
+	// Transient failure (5xx/429/gateway blip, or a malformed 200 with no token):
+	// the refresh token was NOT rejected, so keep the session intact and just
+	// return an error. A later request can retry instead of forcing a re-login.
+	if tr.Error != "" {
+		return errors.New(tr.Error)
 	}
-	t.mu.Unlock()
-	t.persist()
-	return nil
+	return fmt.Errorf("refresh failed (HTTP %d)", resp.StatusCode)
 }
 
 // Logout clears the auth tokens and user but keeps the serverURL so the app
@@ -121,6 +143,7 @@ func (t *TeamService) Logout() {
 func (t *TeamService) Disconnect() {
 	t.mu.Lock()
 	t.serverURL, t.access, t.refresh, t.user = "", "", "", nil
+	t.lastVer = 0
 	t.mu.Unlock()
 	t.persist()
 }

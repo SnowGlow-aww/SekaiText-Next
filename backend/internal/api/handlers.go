@@ -50,7 +50,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 	jsonLoader := service.NewJsonLoaderService(fb)
 	jsonLoader.SetSourceLocator(dl, cfg.DataDir)
 	pluginStore := service.NewPluginStore(cfg.PluginsDir)
-	return &Handler{
+	h := &Handler{
 		cfg:        cfg,
 		lm:         lm,
 		editor:     service.NewEditorService(),
@@ -66,6 +66,8 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		team:       service.NewTeamService(cfg.DataDir),
 		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
 	}
+	h.startDownloadTaskGC()
+	return h
 }
 
 // --- Story ---
@@ -588,7 +590,12 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.dl.Get(live2dCDNUpstream(url))
+	// Fetch through the redirect-guarded client (live2dSyncHTTP): the host allowlist
+	// above only vets the INITIAL url, so a compromised/misconfigured CDN returning a
+	// 3xx to an internal address (169.254.169.254, 127.0.0.1, …) would otherwise be
+	// followed by the shared downloader — the same SSRF the sync path guards against.
+	// live2dSyncHTTP re-runs live2dHostAllowed on every redirect hop.
+	resp, err := live2dSyncHTTP.Get(live2dCDNUpstream(url))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+err.Error())
 		return
@@ -734,7 +741,7 @@ func (h *Handler) saveSettings(s model.Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(h.settingsPath(), data, 0644)
+	return writeFileAtomic(h.settingsPath(), data, 0644)
 }
 
 // ImportLive2D moves a user-picked folder of Live2D assets (model/ + motion/ +
@@ -1017,12 +1024,70 @@ func (h *Handler) DownloadProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	task.Mu.Unlock()
 
+	// Terminal tasks are deliberately NOT deleted here. Coupling cleanup to "a
+	// poll happened to observe the terminal state" both leaked tasks (the frontend
+	// stops polling before/after the task finishes) and turned the first
+	// observer's Delete into spurious 404s for concurrent/retried polls. A
+	// time-based background GC (startDownloadTaskGC) reaps stale tasks instead,
+	// keeping terminal ones pollable for a grace window.
 	writeJSON(w, http.StatusOK, snap)
+}
 
-	// Clean up completed tasks after serving
-	if snap.Status == "done" || snap.Status == "error" {
-		h.downloadTasks.Delete(taskID)
+const (
+	// downloadTaskGrace is how long a terminal (done/error) task lingers, measured
+	// from creation, before the GC reaps it — long enough that overlapping or
+	// retried progress polls after completion still get the final snapshot instead
+	// of a 404.
+	downloadTaskGrace = 5 * time.Minute
+	// downloadTaskMaxAge is a hard cap for any task (e.g. one whose download
+	// goroutine wedged and never reached a terminal state) so the shared table
+	// cannot grow without bound.
+	downloadTaskMaxAge = 60 * time.Minute
+	// downloadTaskSweep is how often the GC scans the task table.
+	downloadTaskSweep = 1 * time.Minute
+)
+
+// taskCreatedAt recovers a download task's creation time from its ID, which both
+// creators (story JSON download + app self-update) set to the base-36 UnixNano
+// stamp at creation. Returns the zero time (treated as "very old", so reaped) if
+// the ID isn't a parseable stamp.
+func taskCreatedAt(taskID string) time.Time {
+	ns, err := strconv.ParseInt(taskID, 36, 64)
+	if err != nil {
+		return time.Time{}
 	}
+	return time.Unix(0, ns)
+}
+
+// startDownloadTaskGC periodically reaps stale entries from the shared
+// downloadTasks table (used by both story JSON and app self-update downloads).
+// Cleanup is time-based rather than coupled to a progress poll observing the
+// terminal state, so entries can't leak when the frontend stops polling, while
+// terminal tasks stay pollable for downloadTaskGrace.
+func (h *Handler) startDownloadTaskGC() {
+	go func() {
+		ticker := time.NewTicker(downloadTaskSweep)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			h.downloadTasks.Range(func(key, val interface{}) bool {
+				taskID, okKey := key.(string)
+				task, okVal := val.(*model.DownloadTaskProgress)
+				if !okKey || !okVal {
+					h.downloadTasks.Delete(key)
+					return true
+				}
+				age := now.Sub(taskCreatedAt(taskID))
+				task.Mu.Lock()
+				terminal := task.Status == "done" || task.Status == "error"
+				task.Mu.Unlock()
+				if (terminal && age > downloadTaskGrace) || age > downloadTaskMaxAge {
+					h.downloadTasks.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 }
 
 // --- Assets ---
@@ -1063,7 +1128,25 @@ func (h *Handler) DebugLogs(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) DebugSaveLogs(w http.ResponseWriter, r *http.Request) {
 	entries := h.logBuf.Lines()
-	f, err := os.Create("debug.log")
+
+	// Write into the app's known-writable data dir, not the process CWD: a bare
+	// relative "debug.log" lands in an unknown/unwritable place under the packaged
+	// Tauri sidecar (CWD is often "/" on macOS), so os.Create fails or the file is
+	// unreachable. Mirror OpenDataDir and hand the absolute path back to the UI.
+	dir := h.cfg.DataBaseDir
+	if dir == "" {
+		dir = h.cfg.DataDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[debug-logs] mkdir error: %v", err)
+		writeError(w, http.StatusInternalServerError, "log dir create failed: "+err.Error())
+		return
+	}
+	logPath := filepath.Join(dir, "debug.log")
+	f, err := os.Create(logPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "log file create failed: "+err.Error())
 		return
@@ -1077,6 +1160,7 @@ func (h *Handler) DebugSaveLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "saved",
 		"lines":  len(entries),
+		"path":   logPath,
 	})
 }
 
@@ -1108,14 +1192,23 @@ func (h *Handler) RecoverySave(w http.ResponseWriter, r *http.Request) {
 		StorySource:  req.StorySource,
 	}
 
-	f, err := os.Create(h.recoveryPath())
+	// Encode fully in memory first, then write atomically (temp file + fsync +
+	// rename) so a crash / disk-full / kill mid-write can never truncate the
+	// previous good autosave or leave a half-written one — which is exactly the
+	// moment recovery must survive. Previously os.Create's O_TRUNC destroyed the
+	// old autosave up front and the Encode error was dropped while still reporting
+	// "saved", silently corrupting the recovery point.
+	buf, err := json.Marshal(data)
 	if err != nil {
+		log.Printf("[recovery] save encode error: %v", err)
+		writeError(w, http.StatusInternalServerError, "autosave encode failed: "+err.Error())
+		return
+	}
+	if err := writeFileAtomic(h.recoveryPath(), buf, 0644); err != nil {
 		log.Printf("[recovery] save write error: %v", err)
 		writeError(w, http.StatusInternalServerError, "autosave write failed: "+err.Error())
 		return
 	}
-	defer f.Close()
-	json.NewEncoder(f).Encode(data)
 	log.Printf("[recovery] autosave ok (%d bytes)", len(content))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
@@ -1166,4 +1259,36 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeFileAtomic writes data to path atomically: it writes to a sibling temp
+// file, fsyncs, then renames over path. A crash / disk-full / kill mid-write
+// leaves the existing file at path fully intact instead of a truncated or
+// half-written one. os.Rename replaces the destination on both POSIX and Windows
+// (MoveFileEx with MOVEFILE_REPLACE_EXISTING).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }

@@ -12,8 +12,12 @@ export const useSettingsStore = defineStore('settings', () => {
     saveVoice: false,
     disableSSL: false,
     debugEnabled: false,
-    jsonDownloadDir: './downloads/json',
-    saveBaseDir: '/Users/amia/Documents/Translation/PJS字幕组',
+    // Left empty on purpose: a hardcoded default would be developer-specific
+    // and invalid on the user's machine (and on Windows). Resolved per-user at
+    // runtime — the JSON download handler falls back to {DataDir}/json and the
+    // save flow falls back to the OS save-dialog default location when empty.
+    jsonDownloadDir: '',
+    saveBaseDir: '',
     preserveStoryOnModeSwitch: true,
     undoDepth: 20,
     keepHighlightWhenCompareOff: true,

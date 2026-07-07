@@ -9,6 +9,11 @@ export function useFlashbackTooltip() {
   const clueGroups = ref<{ clue: string; hints: string[] }[]>([])
 
   let showTimer: ReturnType<typeof setTimeout> | null = null
+  // Generation token for the pending/in-flight show. Bumped on every new show
+  // intent and on hide(), so the async timer callback below can tell whether it
+  // was superseded (e.g. mouseleave -> hide) while awaiting clueHints() and must
+  // NOT flip visible on. clearTimeout alone can't cancel an already-fired timer.
+  let showToken = 0
 
   // Show the flashback tooltip after the mouse rests in the box ~0.5s. Callable
   // from both mouseenter and mousemove: it's idempotent while a timer is pending
@@ -23,6 +28,7 @@ export function useFlashbackTooltip() {
     if (!target) return
     const rect = target.getBoundingClientRect()
 
+    const token = ++showToken
     showTimer = setTimeout(async () => {
       const newHints: Record<string, string[]> = {}
       for (let i = 0; i < clues.length; i++) {
@@ -47,6 +53,11 @@ export function useFlashbackTooltip() {
         }
       }
 
+      // Bail if this show was superseded (hidden / re-triggered) while awaiting
+      // the hints above; otherwise the tooltip would pop up after the mouse has
+      // already left and stay stuck there.
+      if (token !== showToken) return
+
       clueGroups.value = Object.entries(newHints).map(([clue, hints]) => ({ clue, hints }))
       tooltipStyle.value = {
         position: 'fixed',
@@ -61,6 +72,9 @@ export function useFlashbackTooltip() {
   }
 
   function hide() {
+    // Invalidate any in-flight timer callback that is currently awaiting hints,
+    // so it won't flip visible back on after we hide.
+    showToken++
     if (showTimer) {
       clearTimeout(showTimer)
       showTimer = null

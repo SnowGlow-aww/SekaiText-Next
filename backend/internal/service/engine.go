@@ -350,9 +350,27 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams) (*EngineTimi
 	// unable to cancel. A start failure instead surfaces through the job's terminal
 	// state, which the progress poll reads.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		// A cancel issued before the engine was spawned (Cancel's !started path)
+		// disowns the job; if that already happened, don't spawn an engine to run a
+		// run the user already canceled.
+		if em.activeTiming() != job {
+			return
+		}
+		// The engine only acks subtitle.start after EnsureResource (first-run download
+		// of VideoProcess templates/fonts), which on a fresh machine with a slow
+		// network can take many minutes; the timeout is a generous backstop, not the
+		// job's deadline. A deadline here does NOT mean the run failed — the engine may
+		// still be downloading and will drive the job to a terminal state through its
+		// notifications (or onExit). So on deadline we leave the job registered and
+		// running to preserve single-flight and keep routing those notifications to it;
+		// only a genuine start error (engine error response, write failure, missing
+		// binary) fails the job and clears the pointer.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if _, err := em.request(ctx, "subtitle.start", p); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
 			job.Mu.Lock()
 			if job.Status == "running" {
 				job.Status = "error"
@@ -427,9 +445,18 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams) (*Engine
 	// Async start (see StartTiming): return the taskId immediately so the UI stays
 	// responsive and cancelable; a start failure surfaces via the job's terminal state.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		// See StartTiming: bail if a cancel disowned the job before the engine was
+		// spawned, and treat a start deadline as a benign backstop (the engine may
+		// still be running EnsureResource) rather than a job failure.
+		if em.activeSuppress() != job {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if _, err := em.request(ctx, "suppress.start", p); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
 			job.Mu.Lock()
 			if job.Status == "running" {
 				job.Status = "error"
@@ -459,12 +486,62 @@ func (em *EngineManager) Cancel(domain string) error {
 	default:
 		return fmt.Errorf("unknown domain: %s", domain)
 	}
-	// Nothing to cancel if the engine isn't running — don't spawn a fresh one just
-	// to fire a stop into the void (ensureStarted would otherwise relaunch it).
+	// Nothing to send a stop to if the engine isn't up yet — don't spawn a fresh one
+	// just to fire a stop into the void (ensureStarted would otherwise relaunch it).
 	em.mu.Lock()
 	started := em.started
 	em.mu.Unlock()
 	if !started {
+		// StartTiming/StartSuppress register the job as "running" before their async
+		// goroutine lazily spawns the engine, so a job can be presented to the UI as
+		// running while started==false. Returning success here would drop the cancel
+		// silently while the goroutine goes on to spawn the engine and run. Instead
+		// disown the registered running job (mark it canceled and clear its pointer);
+		// the start goroutine's pre-spawn check then sees the job is no longer active
+		// and does not spawn the engine. Capture the pointer under em.mu, then touch
+		// the job's own Mu without holding em.mu — same lock discipline as onExit.
+		switch domain {
+		case "timing":
+			em.mu.Lock()
+			j := em.timingJob
+			em.mu.Unlock()
+			if j != nil {
+				j.Mu.Lock()
+				canceled := j.Status == "running"
+				if canceled {
+					j.Status = "canceled"
+					j.FinishReason = "Canceled"
+				}
+				j.Mu.Unlock()
+				if canceled {
+					em.mu.Lock()
+					if em.timingJob == j {
+						em.timingJob = nil
+					}
+					em.mu.Unlock()
+				}
+			}
+		case "suppress":
+			em.mu.Lock()
+			j := em.suppressJob
+			em.mu.Unlock()
+			if j != nil {
+				j.Mu.Lock()
+				canceled := j.Status == "running"
+				if canceled {
+					j.Status = "canceled"
+					j.FinishReason = "Canceled"
+				}
+				j.Mu.Unlock()
+				if canceled {
+					em.mu.Lock()
+					if em.suppressJob == j {
+						em.suppressJob = nil
+					}
+					em.mu.Unlock()
+				}
+			}
+		}
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -580,6 +657,10 @@ func (em *EngineManager) routeNotification(method string, params json.RawMessage
 				j.Error = ""
 			} else if p.Reason == "Canceled" {
 				j.Status = "canceled"
+				// A transient per-frame subtitle.error may have set j.Error mid-run;
+				// a user cancel is not a failure, so clear it lest the progress
+				// endpoint surface a spurious error reason for a normal cancel.
+				j.Error = ""
 			} else {
 				j.Status = "error"
 				if j.Error == "" {

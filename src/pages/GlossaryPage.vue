@@ -36,11 +36,18 @@ watch([query, category], () => {
 const browseEntries = ref<GlossaryEntry[]>([])
 const browsing = computed(() => !query.value.trim() && !!category.value)
 
+// Monotonic guard so only the latest browse request writes browseEntries —
+// a slow response for an earlier category must not overwrite a newer one.
+// Shared with refreshView() below so the two never clobber each other either.
+let browseSeq = 0
 watch([category, query], async () => {
   if (!query.value.trim() && category.value) {
+    const seq = ++browseSeq
     const r = await api.glossaryEntries(category.value, 0, 100000)
+    if (seq !== browseSeq) return
     browseEntries.value = r.items
   } else {
+    ++browseSeq // invalidate any in-flight browse request
     browseEntries.value = []
   }
 })
@@ -70,7 +77,9 @@ function measureRow(el: any) {
 async function refreshView() {
   await glossary.search(query.value, category.value)
   if (!query.value.trim() && category.value) {
+    const seq = ++browseSeq
     const r = await api.glossaryEntries(category.value, 0, 100000)
+    if (seq !== browseSeq) return
     browseEntries.value = r.items
   }
 }
@@ -216,7 +225,9 @@ async function loadMatrix() {
   matrixCell.value = cells
 }
 
-watch(appellMode, (m) => { if (m === 'matrix' && matrixData.value.length === 0) loadMatrix() })
+// Always reload on entering matrix view so an external import/team-sync that
+// changed the appellation table is reflected (not just the first-ever open).
+watch(appellMode, (m) => { if (m === 'matrix') loadMatrix() })
 
 function startEditCell(s: string, t: string) {
   editingCell.value = cellKey(s, t)
@@ -241,10 +252,17 @@ watch(speaker, async (s) => {
   await glossary.loadTargets(s)
 })
 
+// Monotonic guard: out-of-order lookups (e.g. rapid target switches) must not
+// let a stale response overwrite the result for the current combination.
+let lookupSeq = 0
 watch([speaker, target], async () => {
   if (speaker.value && target.value) {
-    result.value = await glossary.lookupAppellation(speaker.value, target.value)
+    const seq = ++lookupSeq
+    const r = await glossary.lookupAppellation(speaker.value, target.value)
+    if (seq !== lookupSeq) return
+    result.value = r
   } else {
+    ++lookupSeq // invalidate any in-flight lookup
     result.value = null
   }
 })

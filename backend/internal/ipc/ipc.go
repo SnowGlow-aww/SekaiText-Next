@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -202,8 +203,15 @@ func dispatch(router http.Handler, req RequestHeader, body []byte, writeFrame fu
 	router.ServeHTTP(rec, httpReq)
 
 	respHeaders := make(map[string]string, len(rec.Header()))
-	for k := range rec.Header() {
-		respHeaders[k] = rec.Header().Get(k)
+	for k, vs := range rec.Header() {
+		// A handler or middleware can emit the same header more than once (e.g.
+		// rs/cors adds three Vary values on a preflight). The map[string]string
+		// wire model holds one value per key, so fold repeats into a single
+		// comma-separated value per RFC 7230 §3.2.2 instead of keeping only the
+		// first via Header().Get. (Set-Cookie cannot be comma-folded, but this
+		// local app sets no cookies; the frame model would need map[string][]string
+		// to carry those, which is a transport-spec change out of scope here.)
+		respHeaders[k] = strings.Join(vs, ", ")
 	}
 	// httptest.ResponseRecorder does NOT sniff Content-Type the way net/http's real
 	// server does on first Write. Mirror that sniffing so a handler that wrote a body

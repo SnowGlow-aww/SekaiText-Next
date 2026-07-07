@@ -17,6 +17,17 @@ import (
 type ListManager struct {
 	updateMu sync.Mutex // single-flights UpdateAll so two CDN refreshes can't race-append the slices below
 
+	// mu guards the metadata slices below. Read methods
+	// (GetStory*/GetJsonPath/ResolveLabel/BuildVoiceIDClues) hold RLock; every
+	// writer publishes under a short Lock: loadAll and InferVoiceEventID, plus the
+	// incremental rebuild in update.go (updateEvents/updateCards/... build into a
+	// local, then swap the field under Lock). The file I/O and the heavy build
+	// always run outside the lock, so an update never blocks readers for more than
+	// a pointer swap — no rebuild-long critical section. Readers additionally
+	// snapshot each slice into a local before any length-check-then-index so a
+	// single method always sees one consistent slice header.
+	mu sync.RWMutex
+
 	Events     []EventEntry
 	Festivals  []FestivalEntry
 	Cards      []CardEntry
@@ -35,9 +46,11 @@ type ListManager struct {
 	catalogDir string
 	DBurl      string
 
-	// For area talk navigation
+	// AreaTalkByTime is only reset by update.go and is no longer used for
+	// navigation: the "按时间" ordering is derived per request (see
+	// buildAreaTalkByTime, which now returns a local) so concurrent requests can't
+	// clobber a shared scratch slice.
 	AreaTalkByTime []AreaTalkTimeEntry
-	ChapterScenario []ChapterScenarioEntry
 
 	// CDN URLs
 	baseUrls map[string]string
@@ -166,13 +179,26 @@ func (lm *ListManager) loadCatalog() {
 }
 
 func (lm *ListManager) loadAll() {
-	lm.Events = loadJSONFile[[]EventEntry](lm.catalogDir, "events.json")
-	lm.Festivals = loadJSONFile[[]FestivalEntry](lm.catalogDir, "festivals.json")
-	lm.Cards = loadJSONFile[[]CardEntry](lm.catalogDir, "cards.json")
-	lm.MainStory = loadJSONFile[[]MainStoryEntry](lm.catalogDir, "mainStory.json")
-	lm.AreaTalks = loadJSONFile[[]AreaTalkEntry](lm.catalogDir, "areatalks.json")
-	lm.Greets = loadJSONFile[[]GreetEntry](lm.catalogDir, "greets.json")
-	lm.Specials = loadJSONFile[[]SpecialEntry](lm.catalogDir, "specials.json")
+	// Read every file into a local first, then publish all slices under the write
+	// lock in one short critical section, so a concurrent reader (RLock) can never
+	// observe a half-swapped metadata set (and file I/O never runs under the lock).
+	events := loadJSONFile[[]EventEntry](lm.catalogDir, "events.json")
+	festivals := loadJSONFile[[]FestivalEntry](lm.catalogDir, "festivals.json")
+	cards := loadJSONFile[[]CardEntry](lm.catalogDir, "cards.json")
+	mainStory := loadJSONFile[[]MainStoryEntry](lm.catalogDir, "mainStory.json")
+	areaTalks := loadJSONFile[[]AreaTalkEntry](lm.catalogDir, "areatalks.json")
+	greets := loadJSONFile[[]GreetEntry](lm.catalogDir, "greets.json")
+	specials := loadJSONFile[[]SpecialEntry](lm.catalogDir, "specials.json")
+
+	lm.mu.Lock()
+	lm.Events = events
+	lm.Festivals = festivals
+	lm.Cards = cards
+	lm.MainStory = mainStory
+	lm.AreaTalks = areaTalks
+	lm.Greets = greets
+	lm.Specials = specials
+	lm.mu.Unlock()
 	log.Println("All metadata loaded")
 }
 
@@ -251,11 +277,22 @@ func (lm *ListManager) GetStorySorts(storyType string) []model.StorySort {
 
 // GetStoryIndexList returns index options for a story type and sort.
 func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIndex {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
 	var indices []model.StoryIndex
+
+	// Snapshot shared slices once; an unlocked concurrent rebuild in update.go must
+	// not shift len/backing-array between the loop bound and the indexing below.
+	mainStory := lm.MainStory
+	events := lm.Events
+	festivals := lm.Festivals
+	greets := lm.Greets
+	specials := lm.Specials
 
 	switch storyType {
 	case StoryLabelMainStory:
-		for _, unit := range lm.MainStory {
+		for _, unit := range mainStory {
 			name := model.UnitDict[unit.Unit]
 			indices = append(indices, model.StoryIndex{
 				Label: name,
@@ -264,8 +301,8 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 		}
 
 	case StoryLabelEvent, StoryLabelCardEvent:
-		for i := len(lm.Events) - 1; i >= 0; i-- {
-			ev := lm.Events[i]
+		for i := len(events) - 1; i >= 0; i-- {
+			ev := events[i]
 			label := strconv.Itoa(ev.ID) + " " + ev.Title
 			indices = append(indices, model.StoryIndex{
 				Label: label,
@@ -274,8 +311,8 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 		}
 
 	case StoryLabelCardSpecial:
-		for i := len(lm.Festivals) - 1; i >= 0; i-- {
-			f := lm.Festivals[i]
+		for i := len(festivals) - 1; i >= 0; i-- {
+			f := festivals[i]
 			var label string
 			if f.Collaboration != "" {
 				label = f.Collaboration
@@ -290,7 +327,7 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 				month := idx%4*3 + 1
 				label = "Festival " + strconv.Itoa(year) + " " + padZero(month)
 			}
-			indices = append(indices, model.StoryIndex{Label: label, Value: strconv.Itoa(len(lm.Festivals) - 1 - i)})
+			indices = append(indices, model.StoryIndex{Label: label, Value: strconv.Itoa(len(festivals) - 1 - i)})
 		}
 
 	case StoryLabelCardInit, StoryLabelCardUpgrade:
@@ -310,8 +347,8 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 				}
 			}
 		} else if sort == "time" {
-			lm.buildAreaTalkByTime()
-			for i := len(lm.AreaTalkByTime) - 1; i >= 0; i-- {
+			byTime := lm.buildAreaTalkByTime()
+			for i := len(byTime) - 1; i >= 0; i-- {
 				indices = append(indices, model.StoryIndex{Label: "time", Value: strconv.Itoa(i)})
 			}
 		} else if sort == "area" {
@@ -331,17 +368,17 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 				}
 			}
 		} else if sort == "time" {
-			for i := len(lm.Greets) - 1; i >= 0; i-- {
-				g := lm.Greets[i]
+			for i := len(greets) - 1; i >= 0; i-- {
+				g := greets[i]
 				label := g.Theme.Ch + " " + strconv.Itoa(g.Year)
 				indices = append(indices, model.StoryIndex{Label: label, Value: strconv.Itoa(i)})
 			}
 		}
 
 	case StoryLabelSpecial:
-		for i := len(lm.Specials) - 1; i >= 0; i-- {
+		for i := len(specials) - 1; i >= 0; i-- {
 			indices = append(indices, model.StoryIndex{
-				Label: lm.Specials[i].Title,
+				Label: specials[i].Title,
 				Value: strconv.Itoa(i),
 			})
 		}
@@ -352,15 +389,22 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 
 // GetStoryChapterList returns chapters for a given story.
 func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []model.StoryChapter {
-	lm.ChapterScenario = nil
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
 	idx := parseIndex(index)
 	var chapters []model.StoryChapter
+
+	// Snapshot shared slices once (see GetStoryIndexList).
+	mainStory := lm.MainStory
+	cards := lm.Cards
+	festivals := lm.Festivals
 
 	switch storyType {
 	case StoryLabelMainStory:
 		unitIdx := idx
-		if unitIdx >= 0 && unitIdx < len(lm.MainStory) {
-			for ci, chapter := range lm.MainStory[unitIdx].Chapters {
+		if unitIdx >= 0 && unitIdx < len(mainStory) {
+			for ci, chapter := range mainStory[unitIdx].Chapters {
 				var epNo int
 				if unitIdx == 0 {
 					epNo = ci%4 + 1
@@ -374,26 +418,30 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 			}
 		}
 
-		case StoryLabelEvent:
-			event := lm.findEventByID(idx)
-			if event != nil {
-				for ci, chapter := range event.Chapters {
-					chapters = append(chapters, model.StoryChapter{
-						Number: ci,
-						Label:  strconv.Itoa(ci+1) + " " + chapter.Title,
-					})
-				}
+	case StoryLabelEvent:
+		event := lm.findEventByID(idx)
+		if event != nil {
+			for ci, chapter := range event.Chapters {
+				chapters = append(chapters, model.StoryChapter{
+					Number: ci,
+					Label:  strconv.Itoa(ci+1) + " " + chapter.Title,
+				})
 			}
-		case StoryLabelCardEvent:
+		}
+
+	case StoryLabelCardEvent:
 		event := lm.findEventByID(idx)
 		if event != nil {
 			for _, cardID := range event.Cards {
-				if cardID >= 1 && cardID <= len(lm.Cards) {
-					char := model.CharacterDict[lm.Cards[cardID-1].CharacterID-1]
+				if cardID >= 1 && cardID <= len(cards) {
+					// Keep the 3-slot layout even for a hole-fill card
+					// (CharacterID = -1) so the chapter index stays aligned with
+					// GetJsonPath's validCards; just avoid CharacterDict[-2].
+					charName := cardCharNameJ(cards[cardID-1].CharacterID)
 					n := len(chapters)
 					chapters = append(chapters,
-						model.StoryChapter{Number: n, Label: char.NameJ + " 前篇"},
-						model.StoryChapter{Number: n + 1, Label: char.NameJ + " 后篇"},
+						model.StoryChapter{Number: n, Label: charName + " 前篇"},
+						model.StoryChapter{Number: n + 1, Label: charName + " 后篇"},
 						model.StoryChapter{Number: n + 2, Label: "-"},
 					)
 				}
@@ -404,16 +452,18 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 		}
 
 	case StoryLabelCardSpecial:
-		content := lm.Festivals
+		content := festivals
 		contentIdx := len(content) - idx
 		if contentIdx >= 1 && contentIdx <= len(content) {
 			for _, cardID := range content[contentIdx-1].Cards {
-				if cardID >= 1 && cardID <= len(lm.Cards) {
-					char := model.CharacterDict[lm.Cards[cardID-1].CharacterID-1]
+				if cardID >= 1 && cardID <= len(cards) {
+					// festival scans include hole-fill cards (CharacterID = -1);
+					// keep the slot but never index CharacterDict out of range.
+					charName := cardCharNameJ(cards[cardID-1].CharacterID)
 					n := len(chapters)
 					chapters = append(chapters,
-						model.StoryChapter{Number: n, Label: char.NameJ + " 前篇"},
-						model.StoryChapter{Number: n + 1, Label: char.NameJ + " 后篇"},
+						model.StoryChapter{Number: n, Label: charName + " 前篇"},
+						model.StoryChapter{Number: n + 1, Label: charName + " 后篇"},
 						model.StoryChapter{Number: n + 2, Label: "-"},
 					)
 				}
@@ -451,32 +501,32 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 		}
 
 	case StoryLabelAreaTalkInit:
-		lm.buildAreaTalkChapterScenario("init", sort)
-		for ci := range lm.ChapterScenario {
-			if lm.ChapterScenario[ci].IsSeparator {
+		cs := lm.buildAreaTalkChapterScenario("init", sort)
+		for ci := range cs {
+			if cs[ci].IsSeparator {
 				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
 			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: lm.ChapterScenario[ci].ScenarioID})
+				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
 			}
 		}
 
 	case StoryLabelAreaTalkUpgrade:
-		lm.buildAreaTalkChapterScenario("upgrade", sort)
-		for ci := range lm.ChapterScenario {
-			if lm.ChapterScenario[ci].IsSeparator {
+		cs := lm.buildAreaTalkChapterScenario("upgrade", sort)
+		for ci := range cs {
+			if cs[ci].IsSeparator {
 				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
 			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: lm.ChapterScenario[ci].ScenarioID})
+				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
 			}
 		}
 
 	case StoryLabelAreaTalkExtra:
-		lm.buildAreaTalkChapterScenario("extra", sort)
-		for ci := range lm.ChapterScenario {
-			if lm.ChapterScenario[ci].IsSeparator {
+		cs := lm.buildAreaTalkChapterScenario("extra", sort)
+		for ci := range cs {
+			if cs[ci].IsSeparator {
 				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
 			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: lm.ChapterScenario[ci].ScenarioID})
+				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
 			}
 		}
 
@@ -492,6 +542,9 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 
 // GetJsonPath returns the CDN URL and filename for a story's JSON.
 func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int, source string) model.JsonPathResult {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
 	extension := "asset"
 	format := "uni"
 	baseURL := lm.baseUrls["uni"]
@@ -517,6 +570,12 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 
 	idx := parseIndex(index)
 
+	// Snapshot shared slices once (see GetStoryIndexList).
+	mainStory := lm.MainStory
+	cards := lm.Cards
+	festivals := lm.Festivals
+	specials := lm.Specials
+
 	makeCardURL := func(charID int, cardNo, chapter string) (string, string) {
 		char := model.CharacterDict[charID-1]
 		cid := padZero3(charID)
@@ -532,10 +591,10 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 	switch storyType {
 	case StoryLabelMainStory:
 		unitIdx := idx
-		if unitIdx < 0 || unitIdx >= len(lm.MainStory) {
+		if unitIdx < 0 || unitIdx >= len(mainStory) {
 			return model.JsonPathResult{}
 		}
-		unit := lm.MainStory[unitIdx]
+		unit := mainStory[unitIdx]
 		ch := unit.Chapters
 		if unitIdx == 0 {
 			chapterIdx = (chapterIdx+1)*4/5
@@ -557,57 +616,58 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 			ChapterTitle: ch[chapterIdx].Title,
 		}
 
-		case StoryLabelEvent:
-			ev := lm.findEventByID(idx)
-			if ev == nil || chapterIdx < 0 || chapterIdx >= len(ev.Chapters) {
-				return model.JsonPathResult{}
-			}
-			chapter := ev.Chapters[chapterIdx].AssetName
-			var url string
-			if format == "best" {
-				url = baseURL + "event_story/" + ev.Name + "/scenario/" + chapter + "." + extension
-			} else {
-				url = baseURL + "ondemand/event_story/" + ev.Name + "/scenario/" + chapter + "." + extension
-			}
-			return model.JsonPathResult{
-				URL:          url,
-				FileName:     chapter + ".json",
-				SaveTitle:    strings.Join(lm.processChapterID(lm.eventReverseIndex(ev), strings.Split(chapter, "_")[1:]), "-"),
-				ChapterTitle: ev.Chapters[chapterIdx].Title,
-			}
-		case StoryLabelCardEvent:
-			ev := lm.findEventByID(idx)
-			if ev == nil {
-				return model.JsonPathResult{}
-			}
-			// Enumerate only valid cards, matching GetStoryChapterList's filter,
-			// so the chapter slot the user picked maps to the same card here.
-			var validCards []int
-			for _, c := range ev.Cards {
-				if c >= 1 && c <= len(lm.Cards) {
-					validCards = append(validCards, c)
-				}
-			}
-			cardSlot := chapterIdx / 3
-			if cardSlot < 0 || cardSlot >= len(validCards) {
+	case StoryLabelEvent:
+		ev := lm.findEventByID(idx)
+		if ev == nil || chapterIdx < 0 || chapterIdx >= len(ev.Chapters) {
 			return model.JsonPathResult{}
-			}
-			cardID := validCards[cardSlot]
-			cardCharID := lm.Cards[cardID-1].CharacterID
-			cardNo := lm.Cards[cardID-1].CardNo
-			ch := padZero(chapterIdx%3 + 1)
-			if cardCharID < 1 || cardCharID > len(model.CharacterDict) {
+		}
+		chapter := ev.Chapters[chapterIdx].AssetName
+		var url string
+		if format == "best" {
+			url = baseURL + "event_story/" + ev.Name + "/scenario/" + chapter + "." + extension
+		} else {
+			url = baseURL + "ondemand/event_story/" + ev.Name + "/scenario/" + chapter + "." + extension
+		}
+		return model.JsonPathResult{
+			URL:          url,
+			FileName:     chapter + ".json",
+			SaveTitle:    strings.Join(lm.processChapterID(lm.eventReverseIndex(ev), strings.Split(chapter, "_")[1:]), "-"),
+			ChapterTitle: ev.Chapters[chapterIdx].Title,
+		}
+
+	case StoryLabelCardEvent:
+		ev := lm.findEventByID(idx)
+		if ev == nil {
 			return model.JsonPathResult{}
+		}
+		// Enumerate only valid cards, matching GetStoryChapterList's filter,
+		// so the chapter slot the user picked maps to the same card here.
+		var validCards []int
+		for _, c := range ev.Cards {
+			if c >= 1 && c <= len(cards) {
+				validCards = append(validCards, c)
 			}
-			char := model.CharacterDict[cardCharID-1]
-			charID := padZero3(cardCharID)
-			var url string
-			if format == "best" {
+		}
+		cardSlot := chapterIdx / 3
+		if cardSlot < 0 || cardSlot >= len(validCards) {
+			return model.JsonPathResult{}
+		}
+		cardID := validCards[cardSlot]
+		cardCharID := cards[cardID-1].CharacterID
+		cardNo := cards[cardID-1].CardNo
+		ch := padZero(chapterIdx%3 + 1)
+		if cardCharID < 1 || cardCharID > len(model.CharacterDict) {
+			return model.JsonPathResult{}
+		}
+		char := model.CharacterDict[cardCharID-1]
+		charID := padZero3(cardCharID)
+		var url string
+		if format == "best" {
 			url = baseURL + "character/member/res" + charID + "_no" + cardNo + "/" + charID + cardNo + "_" + char.Name + ch + "." + extension
-			} else {
+		} else {
 			url = baseURL + "startapp/character/member/res" + charID + "_no" + cardNo + "/" + charID + cardNo + "_" + char.Name + ch + "." + extension
-			}
-			return model.JsonPathResult{
+		}
+		return model.JsonPathResult{
 			URL:          url,
 			FileName:     "event" + padZero3(ev.ID) + "_" + char.Name + "_" + ch + ".json",
 			SaveTitle:    "event" + padZero3(ev.ID) + "-" + char.Name + "-" + ch,
@@ -615,22 +675,27 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelCardSpecial:
-		fesIdx := len(lm.Festivals) - idx
-		if fesIdx < 1 || fesIdx > len(lm.Festivals) {
+		fesIdx := len(festivals) - idx
+		if fesIdx < 1 || fesIdx > len(festivals) {
 			return model.JsonPathResult{}
 		}
-		f := lm.Festivals[fesIdx-1]
+		f := festivals[fesIdx-1]
 		cardSlot := chapterIdx / 3
 		if cardSlot < 0 || cardSlot >= len(f.Cards) {
 			return model.JsonPathResult{}
 		}
 		cardID := f.Cards[cardSlot]
-		if cardID < 1 || cardID > len(lm.Cards) {
+		if cardID < 1 || cardID > len(cards) {
 			return model.JsonPathResult{}
 		}
-		cardCharID := lm.Cards[cardID-1].CharacterID
-		cardNo := lm.Cards[cardID-1].CardNo
+		cardCharID := cards[cardID-1].CharacterID
+		cardNo := cards[cardID-1].CardNo
 		ch := padZero(chapterIdx%3 + 1)
+		// Guard hole-fill cards (CharacterID = -1) before makeCardURL indexes
+		// CharacterDict[cardCharID-1]; mirrors the StoryLabelCardEvent guard.
+		if cardCharID < 1 || cardCharID > len(model.CharacterDict) {
+			return model.JsonPathResult{}
+		}
 		url, charName := makeCardURL(cardCharID, cardNo, ch)
 		return model.JsonPathResult{
 			URL:          url,
@@ -672,7 +737,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 			return model.JsonPathResult{}
 		}
 		var levelupcards []int
-		for _, f := range lm.Festivals {
+		for _, f := range festivals {
 			if f.LevelUp {
 				levelupcards = f.Cards
 				break
@@ -708,10 +773,10 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 			}
 			cardID = levelupcards[lvIdx]
 		}
-		if cardID < 1 || cardID > len(lm.Cards) {
+		if cardID < 1 || cardID > len(cards) {
 			return model.JsonPathResult{}
 		}
-		cardNo := lm.Cards[cardID-1].CardNo
+		cardNo := cards[cardID-1].CardNo
 		ch := padZero(chapterIdx%3 + 1)
 		url, charName := makeCardURL(charId, cardNo, ch)
 		return model.JsonPathResult{
@@ -722,22 +787,37 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade, StoryLabelAreaTalkExtra:
-		if chapterIdx < 0 || chapterIdx >= len(lm.ChapterScenario) {
+		// Re-derive the chapter scenario list from (storyType, sort) instead of a
+		// shared lm field, so a concurrent /story/chapter for another type can't
+		// clear or race the slice this /json-path relies on. The enumeration is
+		// deterministic, so chapterIdx maps to the same entry GetStoryChapterList
+		// produced.
+		var talkType string
+		switch storyType {
+		case StoryLabelAreaTalkInit:
+			talkType = "init"
+		case StoryLabelAreaTalkUpgrade:
+			talkType = "upgrade"
+		case StoryLabelAreaTalkExtra:
+			talkType = "extra"
+		}
+		cs := lm.buildAreaTalkChapterScenario(talkType, sort)
+		if chapterIdx < 0 || chapterIdx >= len(cs) {
 			return model.JsonPathResult{}
 		}
-		cs := lm.ChapterScenario[chapterIdx]
-		group := cs.ID / 100
+		entry := cs[chapterIdx]
+		group := entry.ID / 100
 		var url string
 		if format == "best" {
-			url = baseURL + "scenario/actionset/group" + strconv.Itoa(group) + "/" + cs.ScenarioID + "." + extension
+			url = baseURL + "scenario/actionset/group" + strconv.Itoa(group) + "/" + entry.ScenarioID + "." + extension
 		} else {
-			url = baseURL + "startapp/scenario/actionset/group" + strconv.Itoa(group) + "/" + cs.ScenarioID + "." + extension
+			url = baseURL + "startapp/scenario/actionset/group" + strconv.Itoa(group) + "/" + entry.ScenarioID + "." + extension
 		}
-		fileName := "areatalk_" + cs.TalkID + "_" + cs.ScenarioID + ".json"
+		fileName := "areatalk_" + entry.TalkID + "_" + entry.ScenarioID + ".json"
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     fileName,
-			SaveTitle:    "areatalk-" + cs.TalkID,
+			SaveTitle:    "areatalk-" + entry.TalkID,
 			ChapterTitle: "",
 		}
 
@@ -745,10 +825,10 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		// The index dropdown emits Value = the raw array index, so idx already
 		// is the wanted position; do NOT reverse it again.
 		specialIdx := idx
-		if specialIdx < 0 || specialIdx >= len(lm.Specials) {
+		if specialIdx < 0 || specialIdx >= len(specials) {
 			return model.JsonPathResult{}
 		}
-		story := lm.Specials[specialIdx]
+		story := specials[specialIdx]
 		var url string
 		if format == "best" {
 			url = baseURL + "scenario/special/" + story.DirName + "/" + story.FileName + "." + extension
@@ -768,33 +848,51 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 
 // --- Helpers for ListManager ---
 
-func (lm *ListManager) buildAreaTalkByTime() {
-	// Reset before rebuilding so repeated requests don't append duplicates
-	// (matches buildAreaTalkChapterScenario).
-	lm.AreaTalkByTime = nil
+// cardCharNameJ returns the Japanese character name for a card's CharacterID, or
+// "?" for hole-fill/invalid ids (CharacterID = -1), so callers can keep a slot in
+// the chapter list without indexing CharacterDict out of range.
+func cardCharNameJ(characterID int) string {
+	if characterID >= 1 && characterID <= len(model.CharacterDict) {
+		return model.CharacterDict[characterID-1].NameJ
+	}
+	return "?"
+}
+
+// buildAreaTalkByTime returns the "按时间" ordering as a request-local slice. It is
+// not stored on lm: the old shared lm.AreaTalkByTime raced between concurrent
+// requests and got reset between the /story/index and later calls.
+func (lm *ListManager) buildAreaTalkByTime() []AreaTalkTimeEntry {
+	talks := lm.AreaTalks
+	var out []AreaTalkTimeEntry
 	// Simplified: just stores add/release event IDs from area talks
-	for _, at := range lm.AreaTalks {
+	for _, at := range talks {
 		if at.ScenarioID == "none" || at.AddEventID < 0 {
 			continue
 		}
 		isLimited := at.Type == "limited"
 		isMonthly := strings.Contains(at.ScenarioID, "monthly")
-		lm.AreaTalkByTime = append(lm.AreaTalkByTime, AreaTalkTimeEntry{
+		out = append(out, AreaTalkTimeEntry{
 			AddEventID:     at.AddEventID,
 			ReleaseEventID: at.ReleaseEventID,
 			Limited:        isLimited,
 			Monthly:        isMonthly,
 		})
 	}
+	return out
 }
 
-// buildAreaTalkChapterScenario populates ChapterScenario for area talk types.
-func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) {
-	lm.ChapterScenario = nil
+// buildAreaTalkChapterScenario returns the ChapterScenario list for an area talk
+// type as a request-local slice (not stored on lm), so /story/chapter and
+// /json-path derive it independently and concurrent requests can't clobber shared
+// scratch state. Deterministic given (talkType, area talks), so both endpoints
+// agree on the chapterIdx -> entry mapping.
+func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) []ChapterScenarioEntry {
+	talks := lm.AreaTalks
+	var out []ChapterScenarioEntry
 
-	for _, at := range lm.AreaTalks {
+	for _, at := range talks {
 		if at.ScenarioID == "none" || at.ScenarioID == "" {
-			lm.ChapterScenario = append(lm.ChapterScenario, ChapterScenarioEntry{IsSeparator: true})
+			out = append(out, ChapterScenarioEntry{IsSeparator: true})
 			continue
 		}
 
@@ -807,12 +905,13 @@ func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) {
 			continue
 		}
 
-		lm.ChapterScenario = append(lm.ChapterScenario, ChapterScenarioEntry{
+		out = append(out, ChapterScenarioEntry{
 			ID:         at.ID,
 			ScenarioID: at.ScenarioID,
 			TalkID:     at.TalkID,
 		})
 	}
+	return out
 }
 
 func parseIndex(index string) int {
@@ -849,10 +948,15 @@ func (lm *ListManager) eventReverseIndex(ev *EventEntry) int {
 // Only event stories are resolved; other label shapes return ok=false so the
 // caller falls back to manual selection.
 func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chapterIdx int, ok bool) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return "", "", 0, false
 	}
+
+	events := lm.Events
 
 	// Strategy 1: WL events keep an assetName-derived label (assetName
 	// wl_3rd_group3_01 -> label 3rd-group3-01), so reconstruct "wl_<underscored>"
@@ -865,10 +969,10 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chap
 	// events are handled by Strategy 2 instead.
 	underscored := strings.ReplaceAll(label, "-", "_")
 	for _, cand := range []string{"wl_" + underscored, underscored} {
-		for ei := range lm.Events {
-			for ci, ch := range lm.Events[ei].Chapters {
+		for ei := range events {
+			for ci, ch := range events[ei].Chapters {
 				if ch.AssetName == cand {
-					return StoryLabelEvent, strconv.Itoa(lm.Events[ei].ID), ci, true
+					return StoryLabelEvent, strconv.Itoa(events[ei].ID), ci, true
 				}
 			}
 		}
@@ -880,8 +984,8 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chap
 	if len(parts) == 2 {
 		rev, err1 := strconv.Atoi(parts[0])
 		ep, err2 := strconv.Atoi(parts[1])
-		if err1 == nil && err2 == nil && rev >= 1 && rev <= len(lm.Events) && ep >= 1 {
-			ev := &lm.Events[rev-1]
+		if err1 == nil && err2 == nil && rev >= 1 && rev <= len(events) && ep >= 1 {
+			ev := &events[rev-1]
 			if ep <= len(ev.Chapters) {
 				return StoryLabelEvent, strconv.Itoa(ev.ID), ep - 1, true
 			}
@@ -902,7 +1006,11 @@ func (lm *ListManager) processChapterID(eventIndex int, chapterIDs []string) []s
 	if err1 != nil || err2 != nil || kd <= 0 || ep <= 0 {
 		return chapterIDs
 	}
-	ev := lm.Events[eventIndex-1]
+	events := lm.Events
+	if eventIndex < 1 || eventIndex > len(events) {
+		return chapterIDs
+	}
+	ev := events[eventIndex-1]
 	if kd != ev.KdyicrID {
 		return chapterIDs
 	}
@@ -950,13 +1058,17 @@ func (lm *ListManager) findEventByID(id int) *EventEntry {
 // be matched by several voice prefixes), falling back to the per-event
 // InferredVoiceIDs.prefix for any event not covered there.
 func (lm *ListManager) BuildVoiceIDClues() map[string]EventEntry {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	events := lm.Events
 	clues := make(map[string]EventEntry)
 	for prefix, ei := range lm.voiceClues {
-		if ei >= 0 && ei < len(lm.Events) {
-			clues[prefix] = lm.Events[ei]
+		if ei >= 0 && ei < len(events) {
+			clues[prefix] = events[ei]
 		}
 	}
-	for _, ev := range lm.Events {
+	for _, ev := range events {
 		if iv, ok := ev.InferredVoiceIDs["prefix"]; ok {
 			if prefix, ok := iv.(string); ok {
 				if _, exists := clues[prefix]; !exists {
@@ -970,6 +1082,9 @@ func (lm *ListManager) BuildVoiceIDClues() map[string]EventEntry {
 
 // InferVoiceEventID infers voice event IDs from area talks and stores them in events.
 func (lm *ListManager) InferVoiceEventID() {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
 	eventsByID := make(map[int]int)
 	for ei, ev := range lm.Events {
 		eventsByID[ev.ID] = ei

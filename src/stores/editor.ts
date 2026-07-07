@@ -23,7 +23,10 @@ function emptyModeState(): ModeState {
 }
 
 function cloneTalks<T>(arr: T[]): T[] {
-  return arr.map(t => ({ ...t }))
+  // Deep copy: DstTalk holds nested arrays (diff, voices). A shallow {...t}
+  // would leave those shared between modeCache and live talks, so an in-place
+  // nested mutation in one mode would leak across modes. Matches useUndo.
+  return JSON.parse(JSON.stringify(arr)) as T[]
 }
 
 export const useEditorStore = defineStore('editor', () => {

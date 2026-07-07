@@ -24,16 +24,18 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
   // same item id, which would otherwise produce duplicate keys and corrupt the patch.
   const sidebarItems = computed<PluginSidebarItem[]>(() =>
     Object.entries(sidebarByPlugin.value)
-      .flatMap(([pluginId, items]) => (items ?? []).map((i) => ({ ...i, pluginId })))
-      .filter((i) => !!i && typeof i === 'object')
+      .flatMap(([pluginId, items]) =>
+        (items ?? []).filter((i) => !!i && typeof i === 'object').map((i) => ({ ...i, pluginId })),
+      )
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   )
 
   // Flattened, ordered settings sections across all plugins.
   const settingsSections = computed<PluginSettingsSection[]>(() =>
     Object.entries(settingsByPlugin.value)
-      .flatMap(([pluginId, sections]) => (sections ?? []).map((s) => ({ ...s, pluginId })))
-      .filter((s) => !!s && typeof s === 'object')
+      .flatMap(([pluginId, sections]) =>
+        (sections ?? []).filter((s) => !!s && typeof s === 'object').map((s) => ({ ...s, pluginId })),
+      )
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   )
 

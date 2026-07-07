@@ -193,7 +193,7 @@ func (lm *ListManager) updateEvents(dir string) error {
 	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].KdyicrID < sorted[j].KdyicrID })
 
-	lm.Events = nil
+	var newEvents []EventEntry
 	id := 1
 	for _, ev := range sorted {
 		if len(ev.Chapters) == 0 {
@@ -201,7 +201,7 @@ func (lm *ListManager) updateEvents(dir string) error {
 		}
 		ev.ID = id
 		id++
-		lm.Events = append(lm.Events, EventEntry{
+		newEvents = append(newEvents, EventEntry{
 			ID:       ev.ID,
 			KdyicrID: ev.KdyicrID,
 			Title:    ev.Title,
@@ -210,7 +210,13 @@ func (lm *ListManager) updateEvents(dir string) error {
 			Cards:    ev.Cards,
 		})
 	}
-	return saveJSON(dir, "events.json", lm.Events)
+	// Publish the freshly built slice under a short write lock so request
+	// goroutines reading lm.Events (under RLock) can't observe a torn header from
+	// an in-place rebuild. The build and file I/O stay outside the lock.
+	lm.mu.Lock()
+	lm.Events = newEvents
+	lm.mu.Unlock()
+	return saveJSON(dir, "events.json", newEvents)
 }
 
 func (lm *ListManager) updateCards(dir string) error {
@@ -219,11 +225,11 @@ func (lm *ListManager) updateCards(dir string) error {
 		return err
 	}
 
-	lm.Cards = nil
+	var newCards []CardEntry
 	cardCount := 1 // 1-based filling
 	for _, c := range cards {
 		for cardCount < c.ID {
-			lm.Cards = append(lm.Cards, CardEntry{
+			newCards = append(newCards, CardEntry{
 				ID:          cardCount,
 				CharacterID: -1,
 				CardNo:      "000",
@@ -246,16 +252,25 @@ func (lm *ListManager) updateCards(dir string) error {
 		if c.ID >= 724 && c.ID <= 759 {
 			entry.LevelUp = true
 		}
-		lm.Cards = append(lm.Cards, entry)
+		newCards = append(newCards, entry)
 		cardCount = c.ID + 1
 	}
-	return saveJSON(dir, "cards.json", lm.Cards)
+	// Short-lock swap; readers hold RLock (see updateEvents).
+	lm.mu.Lock()
+	lm.Cards = newCards
+	lm.mu.Unlock()
+	return saveJSON(dir, "cards.json", newCards)
 }
 
 func (lm *ListManager) updateFestivals(dir string) error {
-	lm.Festivals = nil
+	// Build into a local, then publish under a short lock (see updateEvents). Reads
+	// of lm.Events/lm.Cards are safe unlocked here: they were written earlier in
+	// this same update goroutine and no other goroutine writes them concurrently.
+	var newFestivals []FestivalEntry
+	publish := func() { lm.mu.Lock(); lm.Festivals = newFestivals; lm.mu.Unlock() }
 	if len(lm.Events) == 0 || len(lm.Cards) == 0 {
-		return saveJSON(dir, "festivals.json", lm.Festivals)
+		publish()
+		return saveJSON(dir, "festivals.json", newFestivals)
 	}
 
 	eventIdx := 0
@@ -277,7 +292,8 @@ func (lm *ListManager) updateFestivals(dir string) error {
 	}
 	if firstCardID == 0 {
 		// No event owns any card; nothing to scan for festivals.
-		return saveJSON(dir, "festivals.json", lm.Festivals)
+		publish()
+		return saveJSON(dir, "festivals.json", newFestivals)
 	}
 	lastCardID := lm.Cards[len(lm.Cards)-1].ID
 
@@ -298,7 +314,7 @@ func (lm *ListManager) updateFestivals(dir string) error {
 			birthdayCards = append(birthdayCards, i)
 			// Flush birthday group for specific characters
 			if containsInt(birthdayCards, i) && containsInt([]int{7, 16, 14, 23}, lm.Cards[i-1].CharacterID) || len(birthdayCards) >= 26 {
-				lm.Festivals = append(lm.Festivals, FestivalEntry{
+				newFestivals = append(newFestivals, FestivalEntry{
 					ID:         birthdayIdx,
 					IsBirthday: true,
 					Cards:      birthdayCards,
@@ -340,25 +356,26 @@ func (lm *ListManager) updateFestivals(dir string) error {
 				// avoid a negative slice bound.
 				if len(specialCards) >= 2 {
 					fest.Cards = specialCards[:len(specialCards)-2]
-					lm.Festivals = append(lm.Festivals, fest)
+					newFestivals = append(newFestivals, fest)
 					fest = FestivalEntry{ID: fesIdx, IsBirthday: false, Cards: specialCards[len(specialCards)-2:]}
 				}
 			} else {
 				fesIdx++
 			}
-			lm.Festivals = append(lm.Festivals, fest)
+			newFestivals = append(newFestivals, fest)
 			specialCards = nil
 		}
 	}
 
 	if len(specialCards) > 0 {
-		lm.Festivals = append(lm.Festivals, FestivalEntry{ID: fesIdx, IsBirthday: false, Cards: specialCards})
+		newFestivals = append(newFestivals, FestivalEntry{ID: fesIdx, IsBirthday: false, Cards: specialCards})
 	}
 	if len(birthdayCards) > 0 {
-		lm.Festivals = append(lm.Festivals, FestivalEntry{ID: birthdayIdx, IsBirthday: true, Cards: birthdayCards})
+		newFestivals = append(newFestivals, FestivalEntry{ID: birthdayIdx, IsBirthday: true, Cards: birthdayCards})
 	}
 
-	return saveJSON(dir, "festivals.json", lm.Festivals)
+	publish()
+	return saveJSON(dir, "festivals.json", newFestivals)
 }
 
 func containsInt(slice []int, val int) bool {
@@ -378,21 +395,25 @@ func (lm *ListManager) updateMainStory(dir string) error {
 
 	sort.Slice(stories, func(i, j int) bool { return stories[i].Seq < stories[j].Seq })
 
-	lm.MainStory = nil
+	var newMainStory []MainStoryEntry
 	for _, us := range stories {
 		for _, ch := range us.Chapters {
 			chapters := make([]EventChapter, len(ch.Episodes))
 			for i, ep := range ch.Episodes {
 				chapters[i] = EventChapter{Title: ep.Title, AssetName: ep.ScenarioID}
 			}
-			lm.MainStory = append(lm.MainStory, MainStoryEntry{
+			newMainStory = append(newMainStory, MainStoryEntry{
 				Unit:      ch.Unit,
 				AssetName: ch.AssetbundleName,
 				Chapters:  chapters,
 			})
 		}
 	}
-	return saveJSON(dir, "mainStory.json", lm.MainStory)
+	// Short-lock swap; readers hold RLock (see updateEvents).
+	lm.mu.Lock()
+	lm.MainStory = newMainStory
+	lm.mu.Unlock()
+	return saveJSON(dir, "mainStory.json", newMainStory)
 }
 
 func (lm *ListManager) updateAreaTalks(dir string) error {
@@ -419,8 +440,8 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 		count = c.ID + 1
 	}
 
-	lm.AreaTalks = nil
-	lm.AreaTalkByTime = nil
+	var newAreaTalks []AreaTalkEntry
+	lm.AreaTalkByTime = nil // vestigial field, read by nobody; harmless unlocked write
 	actionCount := 0
 	areatalkCount := 0
 	specialAreatalkCount := 0
@@ -435,7 +456,7 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 	for _, action := range actions {
 		actionCount++
 		for actionCount < action.ID {
-			lm.AreaTalks = append(lm.AreaTalks, AreaTalkEntry{
+			newAreaTalks = append(newAreaTalks, AreaTalkEntry{
 				ID: actionCount, TalkID: "-1", AreaID: -1,
 				ScenarioID: "none", Type: "none", AddEventID: -1, ReleaseEventID: -1,
 			})
@@ -461,7 +482,7 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 
 		charIDs := make([]int, 0)
 		for _, cid := range action.CharacterIDs {
-			if cid < len(char2DLookup) {
+			if cid >= 0 && cid < len(char2DLookup) {
 				charIDs = append(charIDs, char2DLookup[cid].CharacterID)
 			}
 		}
@@ -498,10 +519,14 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 			entry.TalkID = "-1"
 		}
 
-		lm.AreaTalks = append(lm.AreaTalks, entry)
+		newAreaTalks = append(newAreaTalks, entry)
 	}
 
-	return saveJSON(dir, "areatalks.json", lm.AreaTalks)
+	// Short-lock swap; readers hold RLock (see updateEvents).
+	lm.mu.Lock()
+	lm.AreaTalks = newAreaTalks
+	lm.mu.Unlock()
+	return saveJSON(dir, "areatalks.json", newAreaTalks)
 }
 
 func (lm *ListManager) updateSpecials(dir string) error {
@@ -510,19 +535,23 @@ func (lm *ListManager) updateSpecials(dir string) error {
 		return err
 	}
 
-	lm.Specials = nil
+	var newSpecials []SpecialEntry
 	for _, s := range stories {
 		if len(s.Episodes) == 0 {
 			continue
 		}
 		ep := s.Episodes[0]
-		lm.Specials = append(lm.Specials, SpecialEntry{
+		newSpecials = append(newSpecials, SpecialEntry{
 			Title:    s.Title,
 			DirName:  s.AssetbundleName,
 			FileName: ep.ScenarioID,
 		})
 	}
-	return saveJSON(dir, "specials.json", lm.Specials)
+	// Short-lock swap; readers hold RLock (see updateEvents).
+	lm.mu.Lock()
+	lm.Specials = newSpecials
+	lm.mu.Unlock()
+	return saveJSON(dir, "specials.json", newSpecials)
 }
 
 func (lm *ListManager) updateGreets(dir string) error {
@@ -535,11 +564,18 @@ func (lm *ListManager) updateGreets(dir string) error {
 	// For now, keep the existing greets.json if it exists.
 	path := filepath.Join(dir, "greets.json")
 	if _, err := os.Stat(path); err == nil {
-		lm.Greets = loadJSONFile[[]GreetEntry](dir, "greets.json")
-	return nil
+		newGreets := loadJSONFile[[]GreetEntry](dir, "greets.json")
+		// Short-lock swap; readers hold RLock (see updateEvents).
+		lm.mu.Lock()
+		lm.Greets = newGreets
+		lm.mu.Unlock()
+		return nil
 	}
-	lm.Greets = nil
-	return saveJSON(dir, "greets.json", lm.Greets)
+	var newGreets []GreetEntry
+	lm.mu.Lock()
+	lm.Greets = newGreets
+	lm.mu.Unlock()
+	return saveJSON(dir, "greets.json", newGreets)
 }
 
 // UpdateAllFromCDN downloads and processes all metadata from the haruki neo CDN.

@@ -145,6 +145,12 @@ type Settings struct {
 
 // DefaultSettings returns sensible defaults.
 func DefaultSettings() Settings {
+	// JsonDownloadDir and SaveBaseDir are intentionally left empty: a hardcoded
+	// default would be developer-specific and invalid on the user's machine (and
+	// on Windows). They are resolved per-user at runtime — the JSON download
+	// handler falls back to {DataDir}/json (absolute, under the app data dir)
+	// when empty, and the save flow falls back to the OS save-dialog default
+	// location.
 	return Settings{
 		FontSize:                    18,
 		UIFontSize:                  16,
@@ -152,8 +158,6 @@ func DefaultSettings() Settings {
 		SaveLineBreakN:              true,
 		SaveVoice:                   false,
 		DisableSSL:                  false,
-		JsonDownloadDir:             "./downloads/json",
-		SaveBaseDir:                 "/Users/amia/Documents/Translation/PJS字幕组",
 		DebugEnabled:                false,
 		IndexOrder:                  "asc",
 		PreserveStoryOnModeSwitch:   true,

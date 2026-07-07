@@ -1,3 +1,11 @@
+<script lang="ts">
+// Module scope runs once and is shared by every VoicePlayButton instance, unlike
+// <script setup> whose top-level runs per instance. Holds a stopper for whichever
+// button is currently sounding so a new play() can silence it first — without this
+// singleton, clicking a second line's button stacked its audio over the first one.
+let stopActive: (() => void) | null = null
+</script>
+
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Play, Square } from 'lucide-vue-next'
@@ -17,13 +25,27 @@ const loading = ref(false)
 const audioRef = ref<HTMLAudioElement | null>(null)
 const toast = useToast()
 
-async function play() {
-  if (playing.value && audioRef.value) {
+// Fully silence and reset this button, and relinquish the module-level singleton
+// if this instance currently owns it.
+function stop() {
+  if (audioRef.value) {
     audioRef.value.pause()
     audioRef.value = null
-    playing.value = false
+  }
+  playing.value = false
+  loading.value = false
+  if (stopActive === stop) stopActive = null
+}
+
+async function play() {
+  if (playing.value && audioRef.value) {
+    stop()
     return
   }
+
+  // Silence any other button that is currently playing so only one voice sounds at
+  // a time (without this, clicking another line stacked its audio over this one).
+  stopActive?.()
 
   // Immediate feedback so the click is visibly acknowledged during the async window.
   loading.value = true
@@ -33,27 +55,27 @@ async function play() {
       const audio = new Audio(result.url)
       // talk.volume carries the Unity linear gain multiplier (typically ~1), not a
       // 0-100 percentage — dividing by 100 made every voiced line near-silent.
-      // Apply it directly, clamped to the HTMLAudioElement [0,1] range; treat a
-      // falsy/unspecified value as the default 1.
-      audio.volume = props.volume?.[0] ? Math.min(1, Math.max(0, props.volume[0])) : 1
-      audio.onended = () => { playing.value = false; loading.value = false }
+      // Apply it directly, clamped to the HTMLAudioElement [0,1] range. Use `!= null`
+      // (not truthiness) so an explicit 0 — a silenced/faded line — stays silent
+      // instead of being mistaken for "unspecified" and forced to full volume.
+      audio.volume = props.volume?.[0] != null ? Math.min(1, Math.max(0, props.volume[0])) : 1
+      audio.onended = () => { stop() }
       audio.onerror = () => {
         console.error('[VoicePlayButton] 音频加载失败:', result.url)
-        playing.value = false
-        loading.value = false
-        audioRef.value = null
+        stop()
         toast.show('语音加载失败，请检查网络或更换源', 'error')
       }
       audioRef.value = audio
       await audio.play()
       playing.value = true
+      // Claim the singleton so the next play() on any button stops this one first.
+      stopActive = stop
     } else {
       toast.show('未找到该语音', 'warn')
     }
   } catch (e) {
     console.error('[VoicePlayButton] 播放失败:', e)
-    playing.value = false
-    audioRef.value = null
+    stop()
     toast.show('语音播放失败：' + (e instanceof Error ? e.message : String(e)), 'error')
   } finally {
     loading.value = false

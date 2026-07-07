@@ -131,27 +131,44 @@ func (u *AppUpdateService) DownloadUpdate(downloadURL, destDir string, progress 
 	}
 	dest := filepath.Join(destDir, updateFileName(downloadURL))
 
-	// Write to .part then rename so a mid-stream failure never leaves a file the
-	// installer/open step would mistake for a complete download.
-	tmp := dest + ".part"
-	f, err := os.Create(tmp)
+	// Write to a unique temp file then rename so a mid-stream failure never leaves a
+	// file the installer/open step would mistake for a complete download. A unique
+	// name (not the fixed dest+".part") is required because AppUpdateDownload spawns
+	// one goroutine per request with no single-flight guard, so two concurrent
+	// downloads of the same URL would otherwise clobber each other's .part and
+	// interleave into a corrupted installer (mirrors DownloadJSONToDir/downloader.go).
+	f, err := os.CreateTemp(destDir, filepath.Base(dest)+".*.part")
 	if err != nil {
 		return "", err
 	}
+	tmp := f.Name()
 	var reader io.Reader = resp.Body
 	if progress != nil {
 		reader = &progressReader{reader: resp.Body, total: resp.ContentLength, fn: progress}
 	}
-	// Cap at 512 MiB — installers are far smaller; guards against a huge body.
-	if _, err := io.Copy(f, io.LimitReader(reader, 512<<20)); err != nil {
+	// Cap at 512 MiB — installers are far smaller; guards against a huge body. Read
+	// one byte past the cap so a body that actually reaches the limit is caught as a
+	// truncation: io.Copy hitting a LimitReader's end returns (n, nil), so without
+	// this check a truncated installer would be silently renamed and launched (the
+	// app-update path has no sha256 to catch it, unlike the plugin market path).
+	const maxInstaller = 512 << 20
+	n, err := io.Copy(f, io.LimitReader(reader, maxInstaller+1))
+	if err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return "", err
+	}
+	if n > maxInstaller {
+		f.Close()
+		os.Remove(tmp)
+		return "", errors.New("安装包超过大小上限，已中止下载")
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return "", err
 	}
+	// Rename is atomic on the same filesystem, so even if a concurrent download
+	// targets the same dest the result is always one complete file, never a splice.
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
 		return "", err
@@ -163,7 +180,10 @@ func (u *AppUpdateService) DownloadUpdate(downloadURL, destDir string, progress 
 func updateFileName(rawurl string) string {
 	name := "SekaiText-update"
 	if u, err := url.Parse(rawurl); err == nil {
-		if base := filepath.Base(u.Path); base != "." && base != "/" && base != "" {
+		// u.Path is percent-decoded, so a URL ending in "/.." (or "%2e%2e") yields
+		// base=="..", which filepath.Join would resolve to the PARENT of destDir.
+		// Reject ".." (and anything with a separator) and keep the default name.
+		if base := filepath.Base(u.Path); base != "." && base != ".." && base != "/" && base != "" && !strings.ContainsAny(base, `/\`) {
 			name = base
 		}
 	}

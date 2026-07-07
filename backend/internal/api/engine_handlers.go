@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sekaitext/backend/internal/service"
@@ -50,17 +51,53 @@ func sanitizeThreshold(v interface{}) interface{} {
 	return out
 }
 
+// engineStatusPingGate rate-limits the spawn-on-Ping in EngineStatus. Ping issues
+// system.version, which lazily spawns the sidecar. A healthy engine stays started
+// (ensureStarted is then a no-op, so repeated polls don't churn), but a binary that
+// crashes on launch resets started=false via onExit, so pinging on every status poll
+// would relaunch the crashing process endlessly. After a failed Ping we serve the
+// cached error for pingFailCooldown before allowing another spawn attempt, bounding
+// respawns of a broken binary to once per window while still letting a fixed engine
+// recover on the next retry.
+var engineStatusPingGate struct {
+	mu      sync.Mutex
+	failAt  time.Time
+	failMsg string
+}
+
+const pingFailCooldown = 10 * time.Second
+
 // EngineStatus reports whether the engine is bundled and, if so, its version.
 func (h *Handler) EngineStatus(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil || !h.engine.Available() {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"available": false})
 		return
 	}
+	// Within the cooldown after a failed Ping, report the cached error without
+	// re-pinging so a crash-on-start binary isn't respawned by every poll.
+	engineStatusPingGate.mu.Lock()
+	if !engineStatusPingGate.failAt.IsZero() && time.Since(engineStatusPingGate.failAt) < pingFailCooldown {
+		msg := engineStatusPingGate.failMsg
+		engineStatusPingGate.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{"available": true, "ready": false, "error": msg})
+		return
+	}
+	engineStatusPingGate.mu.Unlock()
+
 	info, err := h.engine.Ping()
 	if err != nil {
+		engineStatusPingGate.mu.Lock()
+		engineStatusPingGate.failAt = time.Now()
+		engineStatusPingGate.failMsg = err.Error()
+		engineStatusPingGate.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]interface{}{"available": true, "ready": false, "error": err.Error()})
 		return
 	}
+	// Success — clear any prior failure backoff so a recovered engine reports ready.
+	engineStatusPingGate.mu.Lock()
+	engineStatusPingGate.failAt = time.Time{}
+	engineStatusPingGate.failMsg = ""
+	engineStatusPingGate.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"available": true, "ready": true, "engine": info})
 }
 
@@ -274,6 +311,12 @@ func (h *Handler) EngineSuppressProgress(w http.ResponseWriter, r *http.Request)
 	percent := 0.0
 	if job.Total > 0 {
 		percent = float64(job.Frame) / float64(job.Total) * 100
+		// ffmpeg's frame count routinely overshoots the probed Total on VFR/estimated
+		// sources, so clamp like the timing path (engine.go routeNotification) to keep
+		// a progress bar from rendering past full.
+		if percent > 100 {
+			percent = 100
+		}
 	}
 	snap := map[string]interface{}{
 		"taskId":     job.TaskID,

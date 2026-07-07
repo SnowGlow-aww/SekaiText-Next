@@ -84,6 +84,10 @@ func (s *GlossaryStore) load() error {
 			// must hold. Only overwrite when the existing row is NOT user-authored, or
 			// the incoming row IS — i.e. never let an import/remote entry clobber a
 			// user-authored one. (Among same-origin collisions, last occurrence wins.)
+			// App paths can't produce two rows with the same (source,category,subCategory),
+			// so this only fires on hand-edited JSON or an old-scheme migration; log the
+			// dropped row so that data loss is diagnosable rather than silent.
+			log.Printf("[glossary] load: dropping duplicate id %s (source=%q category=%q subCategory=%q)", e.ID, e.Source, e.Category, e.SubCategory)
 			if out[idx].Origin != model.OriginUser || e.Origin == model.OriginUser {
 				out[idx] = e
 			}
@@ -114,7 +118,18 @@ func (s *GlossaryStore) persist() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(s.path, data, 0644); err != nil {
+	// Write to a sibling temp file and atomically rename into place: a mid-write
+	// failure (disk full / crash) then leaves the previous good file untouched
+	// instead of a truncated half-file that the mtime poller would reload as
+	// corrupt state. Combined with callers rolling back memory on a persist
+	// error, this keeps the memory==disk invariant.
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if info, err := os.Stat(s.path); err == nil {
@@ -179,6 +194,24 @@ func (s *GlossaryStore) Categories() []map[string]interface{} {
 	return out
 }
 
+// cloneEntries returns a deep copy of src (a fresh slice header plus a fresh copy
+// of each entry's Aliases) so the caller can serialize/hold it outside the lock
+// without racing the store's in-place writes (AddEntry/UpdateEntry/DeleteEntry/
+// MergeImport all mutate the shared backing array in place).
+func cloneEntries(src []model.GlossaryEntry) []model.GlossaryEntry {
+	if src == nil {
+		return nil
+	}
+	out := make([]model.GlossaryEntry, len(src))
+	copy(out, src)
+	for i := range out {
+		if len(src[i].Aliases) > 0 {
+			out[i].Aliases = append([]string(nil), src[i].Aliases...)
+		}
+	}
+	return out
+}
+
 // Entries returns a page of all entries (optionally filtered by category).
 func (s *GlossaryStore) Entries(category string, offset, limit int) ([]model.GlossaryEntry, int) {
 	s.mu.RLock()
@@ -203,7 +236,11 @@ func (s *GlossaryStore) Entries(category string, offset, limit int) ([]model.Glo
 	if limit > 0 && offset+limit < end {
 		end = offset + limit
 	}
-	return filtered[offset:end], total
+	// Return a defensive deep copy: the handler serializes this outside the lock,
+	// so it must not alias s.entries' backing array (which concurrent writes shift
+	// in place). The category-filtered branch above already built a fresh slice,
+	// but its elements still share the original Aliases arrays — clone both.
+	return cloneEntries(filtered[offset:end]), total
 }
 
 // Search matches q against source, translation and aliases (case-insensitive),
@@ -303,6 +340,7 @@ func (s *GlossaryStore) AddEntry(e model.GlossaryEntry) (model.GlossaryEntry, er
 	e.ID = makeEntryID(e)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prev := append([]model.GlossaryEntry(nil), s.entries...)
 	// Replace if an entry with the same id already exists, else append.
 	replaced := false
 	for i := range s.entries {
@@ -315,35 +353,69 @@ func (s *GlossaryStore) AddEntry(e model.GlossaryEntry) (model.GlossaryEntry, er
 	if !replaced {
 		s.entries = append(s.entries, e)
 	}
-	return e, s.persist()
+	if err := s.persist(); err != nil {
+		s.entries = prev // keep memory in sync with the unchanged disk file
+		return model.GlossaryEntry{}, err
+	}
+	return e, nil
 }
 
 // UpdateEntry overwrites the fields of an existing entry (matched by id).
 func (s *GlossaryStore) UpdateEntry(id string, patch model.GlossaryEntry) (model.GlossaryEntry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	idx := -1
 	for i := range s.entries {
 		if s.entries[i].ID == id {
-			cur := &s.entries[i]
-			cur.Source = patch.Source
-			cur.Translation = patch.Translation
-			cur.Aliases = patch.Aliases
-			cur.Note = patch.Note
-			if patch.Category != "" {
-				cur.Category = patch.Category
-			}
-			cur.SubCategory = patch.SubCategory
-			// A hand-edited entry becomes user-authored so MergeImport's
-			// "user rows always survive" rule protects it from being dropped
-			// on the next re-import/remote sync.
-			cur.Origin = model.OriginUser
-			// Keep the id consistent with the makeEntryID invariant that
-			// import/dedup relies on (source/category/subCategory may have changed).
-			cur.ID = makeEntryID(*cur)
-			return *cur, true, s.persist()
+			idx = i
+			break
 		}
 	}
-	return model.GlossaryEntry{}, false, nil
+	if idx < 0 {
+		return model.GlossaryEntry{}, false, nil
+	}
+	// Build the edited entry as a value first, then re-derive its id, so a
+	// collision can be resolved before touching the store.
+	cur := s.entries[idx]
+	cur.Source = patch.Source
+	cur.Translation = patch.Translation
+	cur.Aliases = patch.Aliases
+	cur.Note = patch.Note
+	if patch.Category != "" {
+		cur.Category = patch.Category
+	}
+	cur.SubCategory = patch.SubCategory
+	// A hand-edited entry becomes user-authored so MergeImport's "user rows always
+	// survive" rule protects it from being dropped on the next re-import/remote sync.
+	cur.Origin = model.OriginUser
+	// Keep the id consistent with the makeEntryID invariant that import/dedup
+	// relies on (source/category/subCategory may have changed).
+	cur.ID = makeEntryID(cur)
+
+	prev := append([]model.GlossaryEntry(nil), s.entries...)
+	// If the recomputed id now equals a DIFFERENT existing entry, the edit made
+	// this row identical (by source/category/subCategory) to another one. Per
+	// makeEntryID those are "the same entry", so the edited row wins and the other
+	// is dropped — mirroring AddEntry's same-id replacement — to keep ids unique
+	// (frontend :key, and update/delete-by-id unambiguous). Ids are unique in the
+	// store, so at most one such collision exists.
+	if cur.ID != id {
+		for j := range s.entries {
+			if j != idx && s.entries[j].ID == cur.ID {
+				s.entries = append(s.entries[:j], s.entries[j+1:]...)
+				if j < idx {
+					idx--
+				}
+				break
+			}
+		}
+	}
+	s.entries[idx] = cur
+	if err := s.persist(); err != nil {
+		s.entries = prev // keep memory in sync with the unchanged disk file
+		return model.GlossaryEntry{}, false, err
+	}
+	return cur, true, nil
 }
 
 // DeleteEntry removes an entry by id.
@@ -352,8 +424,13 @@ func (s *GlossaryStore) DeleteEntry(id string) (bool, error) {
 	defer s.mu.Unlock()
 	for i := range s.entries {
 		if s.entries[i].ID == id {
+			prev := append([]model.GlossaryEntry(nil), s.entries...)
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
-			return true, s.persist()
+			if err := s.persist(); err != nil {
+				s.entries = prev // keep memory in sync with the unchanged disk file
+				return false, err
+			}
+			return true, nil
 		}
 	}
 	return false, nil
@@ -390,6 +467,14 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Snapshots for rollback if the persist below fails, so memory stays in sync
+	// with the unchanged disk file. entries is mutated in place (prune/replace),
+	// so it needs an element copy; appellations/grammar are only ever replaced
+	// wholesale, so a header snapshot restores them.
+	prevEntries := append([]model.GlossaryEntry(nil), s.entries...)
+	prevAppel := s.appellations
+	prevGrammar := s.grammar
 
 	incoming := make(map[string]bool, len(imported))
 	for i := range imported {
@@ -439,7 +524,13 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 		}
 		s.grammar = grammar
 	}
-	return pruned, s.persist()
+	if err := s.persist(); err != nil {
+		s.entries = prevEntries
+		s.appellations = prevAppel
+		s.grammar = prevGrammar
+		return 0, err
+	}
+	return pruned, nil
 }
 
 // --- appellations (人称表 lookup) ---
@@ -490,15 +581,24 @@ func (s *GlossaryStore) AppellationLookup(speaker, target string) (model.Appella
 func (s *GlossaryStore) UpsertAppellation(a model.Appellation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prev := append([]model.Appellation(nil), s.appellations...)
 	for i := range s.appellations {
 		if s.appellations[i].Speaker == a.Speaker && s.appellations[i].Target == a.Target {
 			s.appellations[i].JP = a.JP
 			s.appellations[i].CN = a.CN
-			return s.persist()
+			if err := s.persist(); err != nil {
+				s.appellations = prev // keep memory in sync with the unchanged disk file
+				return err
+			}
+			return nil
 		}
 	}
 	s.appellations = append(s.appellations, a)
-	return s.persist()
+	if err := s.persist(); err != nil {
+		s.appellations = prev // keep memory in sync with the unchanged disk file
+		return err
+	}
+	return nil
 }
 
 // --- grammar (语法用例) ---
@@ -544,8 +644,14 @@ func (s *GlossaryStore) SearchGrammar(q string, limit int) []model.GrammarUsage 
 }
 
 // Export returns the full in-memory payload (for download / backup / sync seed).
+// It hands back defensive copies because the handler encodes the result outside
+// the lock, where a live slice would race the store's in-place writes.
 func (s *GlossaryStore) Export() model.GlossaryData {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return model.GlossaryData{Entries: s.entries, Appellations: s.appellations, Grammar: s.grammar}
+	return model.GlossaryData{
+		Entries:      cloneEntries(s.entries),
+		Appellations: append([]model.Appellation(nil), s.appellations...),
+		Grammar:      append([]model.GrammarUsage(nil), s.grammar...),
+	}
 }

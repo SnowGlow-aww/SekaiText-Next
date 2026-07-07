@@ -33,8 +33,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
     if (!res.ok) {
       let body: any = null
-      try { body = await res.json() } catch { body = await res.text().catch(() => null) }
-      const errMsg = body?.error || res.statusText
+      // Read the body exactly once as text, then try to parse it as JSON. The
+      // stream can only be consumed one time, so a res.json()→res.text() fallback
+      // would always reject ("body stream already read"). Non-JSON error bodies
+      // (plain text / HTML) fall through as the raw string.
+      const raw = await res.text().catch(() => '')
+      try { body = raw ? JSON.parse(raw) : null } catch { body = raw }
+      const errMsg = (typeof body === 'string' ? body : body?.error) || res.statusText
       const err = new ApiError(res.status, `${method} ${path} → ${res.status}: ${errMsg}`)
       console.error(`[API] ${method} ${path} → ${res.status} (${elapsed}ms)`, { error: errMsg, body })
       throw err

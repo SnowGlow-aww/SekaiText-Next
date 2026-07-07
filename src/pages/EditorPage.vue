@@ -107,8 +107,10 @@ function onKeyDown(e: KeyboardEvent) {
     if (app.searchOpen && !inEditable) { e.preventDefault(); searchNext() }
     return
   }
-  if (hit('undo')) { e.preventDefault(); doUndo(); return }
-  if (hit('redo')) { e.preventDefault(); doRedo(); return }
+  // In INPUT/TEXTAREA (译文标题/搜索框) let the browser do native undo/redo
+  // instead of hijacking the shortcut to roll back the whole document.
+  if (hit('undo') && !inEditable) { e.preventDefault(); doUndo(); return }
+  if (hit('redo') && !inEditable) { e.preventDefault(); doRedo(); return }
 }
 
 // The global keydown/resize listeners and the 30s autosave interval are bound
@@ -208,8 +210,14 @@ watch(() => app.searchOpen, (open) => {
 })
 
 function setMode(key: number) {
+  const changed = key !== editor.currentMode
   editor.switchMode(key as 0 | 1 | 2)
   app.setEditorMode(key as 0 | 1 | 2)
+  // The undo/redo stacks are a module-level singleton shared across all modes,
+  // but switchMode swaps the live talks for a different mode's content. Replaying
+  // an old mode's snapshot would overwrite the current mode's text, so clear the
+  // history whenever the mode actually changes (switchMode no-ops on same mode).
+  if (changed) undo.clear()
   // 校对/合意 default to compare-on (baseline rows visible); 翻译 has no compare.
   app.showCompare = key >= 1
   // Entering 合意: remind the workflow (translation first, then proofread draft).

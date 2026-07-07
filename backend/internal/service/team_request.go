@@ -6,7 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
+
+// teamRefreshMu serializes token refreshes. The server rotates refresh tokens
+// (each refresh invalidates the previous one), so concurrent 401s must not each
+// POST the same soon-stale refresh token: the loser's stale-token rejection
+// would clear the very session the winner just renewed. Package-level because
+// there is a single TeamService; if there were ever more, sharing this only
+// over-serializes their refreshes, it never corrupts state.
+var teamRefreshMu sync.Mutex
 
 // do performs an authenticated request to the remote server, transparently
 // refreshing the access token once on 401. Returns the raw body and status.
@@ -14,7 +23,9 @@ func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) 
 	if !t.LoggedIn() {
 		return nil, 0, ErrNotLoggedIn
 	}
-	send := func() (*http.Response, error) {
+	// send issues the request and reports which access token it used, so the
+	// 401 path can tell whether a concurrent goroutine already rotated it.
+	send := func() (*http.Response, string, error) {
 		t.mu.RLock()
 		url, access := t.serverURL+path, t.access
 		t.mu.RUnlock()
@@ -25,25 +36,38 @@ func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) 
 		}
 		req, err := http.NewRequest(method, url, rdr)
 		if err != nil {
-			return nil, err
+			return nil, access, err
 		}
 		if payload != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Authorization", "Bearer "+access)
-		return t.client.Do(req)
+		resp, err := t.client.Do(req)
+		return resp, access, err
 	}
 
-	resp, err := send()
+	resp, usedAccess, err := send()
 	if err != nil {
 		return nil, 0, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
-		if err := t.doRefresh(); err != nil {
-			return nil, http.StatusUnauthorized, ErrNotLoggedIn
+		// Serialize the refresh so rotating refresh tokens can't race (see
+		// teamRefreshMu). Once we hold the lock, re-check whether another
+		// goroutine already refreshed the access token we used; if so, skip
+		// straight to the retry rather than POSTing our now-stale token.
+		teamRefreshMu.Lock()
+		t.mu.RLock()
+		alreadyRefreshed := t.access != usedAccess
+		t.mu.RUnlock()
+		if !alreadyRefreshed {
+			if err := t.doRefresh(); err != nil {
+				teamRefreshMu.Unlock()
+				return nil, http.StatusUnauthorized, ErrNotLoggedIn
+			}
 		}
-		resp, err = send()
+		teamRefreshMu.Unlock()
+		resp, _, err = send()
 		if err != nil {
 			return nil, 0, err
 		}

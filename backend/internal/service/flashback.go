@@ -75,11 +75,7 @@ func (fb *FlashbackAnalyzer) ResolveVoiceSourceURL(voiceID, source string) (url,
 	if !found {
 		return "", "", "", false
 	}
-	if chOff, ok := ev.InferredVoiceIDs["choffset"]; ok {
-		if v, ok := chOff.(float64); ok {
-			ep += int(v)
-		}
-	}
+	ep += choffsetValue(ev.InferredVoiceIDs)
 	if ep < 1 || ep > len(ev.Chapters) {
 		return "", "", "", false
 	}
@@ -113,6 +109,24 @@ func (fb *FlashbackAnalyzer) updateClues() {
 	// an empty map and every event flashback renders "未知活动".
 	fb.lm.InferVoiceEventID()
 	fb.clueDict = fb.lm.BuildVoiceIDClues()
+}
+
+// choffsetValue reads the "choffset" chapter offset out of an event's
+// InferredVoiceIDs map. InferVoiceEventID stores it as a native Go int (event 9
+// / shuffle_03 uses 1), but the same map may arrive as float64/int64 if it was
+// ever round-tripped through JSON. Accept every numeric shape so the offset is
+// actually applied — a plain chOff.(float64) assertion silently fails on the
+// int that lives in memory at runtime.
+func choffsetValue(m map[string]interface{}) int {
+	switch x := m["choffset"].(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	}
+	return 0
 }
 
 // GetClueFromVoiceID analyzes a voice ID string and returns a clue.
@@ -194,12 +208,7 @@ func (fb *FlashbackAnalyzer) getEventHints(words []string) []string {
 		return hints
 	}
 
-	chOffset := 0
-	if chOff, ok := eventInfo.InferredVoiceIDs["choffset"]; ok {
-		if v, ok := chOff.(float64); ok {
-			chOffset = int(v)
-		}
-	}
+	chOffset := choffsetValue(eventInfo.InferredVoiceIDs)
 
 	if ep >= 0 {
 		ep += chOffset
@@ -264,8 +273,12 @@ func (fb *FlashbackAnalyzer) getMainStoryHints(words []string, first string) []s
 					hints = append(hints, "未知章节")
 				}
 			} else {
-				if ep >= 0 && ep < len(ms.Chapters) {
-					hints = append(hints, ms.Chapters[ep].Title)
+				// ep is 1-based here (same as the "话" label and the unit
+				// branch's ms.Chapters[ep-1]); index with ep-1 so non-unit
+				// main-story flashbacks don't take the next chapter's title and
+				// the final episode (ep==len) resolves instead of "未知章节".
+				if ep >= 1 && ep <= len(ms.Chapters) {
+					hints = append(hints, ms.Chapters[ep-1].Title)
 				} else {
 					hints = append(hints, "未知章节")
 				}

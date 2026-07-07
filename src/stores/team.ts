@@ -47,7 +47,15 @@ export const useTeamStore = defineStore('team', () => {
       user.value = r.user
       serverUrl.value = url
       connected.value = true
-      await sync(true)
+      // Login already succeeded (the backend holds the token); a failed first
+      // sync (remote glossary-server briefly unreachable/timing out) must not
+      // surface as a failed login. Record the sync error but still start
+      // polling so it retries automatically, and return successfully.
+      try {
+        await sync(true)
+      } catch {
+        // syncError is already set by sync(); polling will retry.
+      }
       startPolling()
       return r.user
     } finally {
@@ -63,7 +71,14 @@ export const useTeamStore = defineStore('team', () => {
       serverUrl.value = url
       connected.value = true
       user.value = null
-      await sync(true)
+      // Connect already succeeded; a failed first sync must not surface as a
+      // failed connect. Record the sync error but still start polling so it
+      // retries automatically.
+      try {
+        await sync(true)
+      } catch {
+        // syncError is already set by sync(); polling will retry.
+      }
       startPolling()
     } finally {
       loading.value = false

@@ -11,6 +11,7 @@ package api
 // local-first lookup reads exactly what we wrote.
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -187,7 +188,17 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 		if e.ModelPath == "" || seen[e.ModelPath] {
 			continue
 		}
+		// modelPath comes from the upstream model_list.json and is later joined with
+		// root for the on-disk completeness ReadDir (and to derive write paths). A
+		// ".." / absolute segment would let filepath.Join escape the mirror and
+		// ReadDir an arbitrary directory. Writes are already blocked by
+		// live2dLocalPath; reject the traversal here so the diff-stage reads stay
+		// in-root too. Mark it seen so a repeat doesn't re-log.
 		seen[e.ModelPath] = true
+		if !live2dSafeModelPath(e.ModelPath) {
+			log.Printf("[live2d-sync] skip unsafe modelPath %q", e.ModelPath)
+			continue
+		}
 		unique = append(unique, modelRef{e.ModelPath, e.ModelBase, e.ModelFile})
 	}
 
@@ -222,6 +233,20 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 		go func(m modelRef) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Advance progress in a defer so a panicked model still counts: it runs
+			// during the panic unwind (and after the recover below), whereas the old
+			// inline increment was skipped on panic — leaving Current<Total while the
+			// task was still forced to "done". A model that didn't complete (error,
+			// incomplete on disk, or panic) counts as Failed.
+			completed := false
+			defer func() {
+				task.Mu.Lock()
+				task.Current++
+				if !completed {
+					task.Failed++
+				}
+				task.Mu.Unlock()
+			}()
 			// Per-model panic guard so one bad model can't take down its worker.
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -244,13 +269,7 @@ func (h *Handler) runLive2DSync(task *model.Live2DSyncProgress, concurrency int)
 			} else if !ok {
 				log.Printf("[live2d-sync] model %s incomplete after download (asset missing upstream)", m.modelPath)
 			}
-
-			task.Mu.Lock()
-			task.Current++
-			if !ok {
-				task.Failed++
-			}
-			task.Mu.Unlock()
+			completed = ok
 		}(m)
 	}
 	wg.Wait()
@@ -281,8 +300,11 @@ func (h *Handler) live2dSyncModel(task *model.Live2DSyncProgress, modelPath, mod
 	bodyDir := live2dExmeaning + "/live2d/model/" + modelPath + "/"
 
 	// --- body: buildmodeldata.json (mirrored; its Moc3FileName is a fallback) ---
+	// live2dFetchAndMirror prefers the on-disk copy, so an already-mirrored model
+	// (even one left incomplete by an upstream-deleted texture) doesn't re-fetch and
+	// re-count this JSON on every manual sync.
 	bmdURL := bodyDir + "buildmodeldata.json"
-	bmdBody, err := h.live2dFetch(bmdURL)
+	bmdBody, err := h.live2dFetchAndMirror(task, root, bmdURL)
 	if err != nil {
 		return fmt.Errorf("buildmodeldata: %w", err)
 	}
@@ -309,22 +331,16 @@ func (h *Handler) live2dSyncModel(task *model.Live2DSyncProgress, modelPath, mod
 	if baseName == "" {
 		return fmt.Errorf("cannot determine model3 base name")
 	}
-	if err := h.live2dStore(task, root, bmdURL, bmdBody); err != nil {
-		return fmt.Errorf("write buildmodeldata: %w", err)
-	}
 
 	// --- body: {baseName}.model3 (no .json ext) -> FileReferences ---
 	model3URL := bodyDir + baseName + ".model3"
-	model3Body, err := h.live2dFetch(model3URL)
+	model3Body, err := h.live2dFetchAndMirror(task, root, model3URL)
 	if err != nil {
 		return fmt.Errorf("model3: %w", err)
 	}
 	var m3 live2dModel3
 	if err := json.Unmarshal(model3Body, &m3); err != nil {
 		return fmt.Errorf("parse model3: %w", err)
-	}
-	if err := h.live2dStore(task, root, model3URL, model3Body); err != nil {
-		return fmt.Errorf("write model3: %w", err)
 	}
 
 	// --- body: moc3 / textures / physics ---
@@ -383,12 +399,14 @@ func (h *Handler) live2dSyncMotion(task *model.Live2DSyncProgress, root, modelPa
 	var motionBase string
 	for base != "" {
 		url := live2dSekaiBest + "/live2d/motion/" + motionDir + "/" + base + "_motion_base/BuildMotionData.json"
-		if body, err := h.live2dFetch(url); err == nil {
+		// Multiple costume models of one character collapse to the same
+		// {motionBase}_motion_base dir, so its BuildMotionData.json is shared.
+		// live2dFetchAndMirror prefers the on-disk copy and single-flights the
+		// fetch+write+count per destination, so it's fetched/counted once instead of
+		// once per model (and concurrent siblings don't double-count it).
+		if body, err := h.live2dFetchAndMirror(task, root, url); err == nil {
 			motionListBody = body
 			motionBase = base
-			if serr := h.live2dStore(task, root, url, body); serr != nil {
-				log.Printf("[live2d-sync] %s: write BuildMotionData: %v", modelPath, serr)
-			}
 			break
 		}
 		segs := strings.Split(base, "_")
@@ -446,14 +464,38 @@ func (h *Handler) live2dFetch(url string) ([]byte, error) {
 	return nil, err
 }
 
-// live2dFetchOnce GETs a single allowed URL through the shared downloader (which
-// skips the macOS TLS verifier quirk) and returns its body (200 only). The host is
-// restricted to the known Live2D asset CDNs (anti-SSRF), reusing live2dAllowedHosts.
+// live2dSyncHTTP is the HTTP client the sync uses for CDN fetches. It mirrors the
+// shared downloader's TLS posture (some asset CDNs serve certs Go's macOS verifier
+// wrongly rejects — see service.NewDownloader) but ADDS a redirect guard: the host
+// allowlist in live2dFetchOnce only vets the INITIAL URL, so without re-checking each
+// hop a compromised/misconfigured CDN could 3xx the fetch to an internal address
+// (169.254.169.254, 127.0.0.1, …) — a classic SSRF. Every redirect target's host is
+// re-run through live2dHostAllowed.
+var live2dSyncHTTP = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if !live2dHostAllowed(req.URL.String()) {
+			return fmt.Errorf("redirect to disallowed host: %s", req.URL.String())
+		}
+		return nil
+	},
+}
+
+// live2dFetchOnce GETs a single allowed URL through a redirect-guarded client (which
+// also skips the macOS TLS verifier quirk) and returns its body (200 only). The host
+// is restricted to the known Live2D asset CDNs (anti-SSRF), reusing live2dAllowedHosts,
+// and live2dSyncHTTP re-checks that guard on every redirect hop.
 func (h *Handler) live2dFetchOnce(url string) ([]byte, error) {
 	if !live2dHostAllowed(url) {
 		return nil, fmt.Errorf("url host not allowed: %s", url)
 	}
-	resp, err := h.dl.Get(url)
+	resp, err := live2dSyncHTTP.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -480,10 +522,24 @@ func live2dSekaiFallback(url string) string {
 // this makes the sync idempotent/resumable — a retry after an interruption doesn't
 // re-fetch everything. (The model_list.json refresh is a separate write and still runs.)
 func (h *Handler) live2dDownload(task *model.Live2DSyncProgress, root, url string) error {
-	if dst := live2dLocalPath(root, url); dst != "" {
-		if info, err := os.Stat(dst); err == nil && info.Size() > 0 {
-			return nil
+	dst := live2dLocalPath(root, url)
+	if dst == "" {
+		// Not mirrorable — fetch anyway so live2dStore surfaces the same error as before.
+		body, err := h.live2dFetch(url)
+		if err != nil {
+			return err
 		}
+		return h.live2dStore(task, root, url, body)
+	}
+	// Single-flight per destination. Shared motion dirs (sibling costume models) mean
+	// several concurrent workers can resolve to the same clip; without this they each
+	// Stat "missing", re-fetch the same file and double-count Files/Bytes (a TOCTOU
+	// between the Stat and the write). Only same-path workers serialize here, so this
+	// can't stall unrelated downloads.
+	unlock := live2dLockPath(dst)
+	defer unlock()
+	if info, err := os.Stat(dst); err == nil && info.Size() > 0 {
+		return nil
 	}
 	body, err := h.live2dFetch(url)
 	if err != nil {
@@ -507,6 +563,59 @@ func (h *Handler) live2dStore(task *model.Live2DSyncProgress, root, url string, 
 	task.Bytes += int64(len(body))
 	task.Mu.Unlock()
 	return nil
+}
+
+// live2dPathMu holds one mutex per local mirror path, so the "check-exists →
+// fetch → write → count" sequence can be single-flighted per destination without a
+// coarse global lock. Sibling costume models share motion/BuildMotionData files, and
+// the diff can hand several to concurrent workers at once.
+var live2dPathMu sync.Map // dst string -> *sync.Mutex
+
+// live2dLockPath locks the mutex guarding dst and returns its unlock func. Distinct
+// destinations never block each other; only workers racing on the SAME file
+// serialize (which is exactly the duplicate we want to collapse).
+func live2dLockPath(dst string) func() {
+	mi, _ := live2dPathMu.LoadOrStore(dst, &sync.Mutex{})
+	mu := mi.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// live2dFetchAndMirror returns url's body for parsing while mirroring it to the local
+// store at most once. It prefers the on-disk copy (so an already-mirrored — even
+// incomplete — model isn't re-fetched and re-counted every manual sync) and, on a
+// miss, single-flights the fetch+write+count across concurrent workers sharing the
+// destination. A write error is non-fatal: the body is still returned (the caller
+// needs it to parse), and the model's on-disk completeness re-check is the real
+// arbiter of success. Returns an error only when neither disk nor network had the body.
+func (h *Handler) live2dFetchAndMirror(task *model.Live2DSyncProgress, root, url string) ([]byte, error) {
+	dst := live2dLocalPath(root, url)
+	if dst == "" {
+		return h.live2dFetch(url)
+	}
+	unlock := live2dLockPath(dst)
+	defer unlock()
+	if data, err := os.ReadFile(dst); err == nil && len(data) > 0 {
+		return data, nil
+	}
+	body, err := h.live2dFetch(url)
+	if err != nil {
+		return nil, err
+	}
+	if serr := h.live2dStore(task, root, url, body); serr != nil {
+		log.Printf("[live2d-sync] mirror %s: %v", url, serr)
+	}
+	return body, nil
+}
+
+// live2dSafeModelPath rejects a CDN-sourced modelPath that could escape the local
+// mirror when joined with root (path traversal / absolute path). It mirrors the ".."
+// guard live2dLocalPath applies to writes so the diff-stage ReadDir stays in-root.
+func live2dSafeModelPath(p string) bool {
+	if p == "" || strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
+		return false
+	}
+	return !filepath.IsAbs(filepath.FromSlash(p))
 }
 
 // live2dWriteFile creates the parent dir and writes the file.

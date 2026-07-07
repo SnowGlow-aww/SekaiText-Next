@@ -33,12 +33,23 @@ export const usePluginsStore = defineStore('plugins', () => {
     try {
       await api.pluginSetEnabled(id, enabled)
       const p = list.value.find((x) => x.id === id)
-      if (enabled) {
-        if (p) await loadPlugin(id, pluginEntryUrl(p), host)
-      } else {
-        await unloadPlugin(id, host.router, host.pinia)
-      }
+      // The backend has now persisted `enabled`; reflect it in the UI up front so
+      // the toggle can't diverge from persisted state if the live load/unload
+      // below fails.
       if (p) p.enabled = enabled
+      try {
+        if (enabled) {
+          if (p) await loadPlugin(id, pluginEntryUrl(p), host)
+        } else {
+          await unloadPlugin(id, host.router, host.pinia)
+        }
+      } catch (e) {
+        // Live apply failed after the backend already persisted `enabled`.
+        // Re-pull the authoritative list so the UI matches the backend instead
+        // of drifting, then surface the original error.
+        await refresh()
+        throw e
+      }
     } finally {
       busyId.value = null
     }

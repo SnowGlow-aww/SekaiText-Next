@@ -40,17 +40,21 @@ export const useGlossaryStore = defineStore('glossary', () => {
   async function addEntry(entry: Partial<GlossaryEntry>) {
     const saved = await api.glossaryAddEntry(entry)
     await fetchCategories()
+    await loadAllEntries(true) // refresh editor matcher cache
     return saved
   }
 
   async function updateEntry(id: string, entry: Partial<GlossaryEntry>) {
-    return api.glossaryUpdateEntry(id, entry)
+    const saved = await api.glossaryUpdateEntry(id, entry)
+    await loadAllEntries(true) // refresh editor matcher cache
+    return saved
   }
 
   async function deleteEntry(id: string) {
     await api.glossaryDeleteEntry(id)
     results.value = results.value.filter((e) => e.id !== id)
     await fetchCategories()
+    await loadAllEntries(true) // refresh editor matcher cache
   }
 
   async function importExcel(srcPath: string) {
@@ -91,12 +95,17 @@ export const useGlossaryStore = defineStore('glossary', () => {
   // grammar (语法用例)
   const grammar = ref<GrammarUsage[]>([])
   const grammarLoading = ref(false)
+  // Same out-of-order guard as `search`: the grammar page debounces but can still
+  // fire overlapping requests, so only the latest one is allowed to write state.
+  let grammarSeq = 0
   async function searchGrammar(q = '', limit = 0) {
+    const seq = ++grammarSeq
     grammarLoading.value = true
     try {
-      grammar.value = await api.glossaryGrammar(q, limit)
+      const r = await api.glossaryGrammar(q, limit)
+      if (seq === grammarSeq) grammar.value = r
     } finally {
-      grammarLoading.value = false
+      if (seq === grammarSeq) grammarLoading.value = false
     }
   }
 

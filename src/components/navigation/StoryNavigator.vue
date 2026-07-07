@@ -1,3 +1,12 @@
+<script lang="ts">
+// App-lifetime guard (module scope): auto-pull metadata once per app launch.
+// Declared in a plain <script> block so it lives at module scope and is shared
+// across every component instance. If it were in <script setup>, Vue would run
+// that body inside each instance's setup(), re-initializing it to false on every
+// mount and defeating the "once per app launch" intent.
+let autoPulledOnce = false
+</script>
+
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { RefreshCw, Download, FolderOpen } from 'lucide-vue-next'
@@ -15,9 +24,6 @@ const sourceOptions = [
   { value: 'moesekai-jp', label: 'Moesekai (JP)' },
   { value: 'moesekai-cn', label: 'Moesekai (CN)' },
 ]
-
-// App-lifetime guard: auto-pull metadata once on first mount only.
-let autoPulledOnce = false
 
 // Only the editor opts into auto-pulling catalog metadata on mount. The Live2D
 // player reuses this navigator but doesn't need a fresh catalog pull, so it

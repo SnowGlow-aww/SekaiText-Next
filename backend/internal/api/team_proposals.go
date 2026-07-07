@@ -21,7 +21,7 @@ func (h *Handler) TeamMyProposals(w http.ResponseWriter, r *http.Request) {
 
 // TeamWithdrawProposal withdraws the caller's pending proposal.
 func (h *Handler) TeamWithdrawProposal(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodDelete, "/api/proposals/"+cleanID(chi.URLParam(r, "id")), nil)
+	h.teamProxy(w, http.MethodDelete, "/api/proposals/"+url.PathEscape(cleanID(chi.URLParam(r, "id"))), nil)
 }
 
 // TeamPendingProposals lists pending proposals the caller may review.
@@ -37,12 +37,12 @@ func (h *Handler) TeamPendingProposals(w http.ResponseWriter, r *http.Request) {
 
 // TeamApproveProposal approves a proposal (1-of-N).
 func (h *Handler) TeamApproveProposal(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodPost, "/api/proposals/"+cleanID(chi.URLParam(r, "id"))+"/approve", decodeBody(r))
+	h.teamProxy(w, http.MethodPost, "/api/proposals/"+url.PathEscape(cleanID(chi.URLParam(r, "id")))+"/approve", decodeBody(r))
 }
 
 // TeamRejectProposal rejects a proposal with a note.
 func (h *Handler) TeamRejectProposal(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodPost, "/api/proposals/"+cleanID(chi.URLParam(r, "id"))+"/reject", decodeBody(r))
+	h.teamProxy(w, http.MethodPost, "/api/proposals/"+url.PathEscape(cleanID(chi.URLParam(r, "id")))+"/reject", decodeBody(r))
 }
 
 // --- Admin (proxied; remote enforces superadmin) ---
@@ -79,19 +79,19 @@ func (h *Handler) TeamUserList(w http.ResponseWriter, r *http.Request) {
 // --- Admin user management (remote enforces superadmin) ---
 
 func (h *Handler) TeamSetUserRole(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+cleanID(chi.URLParam(r, "id"))+"/role", decodeBody(r))
+	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+url.PathEscape(cleanID(chi.URLParam(r, "id")))+"/role", decodeBody(r))
 }
 
 func (h *Handler) TeamSetUserStatus(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+cleanID(chi.URLParam(r, "id"))+"/status", decodeBody(r))
+	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+url.PathEscape(cleanID(chi.URLParam(r, "id")))+"/status", decodeBody(r))
 }
 
 func (h *Handler) TeamResetUserPassword(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+cleanID(chi.URLParam(r, "id"))+"/reset-password", decodeBody(r))
+	h.teamProxy(w, http.MethodPost, "/api/admin/users/"+url.PathEscape(cleanID(chi.URLParam(r, "id")))+"/reset-password", decodeBody(r))
 }
 
 func (h *Handler) TeamDeleteUser(w http.ResponseWriter, r *http.Request) {
-	h.teamProxy(w, http.MethodDelete, "/api/admin/users/"+cleanID(chi.URLParam(r, "id")), nil)
+	h.teamProxy(w, http.MethodDelete, "/api/admin/users/"+url.PathEscape(cleanID(chi.URLParam(r, "id"))), nil)
 }
 
 // --- Admin glossary bulk import (remote enforces superadmin) ---

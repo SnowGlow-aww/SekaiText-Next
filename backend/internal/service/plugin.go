@@ -50,17 +50,28 @@ func (s *PluginStore) statePath() string {
 	return filepath.Join(s.dir, "state.json")
 }
 
-// pluginState maps plugin id -> enabled. Absent id defaults to enabled.
-func (s *PluginStore) loadState() map[string]bool {
+// pluginState maps plugin id -> enabled. A missing file means "no overrides"
+// (every plugin defaults to enabled); any other read/parse error is surfaced so
+// callers don't silently treat a corrupt state.json as "all enabled". Callers
+// must hold s.mu.
+func (s *PluginStore) loadState() (map[string]bool, error) {
 	state := map[string]bool{}
 	data, err := os.ReadFile(s.statePath())
 	if err != nil {
-		return state
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return nil, err
 	}
-	_ = json.Unmarshal(data, &state)
-	return state
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
+// saveState atomically replaces state.json: it writes a temp file in the same
+// dir then renames it into place, so a concurrent reader never observes a
+// truncated/half-written file. Callers must hold s.mu.
 func (s *PluginStore) saveState(state map[string]bool) error {
 	if err := os.MkdirAll(s.dir, 0755); err != nil {
 		return err
@@ -69,7 +80,29 @@ func (s *PluginStore) saveState(state map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.statePath(), data, 0644)
+	tmp, err := os.CreateTemp(s.dir, "state-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, s.statePath()); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // readManifest loads and validates a plugin's manifest.json.
@@ -91,6 +124,8 @@ func (s *PluginStore) readManifest(id string) (PluginManifest, error) {
 // List returns all installed plugins (dirs with a valid manifest.json), sorted
 // by id, with enabled state resolved.
 func (s *PluginStore) List() ([]PluginInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -98,20 +133,29 @@ func (s *PluginStore) List() ([]PluginInfo, error) {
 		}
 		return nil, err
 	}
-	state := s.loadState()
+	state, err := s.loadState()
+	if err != nil {
+		return nil, err
+	}
 	out := []PluginInfo{}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		id := e.Name()
+		if !validPluginID(id) {
+			continue // skip scratch dirs (e.g. a crashed install's ".install-*") and non-plugin entries
+		}
 		m, err := s.readManifest(id)
 		if err != nil {
 			continue // not a valid plugin dir
 		}
-		if m.ID == "" {
-			m.ID = id
-		}
+		// The directory name is the authoritative id: Install always creates
+		// {dir}/{manifest.id}, and enable-state is keyed by it. Pin the reported
+		// id to the dir name so a manifest whose id disagrees (e.g. via a
+		// malformed package) can't desync SetEnabled/Uninstall — which operate on
+		// this id — from what List reads.
+		m.ID = id
 		enabled := true
 		if v, ok := state[id]; ok {
 			enabled = v
@@ -132,7 +176,10 @@ func (s *PluginStore) SetEnabled(id string, enabled bool) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state := s.loadState()
+	state, err := s.loadState()
+	if err != nil {
+		return err
+	}
 	state[id] = enabled
 	return s.saveState(state)
 }
@@ -147,11 +194,16 @@ func (s *PluginStore) Uninstall(id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Load (and validate) state before removing anything so a corrupt state.json
+	// aborts without having already deleted the plugin dir.
+	state, err := s.loadState()
+	if err != nil {
+		return err
+	}
 	target := filepath.Join(s.dir, id)
 	if err := os.RemoveAll(target); err != nil {
 		return err
 	}
-	state := s.loadState()
 	delete(state, id)
 	return s.saveState(state)
 }
@@ -194,6 +246,12 @@ func (s *PluginStore) Install(archivePath, hostVersion, expectID string) (Plugin
 	}
 	defer zr.Close()
 
+	// Hold the lock for the whole install so it can't interleave with a
+	// concurrent Uninstall/Install of the same id (which would race RemoveAll
+	// against the extraction) or with List observing a half-swapped dir.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	m, err := manifestFromZip(zr)
 	if err != nil {
 		return zero, err
@@ -217,14 +275,32 @@ func (s *PluginStore) Install(archivePath, hostVersion, expectID string) (Plugin
 		return zero, errors.New("entry file not found in package: " + m.Entry)
 	}
 
+	// Extract into a temp dir first, then swap it into place only after a fully
+	// successful extraction. A failure mid-extraction (disk full, permission, a
+	// bad/duplicate entry) thus leaves any existing install untouched instead of
+	// deleting it and writing a half-finished replacement.
+	if err := os.MkdirAll(s.dir, 0755); err != nil {
+		return zero, err
+	}
+	tmpDir, err := os.MkdirTemp(s.dir, ".install-*")
+	if err != nil {
+		return zero, err
+	}
+	// Cleans up the temp dir on every failure path; a no-op once it has been
+	// renamed into place on success.
+	defer os.RemoveAll(tmpDir)
+	if err := os.Chmod(tmpDir, 0755); err != nil {
+		return zero, err
+	}
+	if err := extractZip(zr, tmpDir); err != nil {
+		return zero, err
+	}
+
 	dst := filepath.Join(s.dir, m.ID)
 	if err := os.RemoveAll(dst); err != nil {
 		return zero, err
 	}
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return zero, err
-	}
-	if err := extractZip(zr, dst); err != nil {
+	if err := os.Rename(tmpDir, dst); err != nil {
 		return zero, err
 	}
 	return m, nil
@@ -279,18 +355,28 @@ func zipHasFile(zr *zip.ReadCloser, name string) bool {
 func extractZip(zr *zip.ReadCloser, dst string) error {
 	dstClean := filepath.Clean(dst)
 	// Guard against zip-bombs: cap entry count and total uncompressed bytes (the
-	// per-entry LimitReader below already caps any single file at 64 MiB).
+	// per-entry limit below already caps any single file at 64 MiB).
 	const maxEntries = 4000
 	const maxTotalSize = 256 << 20
+	const maxFileSize = 64 << 20
 	if len(zr.File) > maxEntries {
 		return errors.New("plugin package has too many entries")
 	}
+	// Reject packages with duplicate entries (same on-disk path). Zip allows
+	// duplicate names, and last-write-wins extraction would otherwise let a second
+	// entry overwrite what earlier validation already vetted — e.g. a second
+	// manifest.json that desyncs the validated manifest from what lands on disk.
+	seen := make(map[string]bool, len(zr.File))
 	var written int64
 	for _, f := range zr.File {
 		target := filepath.Join(dst, filepath.Clean("/"+f.Name))
 		if target != dstClean && !strings.HasPrefix(target, dstClean+string(filepath.Separator)) {
 			return errors.New("illegal path in package: " + f.Name)
 		}
+		if seen[target] {
+			return errors.New("duplicate entry in package: " + f.Name)
+		}
+		seen[target] = true
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0755); err != nil {
 				return err
@@ -309,11 +395,17 @@ func extractZip(zr *zip.ReadCloser, dst string) error {
 			rc.Close()
 			return err
 		}
-		n, err := io.Copy(out, io.LimitReader(rc, 64<<20))
+		// Read one byte past the cap so an oversized file is rejected outright
+		// rather than silently truncated to maxFileSize (which io.LimitReader
+		// alone would do, producing a corrupt resource with no error).
+		n, err := io.Copy(out, io.LimitReader(rc, maxFileSize+1))
 		out.Close()
 		rc.Close()
 		if err != nil {
 			return err
+		}
+		if n > maxFileSize {
+			return errors.New("plugin package file exceeds the per-file size limit: " + f.Name)
 		}
 		written += n
 		if written > maxTotalSize {
