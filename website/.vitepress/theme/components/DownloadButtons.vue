@@ -70,7 +70,9 @@ const buttons = computed(() => {
 <template>
   <div class="dl">
     <div class="dl-buttons">
-      <a v-for="b in buttons" :key="b.key" :href="b.href" class="dl-btn">
+      <!-- download 属性:①同域直接触发下载 ②VitePress 前端路由不拦截带 download 的链接
+           (官网和安装包同域,普通点击否则会被当成站内路由导航→404 页;Cmd+点击不经过路由所以正常) -->
+      <a v-for="b in buttons" :key="b.key" :href="b.href" class="dl-btn" download>
         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
           <polyline points="7 10 12 15 17 10" />
