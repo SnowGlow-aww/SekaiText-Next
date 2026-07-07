@@ -23,7 +23,7 @@ _✨ Project Sekai Story Translation Editor ✨_
 
 <p align="center">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6c5ce7?style=flat-square" />
-  <a href="https://sakimizuki.accr.cc/web-frontend/index.html"><img alt="Website" src="https://img.shields.io/badge/website-sakimizuki.accr.cc-39c5bb?style=flat-square" /></a>
+  <a href="https://sakimizuki.accr.cc/web/index.html"><img alt="Website" src="https://img.shields.io/badge/website-sakimizuki.accr.cc-39c5bb?style=flat-square" /></a>
 </p>
 
 <!-- prettier-ignore-end -->
