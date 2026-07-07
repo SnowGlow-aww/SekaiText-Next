@@ -33,7 +33,8 @@ jobs:
         run: npm ci
       - name: Build
         working-directory: website
-        run: npm run build
+        # 主站在 OSS 桶根(sakimizuki.accr.cc);GH Pages 仅作备份,挂在 /SekaiText-Next/ 下
+        run: SITE_BASE=/SekaiText-Next/ npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
