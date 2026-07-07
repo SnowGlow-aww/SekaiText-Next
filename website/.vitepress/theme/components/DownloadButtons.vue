@@ -57,13 +57,7 @@ const buttons = computed(() => {
 <template>
   <div class="dl">
     <div class="dl-buttons">
-      <a
-        v-for="(b, i) in buttons"
-        :key="b.key"
-        :href="b.href"
-        class="dl-btn"
-        :class="i === 0 ? 'is-primary' : 'is-secondary'"
-      >
+      <a v-for="b in buttons" :key="b.key" :href="b.href" class="dl-btn">
         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
           <polyline points="7 10 12 15 17 10" />
@@ -98,34 +92,24 @@ const buttons = computed(() => {
   justify-content: center;
   gap: 14px;
 }
+/* 两个平台平权：同款渐变、同宽，识别系统只决定排序 */
 .dl-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 12px;
+  min-width: 250px;
   padding: 12px 26px;
   border-radius: 14px;
   text-decoration: none;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-  border: 1px solid transparent;
-}
-.dl-btn:hover {
-  transform: translateY(-2px);
-}
-.dl-btn.is-primary {
   background: var(--st-gradient);
   color: #fff;
   box-shadow: 0 8px 24px rgba(57, 197, 187, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
-.dl-btn.is-primary:hover {
+.dl-btn:hover {
+  transform: translateY(-2px);
   box-shadow: 0 12px 32px rgba(255, 105, 180, 0.35);
-}
-.dl-btn.is-secondary {
-  background: var(--vp-c-bg-soft);
-  border-color: var(--vp-c-divider);
-  color: var(--vp-c-text-1);
-}
-.dl-btn.is-secondary:hover {
-  border-color: var(--st-teal);
 }
 .dl-icon {
   width: 22px;
