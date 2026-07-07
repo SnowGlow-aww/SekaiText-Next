@@ -1,0 +1,14 @@
+{
+  // 挡住 Vite 向上探测到仓库根的 tsconfig（其 extends 的 @vue/tsconfig 在 CI 里不存在）
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "strict": true,
+    "noEmit": true,
+    "types": ["vitepress/client"]
+  },
+  "include": [".vitepress/**/*.ts", ".vitepress/**/*.mts", ".vitepress/**/*.vue"]
+}
