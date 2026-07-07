@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { withBase } from 'vitepress'
 import DownloadButtons from './DownloadButtons.vue'
-
-// 真实截图放到 website/public/screenshots/hero.png 即自动替换占位
-const shotOk = ref(true)
+import DemoEditor from './DemoEditor.vue'
 
 const features = [
   {
@@ -44,15 +41,6 @@ const steps = [
   { n: '02', title: '选择剧情', desc: '内置剧情索引，选择活动 / 卡面 / 主线，原文与语音自动拉取。' },
   { n: '03', title: '翻译到出片', desc: '翻译 → 校对 → 自动打轴 → 一键压制，一条流水线全部在应用内完成。' },
 ]
-
-// 占位骨架用的假行宽度（固定值，避免每次构建产物变化）
-const mockRows = [
-  { jp: 72, cn: 58 },
-  { jp: 48, cn: 40 },
-  { jp: 84, cn: 66 },
-  { jp: 60, cn: 52 },
-  { jp: 76, cn: 61 },
-]
 </script>
 
 <template>
@@ -71,34 +59,13 @@ const mockRows = [
         <p class="hero-sub">翻译 · 校对 · 自动打轴 · 一键压制 · Live2D 剧情播放 · 术语库协作</p>
         <DownloadButtons />
 
-        <!-- 截图窗口 -->
+        <!-- 在线体验编辑器 -->
         <div class="shot-frame">
           <div class="shot-chrome">
             <span class="dot dot-r" /><span class="dot dot-y" /><span class="dot dot-g" />
-            <span class="shot-title">SekaiText Next</span>
+            <span class="shot-title">SekaiText Next — 在线体验</span>
           </div>
-          <img
-            v-if="shotOk"
-            class="shot-img"
-            :src="withBase('/screenshots/hero.png')"
-            alt="SekaiText Next 界面截图"
-            @error="shotOk = false"
-          />
-          <div v-else class="shot-mock" aria-hidden="true">
-            <div class="mock-side">
-              <div v-for="i in 7" :key="i" class="mock-side-row" :class="{ active: i === 2 }" />
-            </div>
-            <div class="mock-main">
-              <div v-for="(r, i) in mockRows" :key="i" class="mock-line">
-                <span class="mock-avatar" />
-                <span class="mock-texts">
-                  <span class="mock-jp" :style="{ width: r.jp + '%' }" />
-                  <span class="mock-cn" :style="{ width: r.cn + '%' }" />
-                </span>
-              </div>
-              <p class="mock-hint">截图占位 — 将真实截图放入 website/public/screenshots/hero.png</p>
-            </div>
-          </div>
+          <DemoEditor />
         </div>
       </div>
     </section>
@@ -279,84 +246,6 @@ const mockRows = [
   color: var(--vp-c-text-3);
   margin-right: 40px;
 }
-.shot-img {
-  display: block;
-  width: 100%;
-}
-
-/* 截图占位骨架 */
-.shot-mock {
-  display: flex;
-  min-height: 340px;
-  position: relative;
-}
-.mock-side {
-  width: 22%;
-  border-right: 1px solid var(--vp-c-divider);
-  padding: 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.mock-side-row {
-  height: 26px;
-  border-radius: 6px;
-  background: var(--vp-c-default-soft);
-}
-.mock-side-row.active {
-  background: var(--vp-c-brand-soft);
-  outline: 1px solid var(--st-teal);
-}
-.mock-main {
-  flex: 1;
-  padding: 20px 24px 44px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.mock-line {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-.mock-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--st-gradient);
-  opacity: 0.55;
-}
-.mock-texts {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding-top: 3px;
-}
-.mock-jp,
-.mock-cn {
-  display: block;
-  height: 11px;
-  border-radius: 5px;
-}
-.mock-jp {
-  background: var(--vp-c-default-soft);
-}
-.mock-cn {
-  background: var(--vp-c-brand-soft);
-}
-.mock-hint {
-  position: absolute;
-  bottom: 12px;
-  left: 0;
-  right: 0;
-  text-align: center;
-  font-size: 12px;
-  color: var(--vp-c-text-3);
-  margin: 0;
-}
-
 /* ---------- Sections ---------- */
 .section {
   padding: 80px 0;
