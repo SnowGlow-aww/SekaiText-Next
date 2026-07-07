@@ -26,7 +26,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // The bundled Go child. Kept so we can kill it on shutdown as a backstop after
 // closing its stdin (which already drives a clean EOF exit on the Go side).
-struct SidecarProcess(Mutex<Option<Child>>);
+struct SidecarProcess(Arc<Mutex<Option<Child>>>);
 
 // Saves `contents` to a user-chosen path via the NATIVE save dialog. The path comes
 // from the OS picker, never from JS, so a loaded plugin can't use this to write to
@@ -54,6 +54,17 @@ fn save_text_dialog(
     }
     None => Ok(None),
   }
+}
+
+// Quits the entire app. Used by the self-updater right after the installer is
+// launched so the user doesn't have to manually quit before the new version can
+// replace this still-running one. Routes through app.exit(0) → RunEvent::Exit,
+// which runs the normal teardown (recovery clear + backend child kill). The
+// launched installer (`open`/`start`) is detached, so killing our sidecar on exit
+// doesn't touch it.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+  app.exit(0);
 }
 
 // ── stdio transport ─────────────────────────────────────────────────────────
@@ -84,6 +95,15 @@ struct RespHeader {
   status: u16,
   #[serde(default)]
   headers: HashMap<String, String>,
+}
+
+// Minimal fallback view: recovers just the request id when a response header fails
+// to fully deserialize into RespHeader (e.g. the backend omitted the required
+// `status`). Lets the reader fail the one waiting request fast instead of leaving it
+// to park the full response timeout.
+#[derive(Deserialize)]
+struct RespId {
+  id: u64,
 }
 
 // A delivered response routed back to the waiting request thread.
@@ -228,7 +248,29 @@ fn reader_loop(inner: Arc<IpcInner>, stdout: ChildStdout) {
       Ok((header, body)) => {
         let h: RespHeader = match serde_json::from_slice(&header) {
           Ok(h) => h,
-          Err(_) => continue, // skip an unparseable header rather than desync
+          Err(_) => {
+            // The frame itself was read correctly (header_len/body_len were consumed
+            // exactly), so the stream is still in sync — this is a malformed *header*,
+            // not a framing desync, and breaking would needlessly fail every other
+            // in-flight request. Instead, if we can still recover the id, fail just
+            // that one waiter fast with a 502 rather than leaving it to park the full
+            // (up to 1800s) response timeout. If even the id is unrecoverable there is
+            // no waiter we can target, so skip the frame and keep the stream in sync.
+            if let Ok(RespId { id }) = serde_json::from_slice::<RespId>(&header) {
+              if id != 0 {
+                if let Some(tx) =
+                  inner.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
+                {
+                  let _ = tx.send(IpcResp {
+                    status: 502,
+                    headers: HashMap::new(),
+                    body: b"malformed backend response header".to_vec(),
+                  });
+                }
+              }
+            }
+            continue;
+          }
         };
         if h.id == 0 {
           // Ready control frame: open the gate.
@@ -305,6 +347,24 @@ fn cors_response(status: u16, body: Vec<u8>, extra_headers: &HashMap<String, Str
   resp
 }
 
+// Reports a fatal startup failure to the user via a native error dialog, then exits
+// once they dismiss it — instead of a bare panic that flash-crashes in release with
+// no window and no visible, diagnosable message. The backend is mandatory in release
+// (there is nothing to degrade to), so we surface the cause and quit cleanly. Uses
+// the non-blocking `show` with an exit callback rather than `blocking_show`: this runs
+// on the main thread during setup, before the event loop starts, where a blocking
+// dialog would deadlock waiting on a loop that is not yet pumping.
+fn report_fatal_startup(app: &tauri::AppHandle, detail: String) {
+  use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+  eprintln!("[startup] fatal: {detail}");
+  app
+    .dialog()
+    .message(detail)
+    .title("SekaiText")
+    .kind(MessageDialogKind::Error)
+    .show(|_| std::process::exit(1));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut ctx = tauri::generate_context!();
@@ -349,7 +409,7 @@ pub fn run() {
   builder = builder
     .plugin(tauri_plugin_dialog::init())
     .plugin(origin_plugin)
-    .invoke_handler(tauri::generate_handler![save_text_dialog])
+    .invoke_handler(tauri::generate_handler![save_text_dialog, quit_app])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -362,20 +422,50 @@ pub fn run() {
       // Spawn the bundled Go backend in release and wire up the stdio transport.
       // Dev spawns nothing — it talks to the externally-run server over TCP.
       if !cfg!(debug_assertions) {
-        let resource_dir = app
-          .path()
-          .resource_dir()
-          .expect("failed to resolve resource directory");
-        let data_dir = app
-          .path()
-          .app_local_data_dir()
-          .expect("failed to resolve app data directory");
+        let resource_dir = match app.path().resource_dir() {
+          Ok(d) => d,
+          Err(e) => {
+            report_fatal_startup(
+              app.handle(),
+              format!("Failed to resolve the resource directory: {e}"),
+            );
+            return Ok(());
+          }
+        };
+        let data_dir = match app.path().app_local_data_dir() {
+          Ok(d) => d,
+          Err(e) => {
+            report_fatal_startup(
+              app.handle(),
+              format!("Failed to resolve the app data directory: {e}"),
+            );
+            return Ok(());
+          }
+        };
 
-        let exe_dir = std::env::current_exe()
-          .expect("failed to get exe path")
-          .parent()
-          .expect("failed to get exe dir")
-          .to_path_buf();
+        let exe = match std::env::current_exe() {
+          Ok(p) => p,
+          Err(e) => {
+            report_fatal_startup(
+              app.handle(),
+              format!("Failed to determine the executable path: {e}"),
+            );
+            return Ok(());
+          }
+        };
+        let exe_dir = match exe.parent() {
+          Some(d) => d.to_path_buf(),
+          None => {
+            report_fatal_startup(
+              app.handle(),
+              format!(
+                "Failed to determine the executable directory (no parent): {}",
+                exe.display()
+              ),
+            );
+            return Ok(());
+          }
+        };
 
         #[cfg(target_os = "windows")]
         let sidecar_path = exe_dir.join("sekaitext-backend.exe");
@@ -396,9 +486,19 @@ pub fn run() {
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let mut child = cmd
-          .spawn()
-          .unwrap_or_else(|e| panic!("failed to spawn {}: {}", sidecar_path.display(), e));
+        let mut child = match cmd.spawn() {
+          Ok(c) => c,
+          Err(e) => {
+            report_fatal_startup(
+              app.handle(),
+              format!(
+                "Failed to start the SekaiText backend.\n\nPath: {}\nError: {e}\n\nThe backend executable may be missing, removed by security software, lacking execute permission, or quarantined by the OS. Please reinstall SekaiText.",
+                sidecar_path.display()
+              ),
+            );
+            return Ok(());
+          }
+        };
 
         let child_stdin = child.stdin.take().expect("sidecar stdin");
         let child_stdout = child.stdout.take().expect("sidecar stdout");
@@ -419,7 +519,35 @@ pub fn run() {
         std::thread::spawn(move || drain_stderr(child_stderr));
 
         app.manage(Ipc(inner));
-        app.manage(SidecarProcess(Mutex::new(Some(child))));
+
+        // Reap the backend child so it never lingers as a <defunct> zombie. std's
+        // Child neither reaps on Drop nor lets the reader thread (which only owns
+        // stdout) collect it, so if the backend exits on its own mid-session (e.g. it
+        // panics) nothing would reap it until app teardown. This reaper polls try_wait
+        // (a short lock + non-blocking check, sleeping OUTSIDE the lock) so the
+        // RunEvent::Exit handler can still lock the same handle to kill + wait on a
+        // normal quit; whichever side reaps first clears the handle and the other
+        // becomes a no-op.
+        let child = Arc::new(Mutex::new(Some(child)));
+        {
+          let child = child.clone();
+          std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
+            // Take an owned poll result so the `&mut Child` borrow ends before we
+            // touch `guard` again below.
+            match guard.as_mut().map(|c| c.try_wait()) {
+              Some(Ok(Some(_))) => {
+                *guard = None; // exited on its own; try_wait already reaped it
+                break;
+              }
+              Some(Ok(None)) => {} // still running
+              Some(Err(_)) => break, // can't poll it (already reaped / OS error)
+              None => break, // Exit handler already took and reaped it
+            }
+          });
+        }
+        app.manage(SidecarProcess(child));
       }
 
       Ok(())
@@ -528,6 +656,7 @@ pub fn run() {
         if let Some(state) = app.try_state::<SidecarProcess>() {
           if let Some(mut child) = state.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = child.kill();
+            let _ = child.wait(); // reap the killed child so it isn't left a zombie
           }
         }
       }

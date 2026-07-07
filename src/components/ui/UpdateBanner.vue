@@ -15,8 +15,10 @@ const headIcon = computed(() =>
 )
 
 async function onInstall() {
-  await u.install()
-  toast.show('已打开安装器，请将 SekaiText 拖入「应用程序」完成更新', 'info', 6000)
+  const ok = await u.install()
+  if (ok) {
+    toast.show('安装器已打开，SekaiText 将自动退出，请在其中完成更新（macOS 拖入「应用程序」）', 'info', 6000)
+  }
 }
 </script>
 
@@ -49,7 +51,7 @@ async function onInstall() {
           </template>
           <template v-else-if="u.phase === 'ready'">
             <div class="text-sm font-semibold text-[var(--color-text)]">新版本已下载完成</div>
-            <div class="app-help mt-0.5">点击「立即安装」打开安装器，将 SekaiText 拖入「应用程序」即可。</div>
+            <div class="app-help mt-0.5">点击「立即安装」打开安装器后，SekaiText 会自动退出以便替换，随后完成安装即可。</div>
           </template>
           <template v-else-if="u.phase === 'error'">
             <div class="text-sm font-semibold text-[var(--color-error,#e5484d)]">更新失败</div>

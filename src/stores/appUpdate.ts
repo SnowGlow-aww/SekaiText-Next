@@ -32,6 +32,8 @@ function currentVersion(): string {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
 export type UpdatePhase = 'idle' | 'available' | 'downloading' | 'ready' | 'error'
 
 export const useAppUpdateStore = defineStore('appUpdate', () => {
@@ -114,15 +116,32 @@ export const useAppUpdateStore = defineStore('appUpdate', () => {
     }
   }
 
-  // Open the downloaded installer (mounts the .dmg / launches the installer).
-  async function install(): Promise<void> {
-    if (!downloadedPath.value) return
+  // Open the downloaded installer (mounts the .dmg / launches the installer), then
+  // quit this instance so the new version can replace the running app without the
+  // user manually quitting first. Returns true once the installer launched; Tauri
+  // only — in a browser dev context there is nothing to quit.
+  async function install(): Promise<boolean> {
+    if (!downloadedPath.value) return false
     try {
       await api.appUpdateOpen(downloadedPath.value)
     } catch (e: any) {
       errorMsg.value = e?.message || '打开失败'
       phase.value = 'error'
+      return false
     }
+    if (isTauri) {
+      // Small delay so the installer window (mounted .dmg / setup.exe) surfaces and
+      // the "quitting" toast is visible before we exit.
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        setTimeout(() => {
+          invoke('quit_app').catch(() => {})
+        }, 1500)
+      } catch {
+        /* not in Tauri / core unavailable → stay open, user quits manually */
+      }
+    }
+    return true
   }
 
   function dismiss(): void {
