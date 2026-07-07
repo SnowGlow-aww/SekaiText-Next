@@ -82,7 +82,7 @@ const groups = ref<Group[]>([
   {
     speaker: 'ラナ',
     avatar: 'ラ',
-    jp: 'ラナ、前に字幕作った。三日徹夜した。',
+    jp: 'あたし、前に字幕作ったことある。三日徹夜した。',
     voice: true,
     items: [{ id: 3, text: '', touched: false }],
   },
