@@ -12,8 +12,8 @@ interface Term {
   category: string
 }
 const TERMS: Term[] = [
-  { t: '星鳴祭', to: '星鸣祭', note: '示例术语：专有活动名保持统一译法', category: '活动名' },
-  { t: '字幕焼き', to: '压制（内嵌字幕）', note: '示例术语：技术用语按惯例意译', category: '技术' },
+  { t: '星鳴祭', to: '星鸣祭', note: '虚构的演出活动名，仅作演示', category: '专有名词' },
+  { t: '字幕焼き', to: '压制', note: '把字幕烧进视频画面的工序', category: '用语' },
   { t: 'SekaiText', to: 'SekaiText', note: '就是你正在看的这个工具（笑）', category: '彩蛋' },
 ]
 const termRe = new RegExp(`(${TERMS.map((x) => x.t).join('|')})`, 'g')

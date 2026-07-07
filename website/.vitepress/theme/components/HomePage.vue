@@ -12,7 +12,7 @@ const features = [
   {
     icon: '⚡',
     title: '自动打轴',
-    desc: '内置 SekaiCoreEngine 识别录屏画面，自动对齐每句台词生成字幕时间轴，实测全量匹配。',
+    desc: '内置 SekaiCoreEngine 识别录屏画面，自动对齐每句台词生成字幕时间轴。',
   },
   {
     icon: '🎬',
@@ -27,7 +27,7 @@ const features = [
   {
     icon: '📚',
     title: '术语库与协作',
-    desc: '术语 / 人称表云端同步，提案审核流程，数百人翻译团队协作实测可用。',
+    desc: '术语 / 人称表云端同步，支持提案与审核，多人协作用词始终一致。',
   },
   {
     icon: '🧩',
@@ -37,9 +37,9 @@ const features = [
 ]
 
 const steps = [
-  { n: '01', title: '下载安装', desc: '支持 macOS (Apple Silicon) 与 Windows (x64)，开箱即用，无需配置环境。' },
-  { n: '02', title: '选择剧情', desc: '内置剧情索引，选择活动 / 卡面 / 主线，原文与语音自动拉取。' },
-  { n: '03', title: '翻译到出片', desc: '翻译 → 校对 → 自动打轴 → 一键压制，一条流水线全部在应用内完成。' },
+  { n: '01', color: '#39c5bb', title: '下载安装', desc: '支持 macOS (Apple Silicon) 与 Windows (x64)，开箱即用，无需配置环境。' },
+  { n: '02', color: '#6fa8ef', title: '选择剧情', desc: '内置剧情索引，选择活动 / 卡面 / 主线，原文与语音自动拉取。' },
+  { n: '03', color: '#ff69b4', title: '翻译到出片', desc: '翻译 → 校对 → 自动打轴 → 一键压制，一条流水线全部在应用内完成。' },
 ]
 </script>
 
@@ -73,8 +73,8 @@ const steps = [
     <!-- Features -->
     <section class="section">
       <div class="container">
-        <h2 class="section-title">从原文到成品视频，<span class="st-gradient-text">一个应用搞定</span></h2>
-        <p class="section-sub">为 PJSK 翻译组打造的完整工作流，不再需要在五六个工具之间来回切换。</p>
+        <h2 class="section-title">从原文到成品视频，<span class="accent-text">一个应用搞定</span></h2>
+        <p class="section-sub">为剧情翻译工作流打造，不再需要在五六个工具之间来回切换。</p>
         <div class="feature-grid">
           <div v-for="f in features" :key="f.title" class="feature-card">
             <div class="feature-icon">{{ f.icon }}</div>
@@ -91,7 +91,7 @@ const steps = [
         <h2 class="section-title">三步上手</h2>
         <div class="steps">
           <div v-for="s in steps" :key="s.n" class="step">
-            <div class="step-n st-gradient-text">{{ s.n }}</div>
+            <div class="step-n" :style="{ color: s.color }">{{ s.n }}</div>
             <h3 class="step-title">{{ s.title }}</h3>
             <p class="step-desc">{{ s.desc }}</p>
           </div>
@@ -267,6 +267,9 @@ const steps = [
   font-size: 15px;
   margin: 0 auto 44px;
   max-width: 560px;
+}
+.accent-text {
+  color: var(--vp-c-brand-1);
 }
 
 /* Features */

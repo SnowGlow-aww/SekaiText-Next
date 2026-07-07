@@ -16,6 +16,17 @@ const downloads = ref({
 })
 const os = ref<'mac' | 'win' | 'other'>('other')
 
+// a 是否比 b 更新(简易 semver 比较)
+function newer(a: string, b: string) {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d > 0
+  }
+  return false
+}
+
 onMounted(async () => {
   const ua = navigator.userAgent
   os.value = /Macintosh|Mac OS X/i.test(ua) ? 'mac' : /Windows/i.test(ua) ? 'win' : 'other'
@@ -23,7 +34,9 @@ onMounted(async () => {
     const r = await fetch(`${CDN}/sekaitext-plugins/app-release.json`, { cache: 'no-store' })
     if (r.ok) {
       const j = await r.json()
-      if (j?.version) {
+      // 边缘缓存可能滞后:manifest 比构建期版本还旧就忽略,
+      // 否则会指向已被清理的历史版本安装包(404)
+      if (j?.version && !newer(version.value, j.version)) {
         version.value = j.version
         downloads.value = {
           mac: j.downloads?.['darwin-aarch64'] || cdnUrl(j.version, 'aarch64.dmg'),
