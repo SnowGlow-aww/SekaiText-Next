@@ -8,7 +8,7 @@
 //                 Defaults to ../backend/engine. In CI this is the avalonia engine artifact.
 //   FFMPEG_BIN    path to the static libass ffmpeg for this target (osxexperts arm64 / BtbN win).
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, copyFileSync, cpSync, readdirSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { platform, arch } from 'os'
 
@@ -52,7 +52,19 @@ for (const f of readdirSync(engineSrc)) {
 }
 copyFileSync(ffmpegBin, join(outDir, ffName))
 if (!isWin) execSync(`chmod +x "${join(outDir, engExe)}" "${join(outDir, ffName)}"`)
-console.log(`[build-engine] ${target}: ${copied} engine file(s) + ffmpeg -> ${outDir}`)
+
+// bundled subtitle fonts (思源黑体): Suppressor passes <engine dir>/fonts as libass
+// fontsdir so machines without the fonts installed still render correct glyphs
+// (otherwise macOS silently falls back to PingFang and subtitles come out narrow).
+const fontsSrc = join(engineSrc, 'fonts')
+let fontCount = 0
+if (existsSync(fontsSrc)) {
+  cpSync(fontsSrc, join(outDir, 'fonts'), { recursive: true })
+  fontCount = readdirSync(fontsSrc).length
+} else {
+  console.warn('[build-engine] WARNING: no fonts/ in ENGINE_DIR — burned subtitles will fall back to system fonts')
+}
+console.log(`[build-engine] ${target}: ${copied} engine file(s) + ffmpeg + ${fontCount} font file(s) -> ${outDir}`)
 
 // ad-hoc deep-sign nested Mach-O (no Apple cert). Proven in P0: dylibs ad-hoc, ffmpeg
 // ad-hoc, engine with hardened runtime + disable-library-validation so it loads them.
