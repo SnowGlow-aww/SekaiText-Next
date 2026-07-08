@@ -46,4 +46,4 @@ sudo xattr -cr "/Applications/SekaiText Next.app"
 
 ### 遇到 bug 怎么反馈？
 
-在设置中打开 **调试日志**，复现问题后带着日志到 [GitHub Issues](https://github.com/SnowGlow-aww/SekaiText-Next/issues) 反馈。
+在设置中打开 **调试日志**，复现问题后带着导出的日志到 [GitHub Issues](https://github.com/SnowGlow-aww/SekaiText-Next/issues) 反馈。

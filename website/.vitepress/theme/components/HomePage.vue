@@ -7,27 +7,27 @@ const features = [
   {
     icon: '📝',
     title: '剧情翻译编辑器',
-    desc: '原文 / 译文双栏对照，活动·卡面·主线剧情一键载入，支持语音试听、\\N 换行控制与多格式导出。',
+    desc: '原文 / 译文双栏对照，活动·卡面·主线剧情自动载入，支持语音播放、\\N 换行控制与多格式导出。',
   },
   {
     icon: '⚡',
-    title: '自动打轴',
+    title: '自动打轴（插件功能）',
     desc: '内置 SekaiCoreEngine 识别录屏画面，自动对齐每句台词生成字幕时间轴。',
   },
   {
     icon: '🎬',
-    title: '一键压制',
-    desc: '集成 FFmpeg + libass，翻译打轴完成后直接输出成品视频，无需再开第二个工具。',
+    title: '一键压制（插件功能）',
+    desc: '集成 FFmpeg + libass，可利用此快速生成标准化视频文件。',
   },
   {
     icon: '🎭',
-    title: 'Live2D 剧情播放器',
-    desc: '内置播放器还原游戏演出——表情、动作、语音同步播放，边看边翻不出戏。',
+    title: 'Live2D 剧情播放器（插件功能）',
+    desc: '内置播放器还原游戏演出——表情、动作、语音同步播放，准确把握人物情感。',
   },
   {
     icon: '📚',
     title: '术语库与协作',
-    desc: '术语 / 人称表云端同步，支持提案与审核，多人协作用词始终一致。',
+    desc: '术语 / 人称表云端同步，支持提案与审核，保障用词一致性。',
   },
   {
     icon: '🧩',
@@ -73,8 +73,8 @@ const steps = [
     <!-- Features -->
     <section class="section">
       <div class="container">
-        <h2 class="section-title">从原文到成品视频，<span class="accent-text">一个应用搞定</span></h2>
-        <p class="section-sub">为剧情翻译工作流打造，不再需要在五六个工具之间来回切换。</p>
+        <h2 class="section-title">全新重构，由 <span class="accent-text">Tauri</span> 驱动</h2>
+        <p class="section-sub">为剧情翻译工作流打造的一站式解决方案</p>
         <div class="feature-grid">
           <div v-for="f in features" :key="f.title" class="feature-card">
             <div class="feature-icon">{{ f.icon }}</div>
@@ -120,7 +120,7 @@ const steps = [
           由 <a href="https://github.com/SnowGlow-aww" target="_blank" rel="noreferrer">雪莹ちゃん</a> 重制维护
         </p>
         <p>
-          感谢 <a href="https://github.com/Cinea4678/" target="_blank" rel="noreferrer">Cinea</a> 提供的技术与账户支持 ·
+          感谢 <a href="https://github.com/Cinea4678/" target="_blank" rel="noreferrer">Cinea</a> 提供的技术/账户/服务器支持 ·
           感谢 <a href="https://github.com/MejiroRina" target="_blank" rel="noreferrer">星雲希凪</a> 提供的 UI 优化
         </p>
       </div>

@@ -9,10 +9,6 @@
 - **术语库与协作** — 术语 / 人称表云端同步，团队提案审核；
 - **插件市场** — 热加载插件按需扩展功能。
 
-## 它解决什么问题
-
-传统 PJSK 烤肉流程通常要在文本提取工具、Excel 术语表、Aegisub、压制工具、游戏本体之间来回切换。SekaiText Next 把这些步骤整合为一条应用内的流水线，数据自动流转，团队成员用同一套术语标准协作。
-
 ## 支持平台
 
 - macOS（Apple Silicon）
@@ -25,5 +21,5 @@
 项目基于 [MIT 协议](https://github.com/SnowGlow-aww/SekaiText-Next/blob/main/LICENSE) 开源，创意来源于 [Is14w/SekaiText](https://github.com/Is14w/SekaiText)，由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护。
 
 ::: warning 免责声明
-「プロジェクトセカイ」是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。
+「プロジェクトセカイ カラフルステージ！ feat. 初音ミク」是 SEGA / Colorful Palette 的商标。本项目仅用于学习和粉丝翻译目的。
 :::

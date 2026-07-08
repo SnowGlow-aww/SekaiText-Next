@@ -16,7 +16,11 @@ export default defineConfig({
   description:
     'Project Sekai 剧情翻译一站式工作台 — 翻译 · 校对 · 自动打轴 · 一键压制 · Live2D 剧情播放 · 术语库协作',
   base,
-  head: [['link', { rel: 'icon', href: `${base}favicon.svg` }]],
+  head: [
+    ['link', { rel: 'icon', type: 'image/png', sizes: '32x32', href: `${base}favicon-32.png` }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '256x256', href: `${base}favicon.png` }],
+    ['link', { rel: 'apple-touch-icon', sizes: '180x180', href: `${base}apple-touch-icon.png` }],
+  ],
   vite: {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
