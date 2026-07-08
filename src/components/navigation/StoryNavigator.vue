@@ -15,6 +15,7 @@ import { useEditorStore } from '../../stores/editor'
 import { useSettingsStore } from '../../stores/settings'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
+import { useConfirm } from '../../composables/useConfirm'
 import { useDebugLog } from '../../composables/useDebugLog'
 import { useDownloadFloat } from '../../composables/useDownloadFloat'
 import SkSelect from '../ui/SkSelect.vue'
@@ -42,6 +43,21 @@ const displayIndices = computed(() => {
 })
 const refreshing = ref(false)
 const toast = useToast()
+const { confirm } = useConfirm()
+
+// Loading a story replaces the whole editor document with a fresh template.
+// With unsaved edits that is unrecoverable data loss (the next 30s autosave
+// tick then overwrites the recovery file with the empty template as well), so
+// it must never happen on a stray click without confirmation.
+async function confirmDiscardUnsaved(): Promise<boolean> {
+  if (!editor.hasUnsavedChanges) return true
+  return confirm({
+    title: '载入故事',
+    message: '有未保存的更改，载入将用新模板覆盖当前译文。确定继续吗？',
+    tone: 'danger',
+    confirmText: '不保存并载入',
+  })
+}
 const debug = useDebugLog()
 const dlFloat = useDownloadFloat()
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -149,6 +165,10 @@ async function handleRefresh() {
 async function handleLocalLoad() {
   const file = fileInput.value?.files?.[0]
   if (!file) return
+  if (!(await confirmDiscardUnsaved())) {
+    if (fileInput.value) fileInput.value.value = ''
+    return
+  }
   try {
     const text = await file.text()
     await story.loadStoryLocal(text)
@@ -161,6 +181,10 @@ async function handleLocalLoad() {
       })
       editor.setTalks(dstTalks, dstTalks, [])
       editor.majorClue = null
+      // Fresh template = clean state; keeping the OLD document's dirty flag
+      // would let the 30s autosave overwrite the recovery file with this
+      // near-empty template.
+      editor.markSaved()
       toast.show(`已载入 ${story.sourceTalks.length} 行`, 'success')
     }
   } catch (e: any) {
@@ -171,6 +195,7 @@ async function handleLocalLoad() {
 }
 async function handleLoad() {
   debug.log(`载入按钮点击 loading=${story.loading} selectedType="${story.selectedType}"`)
+  if (!(await confirmDiscardUnsaved())) return
   const taskId = dlFloat.add('载入故事')
   dlFloat.start(taskId)
   try {
@@ -184,6 +209,7 @@ async function handleLoad() {
       })
       editor.setTalks(dstTalks, dstTalks, [])
       editor.majorClue = null
+      editor.markSaved() // see handleLocalLoad: new template must start clean
       dlFloat.done(taskId, `已载入 ${story.sourceTalks.length} 行`)
     } else {
       debug.log('故事载入返回0行', 'warn')

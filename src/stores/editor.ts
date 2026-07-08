@@ -60,6 +60,17 @@ export const useEditorStore = defineStore('editor', () => {
     hasUnsavedChanges.value = true
   }
 
+  // Dirty check across ALL modes: hasUnsavedChanges only reflects the current
+  // mode; edits parked in another mode's cache slot (switchMode deep-copies
+  // state per mode) would otherwise let the app quit without any warning.
+  function hasAnyUnsaved(): boolean {
+    if (hasUnsavedChanges.value) return true
+    for (const [mode, state] of modeCache) {
+      if (mode !== currentMode.value && state.hasUnsavedChanges) return true
+    }
+    return false
+  }
+
   function markSaved() {
     hasUnsavedChanges.value = false
   }
@@ -113,7 +124,7 @@ export const useEditorStore = defineStore('editor', () => {
     talks, dstTalks, referTalks, sourceTalks,
     currentFilePath, titleOverride, hasUnsavedChanges, majorClue,
     currentMode,
-    setSourceTalks, setTalks, markUnsaved, markSaved, clearAll,
+    setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
     saveModeState, loadModeState, switchMode,
   }
 })

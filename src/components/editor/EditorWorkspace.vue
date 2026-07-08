@@ -179,24 +179,40 @@ function getEditBorder(talk: DstTalk): string {
   return ''
 }
 
-async function handleTextChange(row: number, newText: string) {
+// The pending debounced edit, kept alongside the timer so it can be FLUSHED
+// (executed immediately) before a save, not just cancelled.
+let pendingEdit: { row: number; text: string } | null = null
+
+async function commitTextChange(row: number, newText: string) {
+  // Stale-document guard: onBlur committed newText into talks[row] synchronously.
+  // If it no longer matches, the arrays were swapped out from under this call
+  // (mode switch, open/载入, replace-all, undo) — applying the edit now would
+  // write the old document's text into an unrelated row of the NEW document.
+  if (editor.talks[row]?.text !== newText) return
+  try {
+    const result = await api.changeText({
+      row,
+      text: newText,
+      editorMode: app.editorMode,
+      talks: editor.talks,
+      dstTalks: editor.dstTalks,
+      referTalks: editor.referTalks,
+    })
+    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+    editor.markUnsaved()
+  } catch (e: any) {
+    console.error('[Editor] text change API failed', { row, error: e?.message || e })
+    toast.show('Text save failed: ' + (e?.message || 'unknown error'), 'error')
+  }
+}
+
+function handleTextChange(row: number, newText: string) {
   if (editTimeout) clearTimeout(editTimeout)
-  editTimeout = setTimeout(async () => {
-    try {
-      const result = await api.changeText({
-        row,
-        text: newText,
-        editorMode: app.editorMode,
-        talks: editor.talks,
-        dstTalks: editor.dstTalks,
-        referTalks: editor.referTalks,
-      })
-      editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
-      editor.markUnsaved()
-    } catch (e: any) {
-      console.error('[Editor] text change API failed', { row, error: e?.message || e })
-      toast.show('Text save failed: ' + (e?.message || 'unknown error'), 'error')
-    }
+  pendingEdit = { row, text: newText }
+  editTimeout = setTimeout(() => {
+    editTimeout = null
+    pendingEdit = null
+    commitTextChange(row, newText)
   }, 300)
 }
 
@@ -225,14 +241,24 @@ function onBlur(e: Event, idx: number) {
   // blurred edit is in the array, so saving and subsequent recomputes always
   // carry it, regardless of debounce cancellation.
   if (editor.talks[idx]) editor.talks[idx].text = newText
+  // Commit to dstTalks as well: SAVE serializes editor.dstTalks, not talks, and
+  // dstTalks otherwise only picks the edit up when the debounced changeText
+  // round-trip lands. Saving inside that 300ms window — or after any
+  // cancelPendingEdit (undo / add-remove line / replace-all) — wrote the file
+  // with the row's OLD text while the screen showed the new one. The backend
+  // round-trip still refines this raw commit (punctuation normalization, diff).
+  const di = editor.talks[idx]?.dstidx ?? -1
+  if (di >= 0 && di < editor.dstTalks.length) editor.dstTalks[di].text = newText
   handleTextChange(idx, newText)
 }
 
 async function handleAddLine(row: number) {
-  // Cancel any pending debounced edit before reordering rows: it captured a row
-  // index that setTalks below will shift, so firing it would write to the wrong
-  // line (mirrors handleBracketsReplace). onBlur already committed the text.
-  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+  // FLUSH (not cancel) any pending debounced edit before mutating rows: the
+  // changeText round-trip does not reorder talks, so the captured indices stay
+  // valid, and cancelling would leave dstTalks without the edit's processed
+  // form (for a compare deletion row the slot insert happens server-side, so a
+  // cancel would drop that edit from the saved file entirely).
+  await flushPendingEdit().catch(() => {})
   const currentIdx = editor.talks[row]?.idx
   if (currentIdx && editor.talks.filter(t => t.idx === currentIdx).length >= MAX_LINES_PER_SRC) {
     toast.show(`每个原文行最多添加 ${MAX_LINES_PER_SRC} 行`, 'warn')
@@ -255,8 +281,8 @@ async function handleAddLine(row: number) {
 }
 
 async function handleRemoveLine(row: number) {
-  // See handleAddLine: drop the stale debounced edit before re-counting rows.
-  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+  // See handleAddLine: flush the pending debounced edit before mutating rows.
+  await flushPendingEdit().catch(() => {})
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   try {
     const result = await api.removeLine({
@@ -389,8 +415,9 @@ watch(() => app.searchActiveIndex, () => {
   el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
 })
 
-function handleBracketsReplace(row: number, brackets: string) {
-  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+async function handleBracketsReplace(row: number, brackets: string) {
+  // See handleAddLine: flush, don't drop, the pending edit.
+  await flushPendingEdit().catch(() => {})
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   api.replaceBrackets({ row, brackets, talks: editor.talks, dstTalks: editor.dstTalks }).then(({ talks, dstTalks }) => {
     editor.talks = talks
@@ -441,8 +468,19 @@ function focusNext(e: KeyboardEvent) {
 // row. onBlur has already committed the visible text, so cancelling loses nothing.
 function cancelPendingEdit() {
   if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+  pendingEdit = null
 }
-defineExpose({ cancelPendingEdit })
+
+// Run the pending debounced edit NOW (awaited) instead of dropping it. Used by
+// EditorPage before saving so the file gets the fully processed (normalized +
+// diffed) text rather than relying on the raw onBlur commit alone.
+async function flushPendingEdit() {
+  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
+  const p = pendingEdit
+  pendingEdit = null
+  if (p) await commitTextChange(p.row, p.text)
+}
+defineExpose({ cancelPendingEdit, flushPendingEdit })
 
 function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   const fb = flashbackItem(talk)

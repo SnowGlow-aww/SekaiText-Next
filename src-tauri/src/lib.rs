@@ -635,24 +635,16 @@ pub fn run() {
     .run(|app, event| {
       // RunEvent::Exit is the single terminal event that fires on EVERY quit path
       // (window close, Cmd-Q, Dock quit, Apple-event quit). On macOS an Apple-event
-      // quit emits ONLY Exit (no ExitRequested, no per-window Destroyed), so Exit is
-      // the reliable hook. Release only: best-effort recovery clear (replacing the
-      // old beforeunload sendBeacon) with short timeouts so quit isn't delayed, then
-      // kill the backend child (its stdin EOFs Go anyway; this is the backstop). Dev
-      // clears recovery via the App.vue beforeunload beacon over TCP.
+      // quit emits ONLY Exit (no ExitRequested, no per-window Destroyed) — which
+      // also means those quit paths NEVER show the frontend's unsaved-changes
+      // dialog. Recovery must therefore NOT be cleared here: with unsaved edits,
+      // Cmd-Q would silently destroy both the edits and their only autosave backup.
+      // The frontend clears recovery at the moments it is truly obsolete (after a
+      // successful save, and when the user discards a restore); a leftover file
+      // just re-offers recovery on next launch. Exit only reaps the backend child
+      // (its stdin EOFs Go anyway; this is the backstop).
       #[cfg(not(debug_assertions))]
       if let tauri::RunEvent::Exit = event {
-        if let Some(ipc) = app.try_state::<Ipc>() {
-          let _ = ipc.0.exchange(
-            "DELETE",
-            "/api/v1/recovery/clear",
-            "",
-            HashMap::new(),
-            &[],
-            Duration::from_millis(200),
-            Duration::from_millis(400),
-          );
-        }
         if let Some(state) = app.try_state::<SidecarProcess>() {
           if let Some(mut child) = state.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = child.kill();

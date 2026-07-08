@@ -421,6 +421,15 @@ func (e *EditorService) CheckLines(srctalks []model.SourceTalk, loadtalks []mode
 func (e *EditorService) CompareText(refertalks, checktalks []model.DstTalk, editormode int) []model.DstTalk {
 	refGrp := groupByIdx(refertalks)
 	chkGrp := groupByIdx(checktalks)
+	// True slice position of each chk row, grouped the same way as chkGrp.
+	// DstIdx must be the row's position IN checktalks (= the dstTalks the editor
+	// keeps and saves), not a running counter over emitted rows: deletion rows
+	// (ref-only) emit a row but consume no chk slot, so a shared counter drifts
+	// ahead and every later edit writes into the WRONG dstTalks line.
+	chkPos := make(map[int][]int)
+	for i, t := range checktalks {
+		chkPos[t.Idx] = append(chkPos[t.Idx], i)
+	}
 
 	// Collect all unique idxs in order
 	var keys []int
@@ -446,7 +455,6 @@ func (e *EditorService) CompareText(refertalks, checktalks []model.DstTalk, edit
 	}
 
 	var newtalks []model.DstTalk
-	dstBase := 0
 
 	for _, idx := range keys {
 		ref := refGrp[idx]
@@ -464,21 +472,27 @@ func (e *EditorService) CompareText(refertalks, checktalks []model.DstTalk, edit
 				row = chk[k]
 				baseText = ref[k].Text
 				curText = chk[k].Text
+				row.DstIdx = chkPos[idx][k]
 			case k < len(chk):
 				// New sub-line with no baseline counterpart (pure addition).
 				row = chk[k]
 				baseText = ""
 				curText = chk[k].Text
+				row.DstIdx = chkPos[idx][k]
 			default:
 				// Baseline sub-line dropped in current text; keep it as an
 				// empty edit row so the deletion is visible under compare.
+				// It has NO counterpart slot in checktalks/dstTalks, so DstIdx
+				// is -1; ChangeText inserts a slot at the right position if the
+				// user types into it (writing to a shared counter index here
+				// would overwrite an unrelated line instead).
 				row = ref[k]
 				row.Text = ""
 				baseText = ref[k].Text
 				curText = ""
+				row.DstIdx = -1
 			}
 
-			row.DstIdx = dstBase
 			row.CheckMode = false
 			row.Proofread = nil
 			// Only produce a diff when there is a real, non-empty baseline that
@@ -493,7 +507,6 @@ func (e *EditorService) CompareText(refertalks, checktalks []model.DstTalk, edit
 				row.DiffParts = nil
 			}
 			newtalks = append(newtalks, row)
-			dstBase++
 		}
 	}
 
@@ -584,16 +597,34 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 			dsttalks[dstidx].Text = text
 			dsttalks[dstidx].Checked = checked
 			dsttalks[dstidx].Message = msg
-		} else if dstidx >= len(dsttalks) {
-			// Compared "deletion" rows (合意/校对) carry a DstIdx beyond the shorter
-			// dstTalks slice, so the edit would be silently dropped and lost on save
-			// (the frontend persists dstTalks, not talks). Grow dstTalks up to dstidx
-			// so the edited row has a real slot and round-trips. New filler slots are
-			// blank lines; the edited row copies talks[row]'s metadata.
-			for len(dsttalks) <= dstidx {
-				dsttalks = append(dsttalks, model.DstTalk{})
+		} else {
+			// Compared "deletion" rows (合意/校对) have no counterpart slot in
+			// dstTalks (DstIdx -1 from CompareText). The edit must not be dropped
+			// (the frontend persists dstTalks, not talks — it would be lost on
+			// save), and it must not be appended at the end either (wrong position
+			// in the saved file). Insert a new slot right after the nearest
+			// preceding row that has a real slot, then shift the later rows'
+			// DstIdx to keep every mapping consistent.
+			insertPos := 0
+			for j := row - 1; j >= 0; j-- {
+				if d := talks[j].DstIdx; d >= 0 && d < len(dsttalks) {
+					insertPos = d + 1
+					break
+				}
 			}
-			dsttalks[dstidx] = talks[row]
+			if insertPos > len(dsttalks) {
+				insertPos = len(dsttalks)
+			}
+			slot := talks[row]
+			slot.Checked = checked
+			slot.Message = msg
+			dsttalks = insertDstTalk(dsttalks, insertPos, slot)
+			for j := range talks {
+				if j != row && talks[j].DstIdx >= insertPos {
+					talks[j].DstIdx++
+				}
+			}
+			talks[row].DstIdx = insertPos
 		}
 	}
 
@@ -622,28 +653,34 @@ func (e *EditorService) AddLine(row int, talks, dsttalks []model.DstTalk, isProo
 	newtalk.DiffParts = nil
 
 	dstidx := talks[row].DstIdx
-	// Bound-check before inserting into dstTalks. In 合意/校对 mode a compared
-	// "deletion" row can carry a DstIdx >= len(dsttalks) (dstTalks is the shorter
-	// check slice), so dstidx+1 would slice insertDstTalk's copy out of range and
-	// panic. Clamp the insert index to len(dsttalks) so it appends instead.
-	dstInsert := dstidx + 1
-	if dstInsert < 0 {
-		dstInsert = 0
-	} else if dstInsert > len(dsttalks) {
-		dstInsert = len(dsttalks)
+	if dstidx >= 0 && dstidx < len(dsttalks) {
+		dstInsert := dstidx + 1
+		newtalk.DstIdx = dstInsert
+		// Shift by DstIdx VALUE, not by talks position: in 合意/校对 the list can
+		// contain "deletion" rows with DstIdx -1 interleaved, so position-based
+		// shifting would corrupt their sentinel (and rows are only guaranteed to
+		// map correctly through their own DstIdx). Runs before inserting newtalk
+		// so the new row's explicit index is not double-shifted.
+		for i := range talks {
+			if talks[i].DstIdx >= dstInsert {
+				talks[i].DstIdx++
+			}
+		}
+		dsttalks = insertDstTalk(dsttalks, dstInsert, newtalk)
+	} else {
+		// The anchor row has no dstTalks slot (compared deletion row): the new
+		// sub-line gets none either. ChangeText inserts a real slot at the right
+		// position as soon as the user types into it.
+		newtalk.DstIdx = -1
 	}
-	dsttalks = insertDstTalk(dsttalks, dstInsert, newtalk)
 
 	talks = insertTalk(talks, row+1, newtalk)
-	for i := row + 1; i < len(talks); i++ {
-		talks[i].DstIdx++
-	}
 
 	// Update the original row
 	talks[row].End = false
 	talks[row].Checked = true
 	talks[row].Save = true
-	if dstidx < len(dsttalks) {
+	if dstidx >= 0 && dstidx < len(dsttalks) {
 		dsttalks[dstidx].End = false
 		dsttalks[dstidx].Checked = true
 		dsttalks[dstidx].Save = true
@@ -671,10 +708,16 @@ func (e *EditorService) RemoveLine(row int, talks, dsttalks []model.DstTalk) ([]
 	talks = append(talks[:row], talks[row+1:]...)
 	if dstidx >= 0 && dstidx < len(dsttalks) {
 		dsttalks = append(dsttalks[:dstidx], dsttalks[dstidx+1:]...)
-	}
-
-	for i := row; i < len(talks); i++ {
-		talks[i].DstIdx--
+		// Renumber by DstIdx VALUE and only when a dstTalks slot was actually
+		// removed. The old position-based loop decremented every later row even
+		// when the removed row had no slot (compared deletion row, DstIdx -1) —
+		// after that, every subsequent edit landed one line UP in dstTalks and
+		// the file saved with lines overwritten by their neighbours.
+		for i := range talks {
+			if talks[i].DstIdx > dstidx {
+				talks[i].DstIdx--
+			}
+		}
 	}
 
 	return talks, dsttalks

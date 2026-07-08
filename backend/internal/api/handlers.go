@@ -316,7 +316,11 @@ func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := os.WriteFile(req.FilePath, []byte(content), 0644); err != nil {
+	// Atomic write (temp + fsync + rename), same as the autosave path: a plain
+	// os.WriteFile O_TRUNCs the user's translation file FIRST, so a crash /
+	// disk-full / kill mid-write destroys the only copy of their work. With the
+	// rename the previous file stays intact until the new content is durable.
+	if err := writeFileAtomic(req.FilePath, []byte(content), 0644); err != nil {
 		log.Printf("[save] write error: %v", err)
 		writeError(w, http.StatusInternalServerError, "file write failed: "+err.Error())
 		return

@@ -19,6 +19,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useSettingsStore } from './stores/settings'
 import { useAppStore } from './stores/app'
+import { useEditorStore } from './stores/editor'
 import { useAppUpdateStore } from './stores/appUpdate'
 import { useToast } from './composables/useToast'
 import { useDebugLog } from './composables/useDebugLog'
@@ -68,7 +69,11 @@ onMounted(async () => {
   // recovery. In-app explicit "clear recovery" actions still go through the api client.
   if (import.meta.env.DEV) {
     window.addEventListener('beforeunload', () => {
-      navigator.sendBeacon(`${ORIGIN}/api/v1/recovery/clear`)
+      // Only clear when nothing is dirty: a dev reload (Cmd+R) with unsaved
+      // edits unloads the page — the edits die with it, and clearing here would
+      // destroy the autosave too, i.e. the only remaining copy.
+      const ed = useEditorStore()
+      if (!ed.hasAnyUnsaved()) navigator.sendBeacon(`${ORIGIN}/api/v1/recovery/clear`)
     })
   }
   try {

@@ -65,7 +65,7 @@ const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTER
 // Template ref to EditorWorkspace so structural mutations here can cancel its
 // pending debounced edit first (the timer captured a row index that these
 // reorder, so letting it fire would corrupt a shifted row).
-const workspace = ref<{ cancelPendingEdit: () => void } | null>(null)
+const workspace = ref<{ cancelPendingEdit: () => void; flushPendingEdit: () => Promise<void> } | null>(null)
 
 function doUndo() {
   workspace.value?.cancelPendingEdit()
@@ -139,7 +139,9 @@ onMounted(async () => {
     const win = getCurrentWindow()
     await win.onCloseRequested(async (event) => {
       if (forceClose.value) return
-      if (editor.hasUnsavedChanges) {
+      // Any-mode dirty check: edits cached in a non-current mode slot must also
+      // block a silent close (hasUnsavedChanges is per-mode).
+      if (editor.hasAnyUnsaved()) {
         event.preventDefault()
         await new Promise(r => setTimeout(r, 0))
         showCloseConfirm.value = true
@@ -211,6 +213,11 @@ watch(() => app.searchOpen, (open) => {
 
 function setMode(key: number) {
   const changed = key !== editor.currentMode
+  // Drop any pending debounced edit BEFORE swapping mode state: its timer
+  // captured a row index for the old mode's arrays, so letting it fire against
+  // the new mode's talks would write the old mode's text into an unrelated row.
+  // (onBlur already committed the text to both arrays, so nothing is lost.)
+  if (changed) workspace.value?.cancelPendingEdit()
   editor.switchMode(key as 0 | 1 | 2)
   app.setEditorMode(key as 0 | 1 | 2)
   // The undo/redo stacks are a module-level singleton shared across all modes,
@@ -241,9 +248,16 @@ const modes = [ { key: 0, label: '翻译' }, { key: 1, label: '校对' }, { key:
 const modeIcons: Record<number, typeof Pencil> = { 0: Pencil, 1: Check, 2: CircleDot }
 
 async function handleOpen() {
+  // Opening a file replaces the current document and clears the undo stack, so
+  // unsaved work would be gone with no way back (and the next autosave tick
+  // would overwrite the recovery file with the new document too). Confirm first.
+  if (editor.hasUnsavedChanges) {
+    if (!(await confirm({ title: '打开文件', message: '有未保存的更改，打开新文件将丢弃它们。确定继续吗？', tone: 'danger', confirmText: '不保存并打开' }))) return
+  }
   try {
     const result = await fileDialog.openTranslation()
     if (!result) return
+    workspace.value?.cancelPendingEdit()
     console.log('[Open] loaded file', { path: result.filePath || result.fileName, talkCount: result.talks.length, hasMeta: !!result.meta, mode: app.editorMode, fileMode: result.meta?.mode })
     // Baseline fallback: in 校对/合意 modes, seed every row's baseline to its
     // current text up front. The .txt format does not persist baseline, and the
@@ -320,6 +334,10 @@ async function handleOpen() {
 
 async function handleSave() {
   if (editor.talks.length === 0) return
+  // Flush (not cancel) the pending debounced edit so the file is serialized
+  // from a dstTalks that carries the last blurred edit in its fully processed
+  // form. Clicking 保存 within 300ms of leaving a field used to race this.
+  try { await workspace.value?.flushPendingEdit() } catch { /* raw commit already in arrays */ }
   const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
   // The 译文 header input (editor.titleOverride) owns the title segment. The
   // filename is always rebuilt as 【模式】<saveTitle> <title>.txt — the prefix
@@ -349,7 +367,10 @@ async function handleSave() {
     if (!path) { console.log('[Save] cancelled by user'); return }
     editor.currentFilePath = path
     editor.markSaved()
-    api.recoveryClear().catch(() => {})
+    // Awaited: 保存并退出 destroys the window right after handleSave returns, so a
+    // fire-and-forget clear could be cut off — leaving a STALE autosave that the
+    // next launch offers as "recovery" over the newer just-saved file.
+    await api.recoveryClear().catch(() => {})
     console.log('[Save] saved successfully', { path })
     toast.show('已保存', 'success')
   } catch (e: any) {
