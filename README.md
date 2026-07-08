@@ -10,7 +10,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <img alt="Version" src="https://img.shields.io/badge/version-5.1.1-blue?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-5.1.2-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
@@ -117,7 +117,7 @@ npm run build:tauri
 
 ## 版本
 
-当前版本：**5.1.1** (stable)
+当前版本：**5.1.2** (stable)
 
 ## 开源协议
 
