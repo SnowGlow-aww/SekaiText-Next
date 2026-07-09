@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // Aegisub 侧的同步宏：随导出写到 .ass 同目录。用户把它装进 Aegisub 的
@@ -165,4 +166,49 @@ func WriteAegisubSyncScript(dir string) (string, error) {
 		return "", err
 	}
 	return p, nil
+}
+
+// aegisubAutoloadDir 返回本机 Aegisub 的 automation/autoload 目录；探测不到
+// Aegisub 配置根目录（说明没装或从未运行过）时返回空串，不凭空创建别家应用的
+// 配置树。arch1t3cht 分支与官方版共用同一配置目录。
+func aegisubAutoloadDir() string {
+	var root string
+	switch runtime.GOOS {
+	case "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		root = filepath.Join(home, "Library", "Application Support", "Aegisub")
+	case "windows":
+		appdata := os.Getenv("APPDATA")
+		if appdata == "" {
+			return ""
+		}
+		root = filepath.Join(appdata, "Aegisub")
+	default:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		root = filepath.Join(home, ".aegisub")
+	}
+	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+		return ""
+	}
+	return filepath.Join(root, "automation", "autoload")
+}
+
+// InstallAegisubSyncMacro 尽力把同步宏直接装进本机 Aegisub 的 autoload 目录，
+// 让「自动化 → SekaiText → 从轴机拉取」开箱即用（重启 Aegisub 后生效）。
+// 返回安装路径；未检测到 Aegisub 时返回空串且不算错误。
+func InstallAegisubSyncMacro() (string, error) {
+	dir := aegisubAutoloadDir()
+	if dir == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return WriteAegisubSyncScript(dir)
 }

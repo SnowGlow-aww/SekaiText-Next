@@ -18,7 +18,10 @@ import (
 type AssPostOptions struct {
 	Clean         bool   `json:"clean"`
 	SyncTags      bool   `json:"syncTags"`
-	StyleTemplate string `json:"styleTemplate,omitempty"` // 团队样式模板 .ass，提供 1行/2行/3行 等定义
+	StyleTemplate string `json:"styleTemplate,omitempty"` // 团队样式模板 .ass 路径，提供 1行/2行/3行 等定义
+	// StyleTemplateContent 是模板的整段文本（插件内置模板走这里，随插件分发、
+	// 开箱即用不落盘）。StyleTemplate 路径非空时优先，便于用户自定义覆盖。
+	StyleTemplateContent string `json:"styleTemplateContent,omitempty"`
 }
 
 type AssPostResult struct {
@@ -269,6 +272,12 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			if err != nil {
 				res.Warnings = append(res.Warnings, "样式模板读取失败: "+err.Error())
 			}
+		} else if opts.StyleTemplateContent != "" {
+			var err error
+			tmplStyles, tmplOrder, err = parseStyleTemplate(opts.StyleTemplateContent)
+			if err != nil {
+				res.Warnings = append(res.Warnings, "内置样式模板解析失败: "+err.Error())
+			}
 		}
 
 		engineDefs := map[string]string{}
@@ -349,9 +358,13 @@ func loadStyleTemplate(path string) (map[string]string, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	return parseStyleTemplate(string(data))
+}
+
+func parseStyleTemplate(content string) (map[string]string, []string, error) {
 	styles := map[string]string{}
 	var order []string
-	for _, ln := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+	for _, ln := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
 		if name := styleName(strings.TrimSpace(ln)); name != "" {
 			if _, dup := styles[name]; !dup {
 				order = append(order, name)

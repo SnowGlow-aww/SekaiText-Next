@@ -208,10 +208,11 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	// Optional JSON body: output directory + post-process options. A missing/empty
 	// body keeps the legacy behavior (raw engine output, default subtitles dir).
 	var body struct {
-		OutputDir     string `json:"outputDir"`
-		Clean         bool   `json:"clean"`         // 内建 tools.lua：改样式/去\N/删 Character+Screen 行
-		SyncTags      bool   `json:"syncTags"`      // Effect 埋 st:N 标识（Aegisub 同步的键）
-		StyleTemplate string `json:"styleTemplate"` // 团队样式模板 .ass（可选）
+		OutputDir            string `json:"outputDir"`
+		Clean                bool   `json:"clean"`                // 内建 tools.lua：改样式/去\N/删 Character+Screen 行
+		SyncTags             bool   `json:"syncTags"`             // Effect 埋 st:N 标识（Aegisub 同步的键）
+		StyleTemplate        string `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
+		StyleTemplateContent string `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
 
@@ -222,9 +223,10 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := service.AssPostOptions{
-		Clean:         body.Clean,
-		SyncTags:      body.SyncTags,
-		StyleTemplate: strings.TrimSpace(body.StyleTemplate),
+		Clean:                body.Clean,
+		SyncTags:             body.SyncTags,
+		StyleTemplate:        strings.TrimSpace(body.StyleTemplate),
+		StyleTemplateContent: body.StyleTemplateContent,
 	}
 	var warnings []string
 	if opts.Clean || opts.SyncTags {
@@ -269,21 +271,29 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	job.DirtyLines = map[int]bool{}
 	job.Mu.Unlock()
 
-	// 同步启用时顺手把 Aegisub 宏写到同目录，用户拷进 automation/autoload 即用。
+	// 同步启用时顺手把 Aegisub 宏写到同目录，并尽力直接装进本机 Aegisub 的
+	// automation/autoload（探测到才装，开箱即用；没装 Aegisub 就只留目录副本）。
 	syncScript := ""
+	aegisubMacro := ""
 	if opts.SyncTags {
 		if p, serr := service.WriteAegisubSyncScript(outDir); serr == nil {
 			syncScript = p
 		} else {
 			warnings = append(warnings, "写入 Aegisub 同步宏失败: "+serr.Error())
 		}
+		if p, serr := service.InstallAegisubSyncMacro(); serr != nil {
+			warnings = append(warnings, "安装 Aegisub 同步宏失败: "+serr.Error())
+		} else {
+			aegisubMacro = p
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"assPath":    assPath,
-		"chars":      len(content),
-		"warnings":   warnings,
-		"syncScript": syncScript,
+		"assPath":      assPath,
+		"chars":        len(content),
+		"warnings":     warnings,
+		"syncScript":   syncScript,
+		"aegisubMacro": aegisubMacro,
 	})
 }
 

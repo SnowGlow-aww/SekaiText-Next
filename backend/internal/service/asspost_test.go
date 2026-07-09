@@ -136,6 +136,36 @@ func TestPostProcessStyleTemplate(t *testing.T) {
 	}
 }
 
+func TestPostProcessStyleTemplateContent(t *testing.T) {
+	// 插件内置模板走整段文本直传（BOM+CRLF 也要能吃）；显式路径优先于内容。
+	content := "\ufeff[V4+ Styles]\r\nStyle: 1行,内容版,70\r\nStyle: 2行,内容版,70\r\nStyle: 3行,内容版,70\r\nStyle: 遮罩,Arial,100\r\n"
+	post, err := PostProcessAss(sampleAss, AssPostOptions{Clean: true, StyleTemplateContent: content})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	if !strings.Contains(post.Content, "Style: 1行,内容版,70") || !strings.Contains(post.Content, "Style: 遮罩,Arial,100") {
+		t.Errorf("应采用内容直传模板的样式定义:\n%s", post.Content)
+	}
+	for _, wme := range post.Warnings {
+		if strings.Contains(wme, "暂用引擎默认定义") {
+			t.Errorf("有内置模板时不应出现引擎默认定义告警: %v", post.Warnings)
+		}
+	}
+
+	dir := t.TempDir()
+	tmpl := filepath.Join(dir, "custom.ass")
+	if err := os.WriteFile(tmpl, []byte("[V4+ Styles]\nStyle: 1行,路径版,72\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	post, err = PostProcessAss(sampleAss, AssPostOptions{Clean: true, StyleTemplate: tmpl, StyleTemplateContent: content})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	if !strings.Contains(post.Content, "Style: 1行,路径版,72") {
+		t.Errorf("显式模板路径应覆盖内置模板内容:\n%s", post.Content)
+	}
+}
+
 func TestPostProcess1920Suffix(t *testing.T) {
 	src := strings.ReplaceAll(sampleAss, "PlayResX: 2560", "PlayResX: 1920")
 	src = strings.ReplaceAll(src, "PlayResY: 1600", "PlayResY: 1440")
