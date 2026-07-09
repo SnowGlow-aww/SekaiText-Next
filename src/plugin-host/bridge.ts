@@ -8,6 +8,7 @@ import { useLive2dDockStore } from '../stores/live2dDock'
 import { api, ORIGIN } from '../api/client'
 import { useToast } from '../composables/useToast'
 import { usePluginRegistry } from './registry'
+import { useTour } from '../onboarding/useTour'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import type { SekaiHost, PluginSidebarItem, PluginSettingsSection, PluginDockPanel } from './types'
 
@@ -108,6 +109,14 @@ export function installHostBridge(router: Router, pinia: Pinia): SekaiHost {
       },
     },
     components: { StoryNavigator },
+    // 导览：插件可自带分步引导（首次进入自动弹一次用 startTourOnce，id 会按
+    // 插件命名空间隔离并持久化到 settings.seenTours；强制重放用 startTour）。
+    startTour: (pluginId: string, def: { id: string; steps: any[] }) => {
+      useTour().start({ id: `plugin:${pluginId}:${def.id}`, steps: def.steps })
+    },
+    startTourOnce: (pluginId: string, def: { id: string; steps: any[] }) => {
+      useTour().startOnce({ id: `plugin:${pluginId}:${def.id}`, steps: def.steps })
+    },
     registerRoute,
     registerSidebarItem,
     registerSettingsSection,

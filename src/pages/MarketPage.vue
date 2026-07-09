@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ArrowLeft, RefreshCw, Search, Package, Download, CircleCheck, ExternalLink } from 'lucide-vue-next'
 import { useMarketStore } from '../stores/market'
 import { useToast } from '../composables/useToast'
+import { openExternal } from '../utils/openExternal'
 
 const router = useRouter()
 const market = useMarketStore()
@@ -88,13 +89,12 @@ async function install(id: string, name: string) {
           </div>
           <p class="text-xs text-[var(--color-text-secondary)] flex-1 line-clamp-3 mb-3">{{ p.description }}</p>
           <div class="flex items-center justify-between gap-2">
-            <a
+            <!-- Tauri webview 不处理 target=_blank，必须经 openExternal 调系统浏览器 -->
+            <button
               v-if="p.homepage"
-              :href="p.homepage"
-              target="_blank"
-              rel="noopener"
+              @click="openExternal(p.homepage)"
               class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text)] inline-flex items-center gap-1 transition-colors"
-            ><ExternalLink :size="12" /> 主页</a>
+            ><ExternalLink :size="12" /> 主页</button>
             <span v-else />
             <button
               v-if="p.updateAvailable"

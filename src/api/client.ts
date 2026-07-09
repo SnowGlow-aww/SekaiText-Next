@@ -304,6 +304,8 @@ export const api = {
 
   openDataDir: () =>
     request<{ dir: string }>('/open-data-dir', { method: 'POST' }),
+  openUrl: (url: string) =>
+    request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
 
   importLive2D: (srcDir: string) =>
     request<{ dir: string; moved: number }>('/live2d/import', {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -883,6 +884,39 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// OpenURL opens an external http/https link in the system browser. The Tauri
+// webview has no window.open/target=_blank handler, so外链全部走这里。Scheme is
+// whitelisted so a page can't launch arbitrary local protocols/executables.
+func (h *Handler) OpenURL(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	u, err := neturl.Parse(strings.TrimSpace(req.URL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		writeError(w, http.StatusBadRequest, "仅支持 http/https 链接")
+		return
+	}
+	target := u.String()
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", target)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	if err := cmd.Start(); err != nil {
+		writeError(w, http.StatusInternalServerError, "open failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // OpenDataDir reveals the app's writable data directory (DataBaseDir) in the OS

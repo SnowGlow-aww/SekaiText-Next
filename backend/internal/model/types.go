@@ -146,6 +146,14 @@ type Settings struct {
 	// ""/"cdn" = 国内边缘 CDN 加速（默认）, "github" = GitHub 直连。所选源优先，
 	// 另一侧自动兜底（见 service.routeDownloadURL）。
 	DownloadMirror string `json:"downloadMirror,omitempty"`
+
+	// SeenTours lists onboarding-tour ids the user has completed or skipped
+	// ("app-welcome", "plugin:live2d", "whatsnew:5.3.0", …) so each shows once.
+	SeenTours []string `json:"seenTours,omitempty"`
+
+	// LastSeenVersion is the app version at last launch; a mismatch on boot
+	// triggers the one-time what's-new tour for the new version.
+	LastSeenVersion string `json:"lastSeenVersion,omitempty"`
 }
 
 // DefaultSettings returns sensible defaults.

@@ -77,6 +77,10 @@ export interface SekaiHost {
   ui: {
     toast: (message: string, type?: 'success' | 'error' | 'info' | 'warn', duration?: number) => void
   }
+  // 分步导览：steps 结构见 src/onboarding/useTour.ts 的 TourStep。
+  // startTourOnce 的 id 持久化到 settings.seenTours（自动加 plugin:<id>: 前缀），只弹一次。
+  startTour: (pluginId: string, def: { id: string; steps: any[] }) => void
+  startTourOnce: (pluginId: string, def: { id: string; steps: any[] }) => void
   // Native file dialogs (Tauri). Resolve to an absolute path / paths / null. In a
   // non-Tauri context (web dev) the underlying import throws — callers should
   // catch and fall back to manual path entry.

@@ -537,7 +537,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
           <span v-if="sidebarOpen" class="text-xs font-medium">模式</span>
         </button>
         <div class="border-b border-[var(--color-border)]" />
-        <div class="flex flex-col gap-0.5 p-1.5">
+        <div class="flex flex-col gap-0.5 p-1.5" data-tour="modes">
           <button v-for="m in modes" :key="m.key" @click="setMode(m.key)" class="flex items-center gap-2.5 h-9 px-2 rounded-lg transition-colors text-sm flex-shrink-0" :class="app.editorMode === m.key ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-medium' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]'">
             <component :is="modeIcons[m.key]" :size="18" /><span v-if="sidebarOpen" class="whitespace-nowrap">{{ m.label }}</span>
           </button>
@@ -545,20 +545,20 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
         <div class="flex-1" />
         <div class="border-t border-[var(--color-border)] p-1.5 space-y-0.5">
           <router-link to="/download" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Download :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">下载</span></router-link>
-          <router-link to="/glossary" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
+          <router-link to="/glossary" data-tour="nav-glossary" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
           <router-link to="/grammar" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><BookOpen :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">语法用例</span></router-link>
           <!-- Plugin-contributed sidebar items (Live2D, etc.) -->
           <router-link v-for="item in pluginRegistry.sidebarItems" :key="`${item.pluginId}:${item.id}`" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
-          <router-link to="/market" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Store :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">插件市场</span></router-link>
+          <router-link to="/market" data-tour="nav-market" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Store :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">插件市场</span></router-link>
           <router-link v-if="settings.settings.debugEnabled" to="/debug" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Bug :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">调试</span></router-link>
           <router-link to="/account" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Users :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">账号中心</span></router-link>
-          <router-link to="/settings" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Cog :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">设置</span></router-link>
+          <router-link to="/settings" data-tour="nav-settings" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Cog :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">设置</span></router-link>
         </div>
       </aside>
       <div class="flex-1 flex flex-col min-w-0">
-        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2"><StoryNavigator :auto-pull="true"/></header>
+        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2" data-tour="story-nav"><StoryNavigator :auto-pull="true"/></header>
         <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
-          <div class="flex items-center gap-1 flex-wrap">
+          <div class="flex items-center gap-1 flex-wrap" data-tour="toolbar">
             <button @click="handleOpen" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
             <button @click="handleSave" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
             <button @click="handleClear" class="btn btn-sm btn-ghost gap-1.5"><Eraser :size="15" />清空</button>
@@ -602,7 +602,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
           :class="[{ 'p-2.5': app.bgEnabled }, dockSide === 'top' || dockSide === 'bottom' ? 'flex-col' : 'flex-row']"
         >
           <Live2DDock v-if="dockSide === 'top'" placement="top" />
-          <div class="flex-1 min-w-0 min-h-0"><EditorWorkspace ref="workspace"/></div>
+          <div class="flex-1 min-w-0 min-h-0" data-tour="workspace"><EditorWorkspace ref="workspace"/></div>
           <Live2DDock v-if="dockSide === 'right'" placement="right" />
           <Live2DDock v-if="dockSide === 'bottom'" placement="bottom" />
         </main>

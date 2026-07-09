@@ -110,6 +110,9 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		// Reveal the app data directory in the OS file manager
 		r.Post("/open-data-dir", h.OpenDataDir)
 
+		// Open an external http/https link in the system browser
+		r.Post("/open-url", h.OpenURL)
+
 		// Plugins: list/enable/uninstall + static file serving (entry.js, assets)
 		r.Route("/plugins", func(r chi.Router) {
 			r.Get("/list", h.PluginsList)

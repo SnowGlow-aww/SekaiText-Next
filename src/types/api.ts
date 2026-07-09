@@ -33,6 +33,12 @@ export interface Settings {
 
   /** 更新与插件市场下载渠道：'cdn'(默认,国内加速) | 'github'(直连)。 */
   downloadMirror?: string
+
+  /** 已看过的导览 id（app-welcome / plugin:xxx / whatsnew:x.y），每个只弹一次。 */
+  seenTours?: string[]
+
+  /** 上次启动时的应用版本；升级后首启触发一次 what's new。 */
+  lastSeenVersion?: string
 }
 
 export interface SaveMetadata {

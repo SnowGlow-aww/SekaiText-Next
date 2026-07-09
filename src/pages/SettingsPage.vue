@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2, Globe, Github, Compass } from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settings'
 import { useAppUpdateStore } from '../stores/appUpdate'
 import { useToast } from '../composables/useToast'
@@ -12,6 +12,9 @@ import { usePluginRegistry } from '../plugin-host/registry'
 import { usePluginsStore } from '../stores/plugins'
 import ThemePicker from '../components/ui/ThemePicker.vue'
 import SkSelect from '../components/ui/SkSelect.vue'
+import { openExternal, LINKS } from '../utils/openExternal'
+import { useTour } from '../onboarding/useTour'
+import { appWelcomeTour } from '../onboarding/tours'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -77,6 +80,13 @@ async function uninstallPlugin(id: string, name: string) {
 }
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 重看新手导览：回到主界面再启动（导览锚点都在编辑器页）。
+const tour = useTour()
+function restartTour() {
+  router.push('/')
+  tour.start(appWelcomeTour())
+}
 
 // 角色头像材质：状态即 chr-custom 目录是否存在，无设置项。
 const chrIcon = ref<{ active: boolean; count: number }>({ active: false, count: 0 })
@@ -531,6 +541,17 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
             <RotateCcw :size="12" :class="checking ? 'animate-spin' : ''" />
             {{ checking ? '检查中…' : '检查更新' }}
+          </button>
+        </div>
+        <div class="flex items-center gap-2 mt-3">
+          <button @click="openExternal(LINKS.website)" class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
+            <Globe :size="12" /> 官网
+          </button>
+          <button @click="openExternal(LINKS.github)" class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
+            <Github :size="12" /> GitHub
+          </button>
+          <button @click="restartTour" class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
+            <Compass :size="12" /> 新手导览
           </button>
         </div>
       </section>

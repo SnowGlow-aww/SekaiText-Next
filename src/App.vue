@@ -10,9 +10,10 @@
   <ConfirmHost />
   <RecoveryDialog
     v-if="showRecovery"
-    @restore="showRecovery = false"
-    @discard="showRecovery = false"
+    @restore="showRecovery = false; maybeStartBootTour()"
+    @discard="showRecovery = false; maybeStartBootTour()"
   />
+  <TourOverlay />
 </template>
 
 <script setup lang="ts">
@@ -29,6 +30,11 @@ import UpdateBanner from './components/ui/UpdateBanner.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
 import ConfirmHost from './components/ui/ConfirmHost.vue'
 import RecoveryDialog from './components/RecoveryDialog.vue'
+import TourOverlay from './onboarding/TourOverlay.vue'
+import { useTour } from './onboarding/useTour'
+import { appWelcomeTour, pluginIntroTour, whatsNewTour } from './onboarding/tours'
+import { usePluginRegistry } from './plugin-host/registry'
+import { useRouter } from 'vue-router'
 
 const settings = useSettingsStore()
 const appUpdate = useAppUpdateStore()
@@ -54,6 +60,44 @@ function applyUiFontSize(size: number) {
 function applyDebug(enabled: boolean) {
   if (enabled) initConsoleCapture()
 }
+
+// 新手导览 / 版本更新说明。恢复对话框在场时推迟到其关闭后再弹，避免叠层。
+// lastSeenVersion 每次启动都跟进当前版本，补丁版不重复打扰。
+const tour = useTour()
+let bootTourDone = false
+function maybeStartBootTour() {
+  if (bootTourDone || showRecovery.value) return
+  bootTourDone = true
+  const cur = __APP_VERSION__
+  const prevSeen = settings.settings.lastSeenVersion
+  // lastSeenVersion 是新字段，存量用户首次升上来时也是空的——用「加载过剧情」
+  // 区分：真新人走欢迎导览，老用户只看版本更新说明，不被完整导览打扰。
+  const isExistingUser = !!settings.settings.lastStoryType
+  if (!tour.seen('app-welcome') && !isExistingUser) {
+    tour.startOnce(appWelcomeTour())
+  } else if (prevSeen !== cur) {
+    const wn = whatsNewTour(cur)
+    if (wn) tour.startOnce(wn)
+  }
+  if (prevSeen !== cur) {
+    settings.settings.lastSeenVersion = cur
+    settings.saveSettings().catch(() => {})
+  }
+}
+
+// 插件功能介绍：安装后第一次进入该插件页面时弹一次。路径经
+// registry.routesByPlugin 反查归属插件，宿主与插件都不用硬编码路由。
+const pluginRegistry = usePluginRegistry()
+const appRouter = useRouter()
+appRouter.afterEach((to) => {
+  for (const [pluginId, paths] of Object.entries(pluginRegistry.routesByPlugin)) {
+    if (paths.includes(to.path)) {
+      const intro = pluginIntroTour(pluginId)
+      if (intro) tour.startOnce(intro)
+      break
+    }
+  }
+})
 
 watch(() => settings.settings.fontSize, applyFontSize, { immediate: true })
 watch(() => settings.settings.uiFontSize, applyUiFontSize, { immediate: true })
@@ -114,5 +158,7 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') recheck()
   })
+
+  maybeStartBootTour()
 })
 </script>
