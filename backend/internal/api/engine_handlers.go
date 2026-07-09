@@ -205,10 +205,13 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "打轴尚未完成，无法导出")
 		return
 	}
-	// Optional JSON body: a user-chosen output directory. A missing/empty body
-	// falls back to the default subtitles dir under the app data dir.
+	// Optional JSON body: output directory + post-process options. A missing/empty
+	// body keeps the legacy behavior (raw engine output, default subtitles dir).
 	var body struct {
-		OutputDir string `json:"outputDir"`
+		OutputDir     string `json:"outputDir"`
+		Clean         bool   `json:"clean"`         // 内建 tools.lua：改样式/去\N/删 Character+Screen 行
+		SyncTags      bool   `json:"syncTags"`      // Effect 埋 st:N 标识（Aegisub 同步的键）
+		StyleTemplate string `json:"styleTemplate"` // 团队样式模板 .ass（可选）
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
 
@@ -216,6 +219,24 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "导出字幕失败: "+err.Error())
 		return
+	}
+
+	opts := service.AssPostOptions{
+		Clean:         body.Clean,
+		SyncTags:      body.SyncTags,
+		StyleTemplate: strings.TrimSpace(body.StyleTemplate),
+	}
+	var warnings []string
+	if opts.Clean || opts.SyncTags {
+		post, perr := service.PostProcessAss(content, opts)
+		if perr != nil {
+			// 后处理拒绝损坏字幕时宁可导出原始内容，也不让用户拿不到 ass。
+			warnings = append(warnings, "后处理失败，已导出未处理内容: "+perr.Error())
+			opts = service.AssPostOptions{}
+		} else {
+			content = post.Content
+			warnings = post.Warnings
+		}
 	}
 
 	outDir := strings.TrimSpace(body.OutputDir)
@@ -233,7 +254,37 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "写入字幕失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"assPath": assPath, "chars": len(content)})
+
+	// 记录导出/同步基线：mtime+size 用来检测 Aegisub 侧改动，DirtyLines 从零计。
+	var mtime time.Time
+	var size int64
+	if fi, serr := os.Stat(assPath); serr == nil {
+		mtime, size = fi.ModTime(), fi.Size()
+	}
+	job.Mu.Lock()
+	job.ExportAssPath = assPath
+	job.ExportOpts = opts
+	job.ExportMTime = mtime
+	job.ExportSize = size
+	job.DirtyLines = map[int]bool{}
+	job.Mu.Unlock()
+
+	// 同步启用时顺手把 Aegisub 宏写到同目录，用户拷进 automation/autoload 即用。
+	syncScript := ""
+	if opts.SyncTags {
+		if p, serr := service.WriteAegisubSyncScript(outDir); serr == nil {
+			syncScript = p
+		} else {
+			warnings = append(warnings, "写入 Aegisub 同步宏失败: "+serr.Error())
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"assPath":    assPath,
+		"chars":      len(content),
+		"warnings":   warnings,
+		"syncScript": syncScript,
+	})
 }
 
 // assFileNameFor derives the export filename from the scenario script path: its

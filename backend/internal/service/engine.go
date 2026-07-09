@@ -90,6 +90,13 @@ type EngineTimingJob struct {
 	PreviewB64    string // latest preview jpeg (served on a separate endpoint)
 	FinishReason string
 	Error        string
+
+	// --- 导出与 Aegisub 同步状态（由 HTTP 层维护，同样由 Mu 保护） ---
+	ExportAssPath string         // 最近一次导出的 .ass 绝对路径（空=未导出）
+	ExportOpts    AssPostOptions // 导出时的后处理选项，推送同步时复用
+	ExportMTime   time.Time      // 我们最后一次写盘后的 mtime（据此判定 Aegisub 侧是否改过）
+	ExportSize    int64
+	DirtyLines    map[int]bool // 自上次导出/推送后经 broker 编辑过的 dialog index
 }
 
 // EngineSuppressJob mirrors ProgressTracker for a 压制 (encode) run.
@@ -404,6 +411,35 @@ func (em *EngineManager) Export() (string, error) {
 		return "", err
 	}
 	return out.Content, nil
+}
+
+// --- 行列表 / 分句编辑（原样代理给引擎） ---
+
+// TimingLines 返回引擎侧的完整识别行列表（subtitle.lines 的原始 payload，
+// 已经是前端要的形状，broker 不加工）。
+func (em *EngineManager) TimingLines() (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return em.request(ctx, "subtitle.lines", nil)
+}
+
+// TimingLineCall 代理单行编辑类方法（subtitle.setSeparator / subtitle.setTranslation /
+// subtitle.estimateSeparator），params 原样透传。
+func (em *EngineManager) TimingLineCall(method string, params interface{}) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return em.request(ctx, method, params)
+}
+
+// TimingFrame 取指定帧的画面（base64 jpeg），给分隔帧微调的实时预览用。
+func (em *EngineManager) TimingFrame(frame, maxWidth int) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	params := map[string]int{"frame": frame}
+	if maxWidth > 0 {
+		params["maxWidth"] = maxWidth
+	}
+	return em.request(ctx, "subtitle.frame", params)
 }
 
 // --- Suppress (压制) ---
