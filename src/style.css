@@ -7,6 +7,25 @@
    utilities they use (e.g. grid-cols-[1fr_7rem], bg-warning/10, max-h-72) are
    generated here. Without this, plugin-only utilities would be missing. */
 @source "../backend/plugins";
+/* 插件专用工具类安全清单：backend/plugins 被 gitignore，CI 干净环境里是空目录，
+   上面那行在 CI 构建时扫不到任何东西——插件用到而宿主没用到的类必须在这里点名，
+   否则只在本地构建生效（5.2.0~5.3.1 的正式版双列布局就是这么丢的）。
+   插件新增特殊类（arbitrary value / 非常规断点）时同步补这里。 */
+@source inline("lg:grid-cols-[380px_minmax(0,1fr)]");
+@source inline("min-[900px]:grid-cols-[380px_minmax(0,1fr)]");
+@source inline("grid-cols-[1fr_7rem]");
+@source inline("max-h-[calc(100vh-16rem)]");
+@source inline("max-w-[1500px]");
+@source inline("bg-[color-mix(in_oklch,var(--color-surface)_90%,transparent)]");
+@source inline("bg-[var(--color-base-100)]");
+@source inline("bg-[var(--color-bg)]");
+@source inline("border-[var(--color-border)]");
+@source inline("hover:bg-[var(--color-surface)]");
+@source inline("hover:text-[var(--color-text)]");
+@source inline("rounded-[var(--radius-control)]");
+@source inline("text-[var(--color-text-secondary)]");
+@source inline("text-[var(--color-text)]");
+@source inline("z-[var(--z-sticky)]");
 
 /* Bundled default UI font — 荆南麦圆体 (Jingnan Maiyuan). Vite fingerprints the
    .ttf and copies it into dist/assets; the body default stack below leads with
