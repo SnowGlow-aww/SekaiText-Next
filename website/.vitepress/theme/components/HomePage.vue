@@ -7,7 +7,10 @@ declare const __APP_VERSION__: string
 const version = __APP_VERSION__
 
 // 每张功能卡一个主题色：图标底、悬停描边与阴影都跟着走
-const features = [
+const features: {
+  icon: string; title: string; desc: string; accent: string
+  tag?: string; link?: string; more?: string
+}[] = [
   {
     icon: '📝',
     title: '剧情翻译编辑器',
@@ -29,13 +32,6 @@ const features = [
     accent: '#f5a623',
   },
   {
-    icon: '🎭',
-    title: 'Live2D 剧情播放器',
-    tag: '插件',
-    desc: '内置播放器还原游戏演出——表情、动作、语音同步播放，准确把握人物情感。',
-    accent: '#ff69b4',
-  },
-  {
     icon: '📚',
     title: '术语库与协作',
     desc: '术语 / 人称表云端同步，支持提案与审核，保障用词一致性。',
@@ -46,6 +42,9 @@ const features = [
     title: '插件市场',
     desc: '热加载插件系统，功能按需扩展；插件市场一键安装、自动更新，全程 CDN 加速。',
     accent: '#4ade80',
+    // 卡片整体可点，跳到全部插件一览（含主页未展示的 Live2D 等）
+    link: '/plugins.html',
+    more: '浏览全部插件 →',
   },
 ]
 
@@ -102,13 +101,21 @@ const steps = [
         <h2 class="section-title">全新重构，由 <span class="accent-text">Tauri</span> 驱动</h2>
         <p class="section-sub">为剧情翻译工作流打造的一站式解决方案</p>
         <div class="feature-grid">
-          <div v-for="f in features" :key="f.title" class="feature-card" :style="{ '--fc': f.accent }">
+          <component
+            :is="f.link ? 'a' : 'div'"
+            v-for="f in features"
+            :key="f.title"
+            :href="f.link ? withBase(f.link) : undefined"
+            class="feature-card"
+            :style="{ '--fc': f.accent }"
+          >
             <div class="feature-icon">{{ f.icon }}</div>
             <h3 class="feature-title">
               {{ f.title }}<span v-if="f.tag" class="feature-tag">{{ f.tag }}</span>
             </h3>
             <p class="feature-desc">{{ f.desc }}</p>
-          </div>
+            <span v-if="f.more" class="feature-more">{{ f.more }}</span>
+          </component>
         </div>
       </div>
     </section>
@@ -435,6 +442,19 @@ const steps = [
   line-height: 1.7;
   color: var(--vp-c-text-2);
   margin: 0;
+}
+/* 可点击的功能卡（如插件市场 → 插件一览）：去链接默认样式，加“更多”指引 */
+a.feature-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+.feature-more {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fc);
 }
 
 /* Steps：桌面端步骤间加箭头连线 */

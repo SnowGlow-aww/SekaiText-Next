@@ -33,6 +33,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '使用指南', link: '/guide/index.html' },
+      { text: '插件', link: '/plugins.html' },
       { text: '下载', link: '/download.html' },
     ],
     sidebar: {
