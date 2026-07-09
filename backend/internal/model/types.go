@@ -141,6 +141,11 @@ type Settings struct {
 	// AppUpdateURL overrides the app-release manifest URL. Empty falls back to the
 	// built-in default (service.DefaultAppUpdateURL).
 	AppUpdateURL string `json:"appUpdateUrl,omitempty"`
+
+	// DownloadMirror picks the source for app updates & plugin-market downloads:
+	// ""/"cdn" = 国内边缘 CDN 加速（默认）, "github" = GitHub 直连。所选源优先，
+	// 另一侧自动兜底（见 service.routeDownloadURL）。
+	DownloadMirror string `json:"downloadMirror,omitempty"`
 }
 
 // DefaultSettings returns sensible defaults.

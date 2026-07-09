@@ -60,13 +60,18 @@ var githubHosts = map[string]bool{
 // (GitHub hosts only, when githubProxyPrefix is set), then the original. A
 // non-GitHub or unparseable URL yields just itself, so the OSS/edge CDN (and any
 // self-hosted index) is fetched directly, unaffected.
+// 候选先经 routeDownloadURL 按「下载源」设置重排（CDN 加速 / GitHub 直连互为兜底）。
 func mirrorCandidates(rawurl string) []string {
-	u, err := url.Parse(rawurl)
-	if err != nil || githubProxyPrefix == "" || !githubHosts[strings.ToLower(u.Hostname())] {
-		return []string{rawurl}
+	var out []string
+	for _, cand := range routeDownloadURL(rawurl) {
+		u, err := url.Parse(cand)
+		if err == nil && githubProxyPrefix != "" && githubHosts[strings.ToLower(u.Hostname())] {
+			// The mirror expects the full original URL (scheme included) appended.
+			out = append(out, githubProxyPrefix+cand)
+		}
+		out = append(out, cand)
 	}
-	// The mirror expects the full original URL (scheme included) appended.
-	return []string{githubProxyPrefix + rawurl, rawurl}
+	return out
 }
 
 // mirrorFetch GETs rawurl, trying each mirrorCandidates URL in order until one

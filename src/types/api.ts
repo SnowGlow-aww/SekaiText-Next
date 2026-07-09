@@ -30,6 +30,9 @@ export interface Settings {
 
   /** Override the app-release manifest URL. Empty = built-in default. */
   appUpdateUrl?: string
+
+  /** 更新与插件市场下载渠道：'cdn'(默认,国内加速) | 'github'(直连)。 */
+  downloadMirror?: string
 }
 
 export interface SaveMetadata {

@@ -24,6 +24,12 @@ const appUpdate = useAppUpdateStore()
 const appVersion = __APP_VERSION__
 const checking = ref(false)
 
+// 更新与插件市场的下载渠道；所选源优先、另一侧自动兜底（后端 routeDownloadURL）。
+const downloadMirrorOptions = [
+  { value: 'cdn', label: '国内 CDN 加速（默认）' },
+  { value: 'github', label: 'GitHub 直连' },
+]
+
 async function checkUpdate() {
   if (checking.value) return
   checking.value = true
@@ -310,6 +316,19 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
               <div class="app-help mt-0.5">故事 JSON 数据来源</div>
             </div>
             <span class="text-sm text-[var(--color-text-secondary)] shrink-0">HarukiBot NEO</span>
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="text-sm font-medium">更新与插件下载源</div>
+              <div class="app-help mt-0.5">应用更新、插件市场走哪个渠道；海外或 CDN 异常时选 GitHub 直连</div>
+            </div>
+            <SkSelect
+              class="w-[200px] shrink-0"
+              :model-value="settings.settings.downloadMirror || 'cdn'"
+              @update:model-value="settings.settings.downloadMirror = $event as string"
+              :options="downloadMirrorOptions"
+            />
           </div>
 
           <label class="flex items-center justify-between gap-3 cursor-pointer">

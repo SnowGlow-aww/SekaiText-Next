@@ -67,6 +67,10 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
 	}
 	h.startDownloadTaskGC()
+	// 让「下载源」设置（CDN 加速 / GitHub 直连）在启动时即生效。
+	if s, err := h.loadSettings(); err == nil {
+		service.SetDownloadMirror(s.DownloadMirror)
+	}
 	return h
 }
 
@@ -745,7 +749,11 @@ func (h *Handler) saveSettings(s model.Settings) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(h.settingsPath(), data, 0644)
+	if err := writeFileAtomic(h.settingsPath(), data, 0644); err != nil {
+		return err
+	}
+	service.SetDownloadMirror(s.DownloadMirror) // 下载源切换即时生效，无需重启
+	return nil
 }
 
 // ImportLive2D moves a user-picked folder of Live2D assets (model/ + motion/ +
