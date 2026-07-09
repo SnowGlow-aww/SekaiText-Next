@@ -78,6 +78,40 @@ async function uninstallPlugin(id: string, name: string) {
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
+// 角色头像材质：状态即 chr-custom 目录是否存在，无设置项。
+const chrIcon = ref<{ active: boolean; count: number }>({ active: false, count: 0 })
+const chrIconBusy = ref(false)
+onMounted(() => { api.chrIconCustomStatus().then((s) => { chrIcon.value = s }).catch(() => {}) })
+
+async function importChrIcons() {
+  if (!isTauri || chrIconBusy.value) return
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const dir = await open({ title: '选择头像材质文件夹', directory: true })
+  if (!dir) return
+  chrIconBusy.value = true
+  try {
+    chrIcon.value = await api.chrIconCustomImport(dir as string)
+    toast.show(`已导入 ${chrIcon.value.count} 张头像`, 'success')
+  } catch (e: any) {
+    toast.show('导入失败: ' + (e?.message || '未知错误'), 'error')
+  } finally {
+    chrIconBusy.value = false
+  }
+}
+
+async function resetChrIcons() {
+  if (chrIconBusy.value) return
+  chrIconBusy.value = true
+  try {
+    chrIcon.value = await api.chrIconCustomReset()
+    toast.show('已恢复默认头像', 'success')
+  } catch (e: any) {
+    toast.show('操作失败: ' + (e?.message || '未知错误'), 'error')
+  } finally {
+    chrIconBusy.value = false
+  }
+}
+
 async function installPluginFromFile() {
   if (!isTauri) {
     toast.show('从文件安装仅在桌面版可用', 'info')
@@ -182,6 +216,33 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
           <div class="section-title">外观</div>
         </div>
         <ThemePicker />
+
+        <div class="mt-4 pt-4 border-t border-[var(--color-border)] flex items-center justify-between gap-3">
+          <div>
+            <div class="text-sm font-medium">角色头像材质</div>
+            <div class="app-help mt-0.5">
+              {{ chrIcon.active ? `已使用自定义头像（${chrIcon.count} 张）` : '选择包含 chr_1.png ~ chr_31.png 的文件夹，替换编辑器角色头像' }}
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              @click="importChrIcons"
+              :disabled="!isTauri || chrIconBusy"
+              :title="isTauri ? '' : '仅桌面端可用'"
+              class="btn btn-sm btn-ghost border border-[var(--color-border)]"
+            >
+              <FolderOpen :size="15" /> 选择文件夹
+            </button>
+            <button
+              v-if="chrIcon.active"
+              @click="resetChrIcons"
+              :disabled="chrIconBusy"
+              class="btn btn-sm btn-ghost border border-[var(--color-border)]"
+            >
+              <RotateCcw :size="15" /> 恢复默认
+            </button>
+          </div>
+        </div>
       </section>
 
       <!-- ====== 编辑器 ====== -->

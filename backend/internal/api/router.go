@@ -230,6 +230,9 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		r.Route("/assets", func(r chi.Router) {
 			r.Get("/characters", h.Characters)
 			r.Get("/character-icon/{index}", h.CharacterIcon)
+			r.Get("/character-icon-custom", h.CharacterIconCustomStatus)
+			r.Post("/character-icon-custom", h.CharacterIconCustomImport)
+			r.Delete("/character-icon-custom", h.CharacterIconCustomReset)
 			r.Get("/units", h.Units)
 			r.Get("/areas", h.Areas)
 		})

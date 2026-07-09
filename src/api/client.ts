@@ -398,6 +398,15 @@ export const api = {
   units: () => request<import('../types/dictionary').UnitInfo[]>('/assets/units'),
   areas: () => request<string[]>('/assets/areas'),
   characterIconUrl: (index: number) => `${BASE_URL}/assets/character-icon/${index}`,
+  chrIconCustomStatus: () =>
+    request<{ active: boolean; count: number }>('/assets/character-icon-custom'),
+  chrIconCustomImport: (dir: string) =>
+    request<{ active: boolean; count: number }>('/assets/character-icon-custom', {
+      method: 'POST',
+      body: JSON.stringify({ dir }),
+    }),
+  chrIconCustomReset: () =>
+    request<{ active: boolean; count: number }>('/assets/character-icon-custom', { method: 'DELETE' }),
 
   // --- Glossary (term library) ---
   glossarySearch: (q: string, category = '', limit = 50) =>

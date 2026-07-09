@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -16,6 +17,14 @@ type UnityStoryData struct {
 	Snippets          []SnippetData            `json:"Snippets"`
 	TalkData          []TalkData               `json:"TalkData"`
 	SpecialEffectData []SpecialEffectData      `json:"SpecialEffectData"`
+	AppearCharacters  []AppearCharacter        `json:"AppearCharacters"`
+}
+
+// AppearCharacter maps a Live2D model instance id to its costume name
+// (e.g. 296 -> "v2_19ena_casual"); the costume embeds the romaji character.
+type AppearCharacter struct {
+	Character2dId int    `json:"Character2dId"`
+	CostumeType   string `json:"CostumeType"`
 }
 
 // SnippetData represents an action snippet in the story.
@@ -108,6 +117,15 @@ func (j *JsonLoaderService) parse(story *UnityStoryData, locating bool) *model.L
 		talkIndex[i] = &story.TalkData[i]
 	}
 
+	// Live2D model instance id -> CharacterDict index (-1 for mob/sub models).
+	// The same id repeats once per costume of the same character; first wins.
+	c2dChar := make(map[int]int, len(story.AppearCharacters))
+	for _, a := range story.AppearCharacters {
+		if _, ok := c2dChar[a.Character2dId]; !ok {
+			c2dChar[a.Character2dId] = charIndexForCostume(a.CostumeType)
+		}
+	}
+
 	for _, snippet := range story.Snippets {
 		switch snippet.Action {
 		case 1: // TalkData
@@ -129,13 +147,7 @@ func (j *JsonLoaderService) parse(story *UnityStoryData, locating bool) *model.L
 				}
 			}
 
-			charIdx := -1
-			for idx, c := range model.CharacterDict {
-				if c.NameJ == speaker {
-					charIdx = idx
-					break
-				}
-			}
+			charIdx := charIndexForSpeaker(speaker, chara2d, c2dChar)
 
 			talk := model.SourceTalk{
 				Speaker:  speaker,
@@ -317,4 +329,76 @@ func normalizeVoiceID(v string) string {
 func splitSpeaker(displayName string) string {
 	parts := strings.SplitN(displayName, "_", 2)
 	return parts[0]
+}
+
+// charIndexForSpeaker resolves a talk's display speaker to a CharacterDict index
+// for the avatar icon. Story speakers are often decorated ("絵名の声",
+// "奏のメッセージ", role-play names like "子供の神使"), so enumeration by name
+// alone can't cover them. Resolution order:
+//
+//  1. "？？？"-style speakers stay -1: the game hides the identity on purpose.
+//  2. Exact Japanese name.
+//  3. The speaking Live2D model (Voices[0].Character2dId → costume): covers any
+//     decoration and role-play names without a suffix list, and a mob/sub model
+//     correctly resolves to -1 instead of leaking onto a look-alike name
+//     ("穂波の母" must not get 穂波's icon). Only known model ids short-circuit;
+//     group-voice pseudo-ids (900000) fall through.
+//  4. Multi-speaker windows ("司・えむ・寧々・類", group voice): first part that
+//     resolves by name.
+//  5. Voiceless lines ("奏のメッセージ" carries no Voices at all): a
+//     "{NameJ}の…" prefix names the character generically.
+func charIndexForSpeaker(speaker string, chara2d int, c2dChar map[int]int) int {
+	if speaker == "" || strings.Trim(speaker, "？?") == "" {
+		return -1
+	}
+	if c, ok := model.FindCharacterByJapaneseName(speaker); ok {
+		return c.Index
+	}
+	if idx, ok := c2dChar[chara2d]; ok {
+		return idx
+	}
+	for _, sep := range []string{"・", "＆"} {
+		if !strings.Contains(speaker, sep) {
+			continue
+		}
+		for _, part := range strings.Split(speaker, sep) {
+			if c, ok := model.FindCharacterByJapaneseName(part); ok {
+				return c.Index
+			}
+			if idx := charIndexForNamePrefix(part); idx >= 0 {
+				return idx
+			}
+		}
+	}
+	return charIndexForNamePrefix(speaker)
+}
+
+// charIndexForNamePrefix matches "{NameJ}の…" decorations ("絵名の声",
+// "奏のメッセージ", "みのりのスマホ", …) without enumerating suffixes.
+func charIndexForNamePrefix(speaker string) int {
+	for _, c := range model.CharacterDict {
+		if strings.HasPrefix(speaker, c.NameJ+"の") {
+			return c.Index
+		}
+	}
+	return -1
+}
+
+// costumeCharRe extracts the romaji character token from a costume name:
+// "v2_19ena_casual" -> "ena". Mob/sub costumes ("mob001", "sub_sakaki_black")
+// have no NN+romaji segment and don't match.
+var costumeCharRe = regexp.MustCompile(`(?:^|_)\d{2}([a-z]+)`)
+
+// charIndexForCostume resolves a Live2D costume name to a CharacterDict index.
+func charIndexForCostume(costume string) int {
+	m := costumeCharRe.FindStringSubmatch(costume)
+	if m == nil {
+		return -1
+	}
+	for _, c := range model.CharacterDict {
+		if c.Name == m[1] {
+			return c.Index
+		}
+	}
+	return -1
 }

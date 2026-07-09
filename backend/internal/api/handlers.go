@@ -1116,8 +1116,99 @@ func (h *Handler) CharacterIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	iconPath := h.cfg.ImagesChrDir + "/chr_" + indexStr + ".png"
+	if custom := filepath.Join(h.customChrDir(), "chr_"+indexStr+".png"); fileExists(custom) {
+		iconPath = custom
+	}
+	// no-cache = revalidate every load (ServeFile answers 304 via mtime), so a
+	// replaced texture shows up without restarting the webview.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", "image/png")
 	http.ServeFile(w, r, iconPath)
+}
+
+// customChrDir is where user-imported character avatar textures live; its
+// existence is the whole "custom avatars active" state (no settings entry).
+func (h *Handler) customChrDir() string {
+	dir := h.cfg.DataBaseDir
+	if dir == "" {
+		dir = h.cfg.DataDir
+	}
+	return filepath.Join(dir, "images", "chr-custom")
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func (h *Handler) CharacterIconCustomStatus(w http.ResponseWriter, r *http.Request) {
+	count := 0
+	for i := 1; i <= 31; i++ {
+		if fileExists(filepath.Join(h.customChrDir(), "chr_"+strconv.Itoa(i)+".png")) {
+			count++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": count > 0, "count": count})
+}
+
+// CharacterIconCustomImport copies chr_1.png..chr_31.png from a user-picked
+// directory into customChrDir. Copy (not reference) so the source folder can be
+// moved or deleted afterwards. The swap goes through a temp dir so a failed copy
+// can't leave a half-replaced set.
+func (h *Handler) CharacterIconCustomImport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Dir) == "" {
+		writeError(w, http.StatusBadRequest, "missing dir")
+		return
+	}
+	tmp := h.customChrDir() + ".tmp"
+	if err := os.RemoveAll(tmp); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	count := 0
+	for i := 1; i <= 31; i++ {
+		name := "chr_" + strconv.Itoa(i) + ".png"
+		data, err := os.ReadFile(filepath.Join(req.Dir, name))
+		if err != nil || len(data) == 0 || len(data) > 10<<20 {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(tmp, name), data, 0o644); err != nil {
+			os.RemoveAll(tmp)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		count++
+	}
+	if count == 0 {
+		os.RemoveAll(tmp)
+		writeError(w, http.StatusBadRequest, "所选文件夹中没有 chr_1.png ~ chr_31.png 命名的图片")
+		return
+	}
+	if err := os.RemoveAll(h.customChrDir()); err != nil {
+		os.RemoveAll(tmp)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.Rename(tmp, h.customChrDir()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": true, "count": count})
+}
+
+func (h *Handler) CharacterIconCustomReset(w http.ResponseWriter, r *http.Request) {
+	if err := os.RemoveAll(h.customChrDir()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": false, "count": 0})
 }
 
 func (h *Handler) Units(w http.ResponseWriter, r *http.Request) {
