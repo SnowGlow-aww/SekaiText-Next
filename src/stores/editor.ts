@@ -56,8 +56,14 @@ export const useEditorStore = defineStore('editor', () => {
     referTalks.value = newReferTalks
   }
 
+  // Monotonic edit counter: bumps on EVERY content mutation (line edit, add/
+  // remove, undo/redo, replace-all …). hasUnsavedChanges flips once and stays,
+  // so per-edit consumers (the autosave.txt writer) watch this instead.
+  const mutationSeq = ref(0)
+
   function markUnsaved() {
     hasUnsavedChanges.value = true
+    mutationSeq.value++
   }
 
   // Dirty check across ALL modes: hasUnsavedChanges only reflects the current
@@ -122,7 +128,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   return {
     talks, dstTalks, referTalks, sourceTalks,
-    currentFilePath, titleOverride, hasUnsavedChanges, majorClue,
+    currentFilePath, titleOverride, hasUnsavedChanges, majorClue, mutationSeq,
     currentMode,
     setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
     saveModeState, loadModeState, switchMode,

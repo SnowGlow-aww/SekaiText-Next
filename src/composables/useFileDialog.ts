@@ -91,5 +91,14 @@ export function useFileDialog() {
     }
   }
 
-  return { openTranslation, saveTranslation, isTauri }
+  // Native directory picker (Finder / Explorer). Tauri-only — callers should
+  // hide the entry point in the browser (isTauri) instead of handling null.
+  async function pickDirectory(title: string): Promise<string | null> {
+    if (!isTauri) return null
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const dir = await open({ title, directory: true })
+    return typeof dir === 'string' && dir ? dir : null
+  }
+
+  return { openTranslation, saveTranslation, pickDirectory, isTauri }
 }

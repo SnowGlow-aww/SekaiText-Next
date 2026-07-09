@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, BookOpen, Download } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, Download, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
 import { useSettingsStore } from '../stores/settings'
 import { api } from '../api/client'
 import { useToast } from '../composables/useToast'
 import { useDownloadFloat } from '../composables/useDownloadFloat'
+import { useFileDialog } from '../composables/useFileDialog'
 import SkSelect from '../components/ui/SkSelect.vue'
 
 const router = useRouter()
@@ -14,8 +15,14 @@ const story = useStoryStore()
 const settings = useSettingsStore()
 const toast = useToast()
 const dlFloat = useDownloadFloat()
+const { pickDirectory, isTauri } = useFileDialog()
 
 const outputDir = ref(settings.settings.jsonDownloadDir || '')
+
+async function browseOutputDir() {
+  const dir = await pickDirectory('选择保存目录')
+  if (dir) outputDir.value = dir
+}
 
 // Persist the chosen output directory so it survives an app restart. Previously
 // it was read from settings on mount but never written back, so a typed path was
@@ -182,9 +189,12 @@ async function handleDownload() {
             <input
               v-model="outputDir"
               type="text"
-              placeholder="输入保存目录路径..."
+              placeholder="输入或浏览选择保存目录..."
               class="app-input flex-1"
             />
+            <button v-if="isTauri" @click="browseOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+              <FolderOpen :size="15" /> 浏览
+            </button>
             <button @click="handleDownload" class="btn btn-sm btn-brand whitespace-nowrap">
               <Download :size="15" /> 下载
             </button>

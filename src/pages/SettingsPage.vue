@@ -15,6 +15,7 @@ import SkSelect from '../components/ui/SkSelect.vue'
 import { openExternal, LINKS } from '../utils/openExternal'
 import { useTour } from '../onboarding/useTour'
 import { appWelcomeTour } from '../onboarding/tours'
+import { useFileDialog } from '../composables/useFileDialog'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -80,6 +81,17 @@ async function uninstallPlugin(id: string, name: string) {
 }
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+const { pickDirectory } = useFileDialog()
+
+async function browseJsonDownloadDir() {
+  const dir = await pickDirectory('选择下载页默认目录')
+  if (dir) settings.settings.jsonDownloadDir = dir
+}
+
+async function browseVoiceOutputDir() {
+  const dir = await pickDirectory('选择语音输出目录')
+  if (dir) settings.settings.voiceOutputDir = dir
+}
 
 // 重看新手导览：回到主界面再启动（导览锚点都在编辑器页）。
 const tour = useTour()
@@ -331,12 +343,17 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
         </div>
         <label class="app-label">下载页默认目录</label>
         <p class="app-help mt-0.5 mb-2">专用下载页面 (/download) 的默认保存位置</p>
-        <input
-          v-model="settings.settings.jsonDownloadDir"
-          type="text"
-          placeholder="./downloads/json"
-          class="app-input"
-        />
+        <div class="flex gap-2">
+          <input
+            v-model="settings.settings.jsonDownloadDir"
+            type="text"
+            placeholder="./downloads/json"
+            class="app-input flex-1"
+          />
+          <button v-if="isTauri" @click="browseJsonDownloadDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+            <FolderOpen :size="15" /> 浏览
+          </button>
+        </div>
       </section>
 
       <!-- ====== 文件保存 ====== -->
@@ -364,12 +381,17 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
 
           <div class="sm:col-span-2">
             <label class="app-label">语音输出目录</label>
-            <input
-              v-model="settings.settings.voiceOutputDir"
-              type="text"
-              placeholder="留空使用默认目录"
-              class="app-input mt-1.5"
-            />
+            <div class="flex gap-2 mt-1.5">
+              <input
+                v-model="settings.settings.voiceOutputDir"
+                type="text"
+                placeholder="留空使用默认目录"
+                class="app-input flex-1"
+              />
+              <button v-if="isTauri" @click="browseVoiceOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+                <FolderOpen :size="15" /> 浏览
+              </button>
+            </div>
           </div>
         </div>
       </section>

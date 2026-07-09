@@ -216,6 +216,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/timing/progress", h.EngineTimingProgress)
 			r.Get("/timing/preview", h.EngineTimingPreview)
 			r.Post("/timing/export", h.EngineTimingExport)
+			r.Post("/timing/autosave", h.EngineTimingAutosave)
 			r.Get("/timing/lines", h.EngineTimingLines)
 			r.Post("/timing/line/separator", h.EngineTimingLineSeparator)
 			r.Post("/timing/line/translation", h.EngineTimingLineTranslation)

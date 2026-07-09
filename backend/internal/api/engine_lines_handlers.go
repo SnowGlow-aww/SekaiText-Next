@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,6 +117,55 @@ func (h *Handler) EngineTimingLineTranslation(w http.ResponseWriter, r *http.Req
 	}
 	markDirtyLine(job, *body.Index)
 	writeJSON(w, http.StatusOK, json.RawMessage(raw))
+}
+
+// EngineTimingAutosave 把当前引擎字幕（同导出口径后处理）写到 <outputDir>/autosave.ass。
+// 与正式导出的区别：不更新导出/同步基线（ExportAssPath/MTime/DirtyLines 全不动），
+// 纯粹是逐行微调后的落盘保险——崩溃/误退后打开 autosave.ass 即可拿回全部微调。
+func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireDoneTimingJob(w, r); !ok {
+		return
+	}
+	var body struct {
+		OutputDir            string `json:"outputDir"`
+		Clean                bool   `json:"clean"`
+		SyncTags             bool   `json:"syncTags"`
+		StyleTemplate        string `json:"styleTemplate"`
+		StyleTemplateContent string `json:"styleTemplateContent"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	content, err := h.engine.Export()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "组装字幕失败: "+err.Error())
+		return
+	}
+	opts := service.AssPostOptions{
+		Clean:                body.Clean,
+		SyncTags:             body.SyncTags,
+		StyleTemplate:        strings.TrimSpace(body.StyleTemplate),
+		StyleTemplateContent: body.StyleTemplateContent,
+	}
+	if opts.Clean || opts.SyncTags {
+		// 后处理失败时保留原始内容——保险文件宁可裸也不能缺。
+		if post, perr := service.PostProcessAss(content, opts); perr == nil {
+			content = post.Content
+		}
+	}
+	outDir := strings.TrimSpace(body.OutputDir)
+	if outDir == "" {
+		outDir = filepath.Join(h.cfg.DataDir, "subtitles")
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "创建输出目录失败: "+err.Error())
+		return
+	}
+	assPath := filepath.Join(outDir, "autosave.ass")
+	if err := os.WriteFile(assPath, []byte(content), 0644); err != nil {
+		writeError(w, http.StatusInternalServerError, "写入失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"assPath": assPath})
 }
 
 // EngineTimingLineEstimate 按打字速度估算给定文本分割点对应的换行帧（只算不落地）。

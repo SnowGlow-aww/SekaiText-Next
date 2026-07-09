@@ -123,6 +123,14 @@ export function pluginIntroTour(pluginId: string): TourDef | null {
  * 补丁版本不打扰。发版时若有值得展示的变化，在这里加一条。
  */
 const WHATS_NEW: Record<string, { title?: string; body: string; link?: TourStep['link'] }> = {
+  '5.4': {
+    body:
+      '· 逐行自动保存：每次编辑后自动把译文写到输出目录的 autosave.txt，崩溃断电不再丢稿\n' +
+      '· 工具栏新增「撤销 / 重做」按钮；「清空」加确认弹窗\n' +
+      '· 术语库呼吸灯：有提案待审核 / 你的提案被通过时，侧栏「术语库」按主题色发光提醒\n' +
+      '· 下载与保存目录支持访达 / 资源管理器可视化选择\n' +
+      '· 插件更新：轴机新增微调自动保存与原文对照；Live2D 修复切换卡帧 / 闪回黑屏 / 背景丢失，进度条可拖拽',
+  },
   '5.3': {
     body:
       '· 新增新手导览与插件功能介绍（设置 → 关于 可重看）\n' +

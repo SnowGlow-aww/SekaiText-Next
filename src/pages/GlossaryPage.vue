@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed, useTemplateRef } from 'vue'
+import { ref, onMounted, onActivated, watch, computed, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock } from 'lucide-vue-next'
@@ -11,12 +11,21 @@ import { api } from '../api/client'
 import TeamProposalsPanel from '../components/glossary/TeamProposalsPanel.vue'
 import SkSelect from '../components/ui/SkSelect.vue'
 import type { GlossaryEntry } from '../types/glossary'
+import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
 
 const router = useRouter()
 const glossary = useGlossaryStore()
 const team = useTeamStore()
 const toast = useToast()
 const { confirm } = useConfirm()
+const glossaryNotify = useGlossaryNotifyStore()
+
+// 打开术语库页 = 已读「我的提案已通过」，侧栏呼吸灯熄灭（待审核数不在此清零，
+// 那盏灯审完才灭）。先轮询拿到最新水位再标记，避免把没看到的通过也标掉。
+onActivated(async () => {
+  await glossaryNotify.poll()
+  glossaryNotify.markApprovedSeen()
+})
 
 const tab = ref<'search' | 'appellation'>('search')
 const showProposals = ref(false)

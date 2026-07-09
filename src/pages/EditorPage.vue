@@ -15,7 +15,7 @@ import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import * as LucideIcons from 'lucide-vue-next'
 import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info,
-  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, CheckCircle2 } from 'lucide-vue-next'
+  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, CheckCircle2, Undo2, Redo2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -25,6 +25,7 @@ import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
 import { useTeamStore } from '../stores/team'
+import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -37,6 +38,7 @@ const autoSave = useAutoSave()
 const undo = useUndo()
 const pluginRegistry = usePluginRegistry()
 const team = useTeamStore()
+const glossaryNotify = useGlossaryNotifyStore()
 const live2dDock = useLive2dDockStore()
 
 // Which edge (if any) the Live2D dock occupies around the workspace. Shown only
@@ -76,6 +78,50 @@ function doRedo() {
   workspace.value?.cancelPendingEdit()
   const snap = undo.redo(editor.talks, editor.dstTalks)
   if (snap) { editor.talks = snap.talks; editor.dstTalks = snap.dstTalks; editor.markUnsaved() }
+}
+// Toolbar 撤销/重做 buttons: top-level computed refs so the template auto-unwraps
+// them (refs nested in the plain `undo` object would not be).
+const canUndo = undo.canUndo
+const canRedo = undo.canRedo
+
+// ── 逐行落盘的明文保险（autosave.txt）─────────────────────────────────────────
+// 每次内容变更（mutationSeq：行编辑/增删行/撤销重做/全部替换…）后短防抖，把当前
+// 译文按正常保存的格式写到「正式输出同目录」的 autosave.txt——崩溃/断电后直接
+// 打开就能用。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
+let txtAutosaveTimer: ReturnType<typeof setTimeout> | null = null
+let txtAutosaveEnsuredDir = ''
+watch(() => editor.mutationSeq, () => {
+  if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
+  txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
+})
+// 输出目录 = 已保存/打开文件的所在目录；从未保存过则用正式保存的分层默认目录。
+// 两者都不可知（如网页端全新文档）时跳过——恢复文件仍在兜底。
+function txtAutosaveDir(): string | null {
+  const p = editor.currentFilePath
+  if (p && /[/\\]/.test(p)) return p.replace(/[/\\][^/\\]*$/, '')
+  const base = settings.settings.saveBaseDir
+  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
+    const sep = (s: string) => s.replace(/[/\\]/g, '_')
+    return `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}`
+  }
+  return null
+}
+async function writeTxtAutosave() {
+  if (editor.talks.length === 0) return
+  const dir = txtAutosaveDir()
+  if (!dir) return
+  const path = `${dir}/autosave.txt`
+  const meta: SaveMetadata | undefined = story.selectedType ? {
+    type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex,
+    chapter: story.selectedChapter, source: story.selectedSource, scenarioId: story.scenarioId,
+    mode: app.editorMode,
+  } : undefined
+  try {
+    if (txtAutosaveEnsuredDir !== dir) { await api.ensureDir(path); txtAutosaveEnsuredDir = dir }
+    await api.translationSave(path, editor.dstTalks, app.saveN, meta)
+  } catch (e) {
+    console.warn('[Autosave] autosave.txt write failed', e) // 保险动作静默失败，不打扰编辑
+  }
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -134,6 +180,7 @@ onMounted(async () => {
   // One-time setup only (registering onCloseRequested on every activation would
   // stack duplicate handlers); the listeners/autosave live in activate().
   team.refreshStatus().catch(() => {})
+  glossaryNotify.start() // 术语库侧栏呼吸灯：轮询待审提案/我的提案过审
   if (!isTauri) return
   try {
     const win = getCurrentWindow()
@@ -381,9 +428,10 @@ async function handleSave() {
 }
 
 async function handleClear() {
-  if (editor.hasUnsavedChanges) {
-    if (!(await confirm({ title: '清空内容', message: '有未保存的更改，确定清空吗？', tone: 'danger', confirmText: '清空' }))) return
-  }
+  // Always confirm — 清空 wipes the document AND the undo stack, so a stray
+  // click is unrecoverable even with no unsaved changes.
+  const detail = editor.hasUnsavedChanges ? '有未保存的更改，清空后无法找回。' : '清空后无法撤销。'
+  if (!(await confirm({ title: '清空内容', message: '确定清空当前全部内容吗？', detail, tone: 'danger', confirmText: '清空' }))) return
   editor.clearAll()
   undo.clear()
   toast.show('已清空', 'info')
@@ -545,7 +593,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
         <div class="flex-1" />
         <div class="border-t border-[var(--color-border)] p-1.5 space-y-0.5">
           <router-link to="/download" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Download :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">下载</span></router-link>
-          <router-link to="/glossary" data-tour="nav-glossary" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
+          <router-link to="/glossary" data-tour="nav-glossary" :class="{ 'notify-breathe': glossaryNotify.active }" :title="glossaryNotify.tooltip || undefined" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
           <router-link to="/grammar" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><BookOpen :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">语法用例</span></router-link>
           <!-- Plugin-contributed sidebar items (Live2D, etc.) -->
           <router-link v-for="item in pluginRegistry.sidebarItems" :key="`${item.pluginId}:${item.id}`" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
@@ -562,6 +610,8 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
             <button @click="handleOpen" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
             <button @click="handleSave" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
             <button @click="handleClear" class="btn btn-sm btn-ghost gap-1.5"><Eraser :size="15" />清空</button>
+            <button @click="doUndo" :disabled="!canUndo" :title="'撤销最近一次修改 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'undo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Undo2 :size="15" />撤销</button>
+            <button @click="doRedo" :disabled="!canRedo" :title="'重做 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'redo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Redo2 :size="15" />重做</button>
             <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
             <button class="tbar-toggle" :aria-pressed="app.showFlashback" @click="app.showFlashback = !app.showFlashback"><Eye :size="15" />闪回</button>
             <button class="tbar-toggle" :aria-pressed="app.showGlossary" @click="app.showGlossary = !app.showGlossary"><Languages :size="15" />术语</button>
@@ -655,6 +705,20 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
 </template>
 
 <style scoped>
+/* 术语库呼吸灯：有提案待审核 / 自己的提案新通过时，侧栏「术语库」按主题色
+   呼吸发光（动画期间 animation 的 color 优先级高于普通声明，会盖过 hover）。 */
+@keyframes notify-breathe {
+  0%, 100% { color: var(--color-text-secondary); filter: none; }
+  50% {
+    color: var(--color-primary);
+    filter: drop-shadow(0 0 6px color-mix(in oklch, var(--color-primary) 55%, transparent));
+  }
+}
+.notify-breathe { animation: notify-breathe 2.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .notify-breathe { animation: none; color: var(--color-primary); }
+}
+
 /* Toolbar toggle chip — on/off view options (闪回/术语/同步/搜索/对比) */
 .tbar-toggle {
   display: inline-flex;

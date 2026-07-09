@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { RefreshCw, Inbox, ClipboardCheck, Check, X, Undo2 } from 'lucide-vue-next'
 import { useTeamStore } from '../../stores/team'
 import { useGlossaryStore } from '../../stores/glossary'
+import { useGlossaryNotifyStore } from '../../stores/glossaryNotify'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import { api } from '../../api/client'
@@ -10,6 +11,7 @@ import type { Proposal } from '../../types/glossary'
 
 const team = useTeamStore()
 const glossary = useGlossaryStore()
+const glossaryNotify = useGlossaryNotifyStore()
 const { show } = useToast()
 const { confirm, prompt } = useConfirm()
 
@@ -56,7 +58,7 @@ async function reject(p: Proposal) {
     confirmText: '驳回',
   })
   if (note == null) return
-  try { await api.teamRejectProposal(p.id, note); show('已驳回', 'success'); await loadPending() }
+  try { await api.teamRejectProposal(p.id, note); show('已驳回', 'success'); await loadPending(); void glossaryNotify.poll() }
   catch (e) { show(msg(e), 'error') }
 }
 
@@ -65,6 +67,7 @@ async function afterReview() {
   await team.sync(true).catch(() => {})
   await glossary.fetchCategories()
   await glossary.loadAllEntries(true)
+  void glossaryNotify.poll() // 审完立即刷新侧栏呼吸灯（待审数归零就熄灭）
 }
 
 function parsePayload(p: Proposal): any {
