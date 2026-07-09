@@ -1,7 +1,7 @@
 {
   "name": "sekaitext",
   "private": true,
-  "version": "5.3.2",
+  "version": "5.4.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/cleanup.mjs 5173 && vite",
