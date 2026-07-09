@@ -62,14 +62,20 @@ const plugins: {
   color: var(--vp-c-text-2);
   margin: 0 0 20px;
 }
+/* flex + 居中：全部插件一排居中放；窄屏换行后每排也自动居中 */
 .plugin-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 20px;
   text-align: left;
 }
-@media (max-width: 640px) {
-  .plugin-grid { grid-template-columns: 1fr; }
+.plugin-card { width: calc((100% - 40px) / 3); }
+@media (max-width: 860px) {
+  .plugin-card { width: calc((100% - 20px) / 2); }
+}
+@media (max-width: 560px) {
+  .plugin-card { width: 100%; }
 }
 .plugin-card {
   display: block;

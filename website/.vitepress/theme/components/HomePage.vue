@@ -383,17 +383,21 @@ const steps = [
 }
 
 /* Features：每卡自带主题色 --fc */
+/* flex + 居中换行：卡片数不是列数整数倍时，最后一排自动居中（5 张卡 3 列
+   时第二排两张居中），任何断点都成立 */
 .feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 20px;
   text-align: left;
 }
+.feature-card { width: calc((100% - 40px) / 3); }
 @media (max-width: 860px) {
-  .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  .feature-card { width: calc((100% - 20px) / 2); }
 }
 @media (max-width: 560px) {
-  .feature-grid { grid-template-columns: 1fr; }
+  .feature-card { width: 100%; }
 }
 .feature-card {
   background: var(--vp-c-bg-soft);
