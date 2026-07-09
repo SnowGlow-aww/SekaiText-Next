@@ -220,7 +220,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
     <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
 
       <!-- ====== 外观 ====== -->
-      <section class="app-card p-5">
+      <section class="app-card p-5" data-tour="set-appearance">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Palette :size="15" /></span>
           <div class="section-title">外观</div>
@@ -256,7 +256,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 编辑器 ====== -->
-      <section class="app-card p-5">
+      <section class="app-card p-5" data-tour="set-editor">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><SlidersHorizontal :size="15" /></span>
           <div class="section-title">编辑器</div>
@@ -375,7 +375,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 网络与调试 ====== -->
-      <section class="app-card p-5">
+      <section class="app-card p-5" data-tour="set-network">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-accent/12 text-accent"><Wifi :size="15" /></span>
           <div class="section-title">网络与调试</div>
@@ -421,7 +421,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 快捷键 ====== -->
-      <section class="app-card p-5">
+      <section class="app-card p-5" data-tour="set-shortcuts">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
             <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Keyboard :size="15" /></span>
@@ -535,15 +535,13 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
           <div class="section-title">关于</div>
         </div>
         <div class="text-sm font-medium">SekaiText Next by 雪莹ちゃん</div>
-        <div class="flex items-center gap-3 mt-1">
-          <span class="app-help font-mono">v{{ appVersion }}</span>
+        <div class="flex items-center flex-wrap gap-2 mt-2" data-tour="set-about">
+          <span class="app-help font-mono mr-1">v{{ appVersion }}</span>
           <button @click="checkUpdate" :disabled="checking"
             class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
             <RotateCcw :size="12" :class="checking ? 'animate-spin' : ''" />
             {{ checking ? '检查中…' : '检查更新' }}
           </button>
-        </div>
-        <div class="flex items-center gap-2 mt-3">
           <button @click="openExternal(LINKS.website)" class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
             <Globe :size="12" /> 官网
           </button>

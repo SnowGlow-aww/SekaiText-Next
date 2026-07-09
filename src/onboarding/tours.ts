@@ -9,7 +9,7 @@ export function appWelcomeTour(): TourDef {
       {
         route: '/',
         title: '欢迎使用 SekaiText Next！',
-        body: '这是一款面向 Project SEKAI 剧情翻译的一站式工具。\n花一分钟快速了解主要功能吧。',
+        body: '这是一款面向 Project SEKAI 剧情翻译的一站式工具。\n我是雪莹ちゃん，就让我花一分钟带你了解下主要功能吧！',
       },
       {
         route: '/',
@@ -51,7 +51,37 @@ export function appWelcomeTour(): TourDef {
         route: '/',
         selector: '[data-tour="nav-settings"]',
         title: '设置',
-        body: '字号、下载源、角色头像材质、快捷键等都可以自定义。',
+        body: '所有偏好都集中在设置页——下一步带你进去逛一圈。',
+      },
+      {
+        route: '/settings',
+        selector: '[data-tour="set-appearance"]',
+        title: '外观',
+        body: '主题配色随心换；角色头像材质也能整套替换成团队自己的（选择包含 chr_1~chr_31.png 的文件夹即可）。',
+      },
+      {
+        route: '/settings',
+        selector: '[data-tour="set-editor"]',
+        title: '编辑器偏好',
+        body: '字号、撤销深度、索引排序、切换模式时是否保留剧情……按个人习惯调整。',
+      },
+      {
+        route: '/settings',
+        selector: '[data-tour="set-network"]',
+        title: '网络与调试',
+        body: '更新与插件下载源可选「国内 CDN 加速」或「GitHub 直连」，所选源优先、另一侧自动兜底。',
+      },
+      {
+        route: '/settings',
+        selector: '[data-tour="set-shortcuts"]',
+        title: '快捷键',
+        body: '常用操作全部可以自定义按键，点击对应条目直接录制。',
+      },
+      {
+        route: '/settings',
+        selector: '[data-tour="set-about"]',
+        title: '关于',
+        body: '检查更新、官网与 GitHub 入口都在这里；想重看本导览，随时点「新手导览」。',
       },
       {
         title: '导览结束！',

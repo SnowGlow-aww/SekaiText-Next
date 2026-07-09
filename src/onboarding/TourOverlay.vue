@@ -39,7 +39,10 @@ function measure() {
     rect.value = null
   } else {
     const r = targetEl.getBoundingClientRect()
-    rect.value = { x: r.left - PAD, y: r.top - PAD, w: r.width + PAD * 2, h: r.height + PAD * 2 }
+    // 收边到视口：目标比视口还高时（如设置页整个区块），框住它的可见部分
+    const top = Math.max(r.top - PAD, 6)
+    const bottom = Math.min(r.bottom + PAD, window.innerHeight - 6)
+    rect.value = { x: r.left - PAD, y: top, w: r.width + PAD * 2, h: Math.max(bottom - top, 0) }
   }
   placeCard()
 }
@@ -84,7 +87,7 @@ async function activateStep() {
       else stepIndex.value++
       return
     }
-    el.scrollIntoView({ block: 'nearest' })
+    el.scrollIntoView({ block: el.getBoundingClientRect().height > window.innerHeight * 0.75 ? 'start' : 'nearest' })
     targetEl = el
   }
   await nextTick()
@@ -119,13 +122,23 @@ function prev() {
 function onResize() {
   if (tour.active.value) measure()
 }
-onMounted(() => window.addEventListener('resize', onResize))
-onUnmounted(() => window.removeEventListener('resize', onResize))
+// 兜底：程序性滚动(scrollIntoView/路由恢复)后重新量取，高亮跟着目标走
+function onScroll() {
+  if (tour.active.value && targetEl) measure()
+}
+onMounted(() => {
+  window.addEventListener('resize', onResize)
+  window.addEventListener('scroll', onScroll, true)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('scroll', onScroll, true)
+})
 </script>
 
 <template>
   <teleport to="body">
-    <div v-if="tour.active.value && step" class="fixed inset-0 z-[10000]">
+    <div v-if="tour.active.value && step" class="fixed inset-0 z-[10000]" @wheel.prevent @touchmove.prevent>
       <!-- 点击护罩：无高亮时兼作暗幕 -->
       <div class="absolute inset-0" :class="rect ? '' : 'bg-black/55'" @click.stop />
       <!-- 聚光灯：透明中心 + 超大 box-shadow 压暗四周 -->
