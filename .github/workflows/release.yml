@@ -114,23 +114,16 @@ jobs:
         run: dotnet publish engine-src/SekaiToolsEngine/SekaiToolsEngine.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o "${{ env.ENGINE_DIR }}"
 
       # Static ffmpeg WITH libass for ASS subtitle burn-in (build-engine.mjs FFMPEG_BIN).
-      # macOS arm64: self-hosted, already-validated, ad-hoc-signed static build pinned by tag
-      # + sha256 on this repo's releases (immutable, no quarantine xattr via curl). Falls back
-      # to the martin-riedl release channel (also static + libass) if the asset is unavailable.
+      # macOS arm64: martin-riedl release channel (static + libass), always latest;
+      # the libass grep below hard-gates a broken/changed build.
       - name: Fetch static ffmpeg (macOS arm64, libass)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/ffmpeg-bin"
           FF="$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg"
-          SHA="22a02449174a956e2b72f54a652913794af6eb8c5400b98760263fd2caf24f77"
-          if curl -fL -o "$FF" "https://github.com/SnowGlow-aww/SekaiText-Next/releases/download/ffmpeg-bin-v8.1/ffmpeg-arm64"; then
-            echo "$SHA  $FF" | shasum -a 256 -c -
-          else
-            echo "::warning::self-hosted ffmpeg asset unavailable; falling back to martin-riedl release channel"
-            curl -fL -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
-            unzip -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" ffmpeg -d "$GITHUB_WORKSPACE/ffmpeg-bin"
-          fi
+          curl -fL --retry 3 -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+          unzip -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" ffmpeg -d "$GITHUB_WORKSPACE/ffmpeg-bin"
           chmod +x "$FF"
           "$FF" -hide_banner -version > "$GITHUB_WORKSPACE/ffver.txt" 2>&1
           grep -q -- enable-libass "$GITHUB_WORKSPACE/ffver.txt" && echo "libass OK" || { echo "::error::ffmpeg missing libass"; exit 1; }
@@ -222,15 +215,3 @@ jobs:
             **/*.exe
             **/*.msi
 
-  # Fully automatic self-updater manifest: after the release exists, generate
-  # app-release.json from its assets and (with MANIFEST_REPO_TOKEN) push it to the
-  # plugins repo the app polls. A release.yml-created release does NOT fire
-  # `on: release` (GITHUB_TOKEN anti-recursion), so we call the reusable workflow
-  # explicitly rather than relying on a trigger.
-  manifest:
-    needs: release
-    if: startsWith(github.ref, 'refs/tags/')
-    uses: ./.github/workflows/release-manifest.yml
-    with:
-      tag: ${{ github.ref_name }}
-    secrets: inherit
