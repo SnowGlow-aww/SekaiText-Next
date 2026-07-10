@@ -78,7 +78,7 @@ const steps = [
         </div>
         <h1 class="hero-title st-gradient-text">SekaiText Next</h1>
         <p class="hero-tagline">「プロジェクトセカイ」剧情翻译一站式工作台</p>
-        <p class="hero-sub">翻译 · 校对 · 自动打轴 · 一键压制 · Live2D 剧情播放 · 术语库协作</p>
+        <p class="hero-sub">翻译 · 校对 · 自动打轴 · 一键压制 · 术语库协作</p>
         <DownloadButtons />
 
         <!-- 在线体验编辑器 -->
