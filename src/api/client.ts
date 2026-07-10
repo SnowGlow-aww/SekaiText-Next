@@ -544,6 +544,18 @@ export const api = {
   // Accepts the full GlossaryData (entries + appellations + grammar) — the server
   // now also upserts appellations/grammar. Appellations/grammar are always sent
   // (as [] when absent) so the older entries-only path keeps working unchanged.
+  // 完全替换线上术语库（管理员）：服务器删掉上传里没有的行、其余 upsert，
+  // 单事务原子完成；空 entries 服务端直接拒绝（防误清空）。
+  teamGlossaryReplace: (data: import('../types/glossary').GlossaryData) =>
+    request<{ deleted: number; written: number; entries: number; appellations: number; grammar: number; version: number }>(
+      '/team/admin/glossary/replace', {
+        method: 'POST',
+        body: JSON.stringify({
+          entries: data.entries,
+          appellations: data.appellations ?? [],
+          grammar: data.grammar ?? [],
+        }),
+      }),
   teamBulkImport: (data: import('../types/glossary').GlossaryData) =>
     request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
       method: 'POST',

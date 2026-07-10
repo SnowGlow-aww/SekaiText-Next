@@ -34,6 +34,36 @@ type GlossaryStore struct {
 	stopPoll chan struct{}
 }
 
+// WriteSyncBackup 把一次下行同步拉到的服务器全量 JSON 滚动存档到
+// {glossary目录}/backups/glossary-时间戳.json，保留最近 10 份——误覆盖/误合并后
+// 可从任一近期服务器状态回滚（也可直接把备份文件重新上传至线上）。
+func (s *GlossaryStore) WriteSyncBackup(raw []byte) {
+	dir := filepath.Join(filepath.Dir(s.path), "backups")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	name := "glossary-" + time.Now().Format("20060102-150405") + ".json"
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0644); err != nil {
+		return
+	}
+	// 修剪：按文件名排序（时间戳命名即时间序），只留最近 10 份
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "glossary-") && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for len(names) > 10 {
+		_ = os.Remove(filepath.Join(dir, names[0]))
+		names = names[1:]
+	}
+}
+
 // NewGlossaryStore creates the store, ensures its directory exists, loads any
 // existing JSON, and starts the hot-reload poller.
 func NewGlossaryStore(dataDir string) *GlossaryStore {

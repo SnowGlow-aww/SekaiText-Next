@@ -103,6 +103,8 @@ func (h *Handler) TeamSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.team.SetLastSyncedVersion(remoteVer)
+	// 下行备份：把刚拉到的服务器全量 JSON 滚动存档（保留最近 10 份），误操作可回滚
+	h.glossary.WriteSyncBackup(raw)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "synced", "version": remoteVer, "changed": true,
 		"entries": len(gd.Entries), "appellations": len(gd.Appellations), "grammar": len(gd.Grammar),

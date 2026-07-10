@@ -101,3 +101,9 @@ func (h *Handler) TeamDeleteUser(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) TeamBulkImport(w http.ResponseWriter, r *http.Request) {
 	h.teamProxy(w, http.MethodPost, "/api/admin/glossary/bulk-import", decodeBody(r))
 }
+
+// TeamGlossaryReplace 完全替换线上术语库（管理员）：本地整库上传，服务器删掉
+// 上传里没有的行、其余 upsert，单事务原子完成（服务端 /replace 端点）。
+func (h *Handler) TeamGlossaryReplace(w http.ResponseWriter, r *http.Request) {
+	h.teamProxy(w, http.MethodPost, "/api/admin/glossary/replace", decodeBody(r))
+}

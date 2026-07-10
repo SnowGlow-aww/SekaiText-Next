@@ -2,7 +2,7 @@
 import { ref, onMounted, onActivated, watch, computed, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock } from 'lucide-vue-next'
+import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud } from 'lucide-vue-next'
 import { useGlossaryStore } from '../stores/glossary'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
@@ -109,6 +109,36 @@ const editDraft = ref<Partial<GlossaryEntry>>({})
 // remote (server) entry still routes its edit/delete through a team proposal; a
 // local (import/user) entry is changed directly.
 const canShowControls = computed(() => !team.readonly && editUnlocked.value)
+
+// 管理员整库分发：本地术语库完全替换线上（上传里没有的线上条目会被删除）。
+// 下行同步每次拉到更新都会在本地 backups/ 滚动留档 10 份，误传可回滚。
+const uploading = ref(false)
+async function uploadToServer() {
+  if (uploading.value) return
+  try {
+    const data = await api.glossaryExport()
+    const nE = data.entries?.length ?? 0
+    const nA = data.appellations?.length ?? 0
+    const nG = data.grammar?.length ?? 0
+    if (nE === 0) { toast.show('本地术语库为空，拒绝上传（会清空线上库）', 'error'); return }
+    if (!(await confirm({
+      title: '上传至线上术语库',
+      message: '将用本地术语库【完全替换】线上术语库。',
+      detail: `本地内容：词条 ${nE} / 人称 ${nA} / 语法 ${nG}。线上多出的条目将被删除，全员将在 1 分钟内同步到此版本。`,
+      tone: 'danger',
+      confirmText: '完全替换',
+    }))) return
+    uploading.value = true
+    const r = await api.teamGlossaryReplace(data)
+    toast.show(`已完全替换线上术语库：写入 ${r.written}、删除 ${r.deleted}（v${r.version}）`, 'success', 8000)
+    await team.sync(true)
+    await refreshView()
+  } catch (e: any) {
+    toast.show('上传失败: ' + (e?.message || e), 'error')
+  } finally {
+    uploading.value = false
+  }
+}
 
 function toggleEditLock() {
   editUnlocked.value = !editUnlocked.value
@@ -313,6 +343,16 @@ onMounted(async () => {
           >
             <component :is="editUnlocked ? Unlock : Lock" :size="16" />
             {{ editUnlocked ? '编辑中' : '锁定' }}
+          </button>
+          <button
+            v-if="team.loggedIn && team.isAdmin"
+            @click="uploadToServer"
+            :disabled="uploading"
+            class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
+            title="把本地术语库完整上传并完全替换线上术语库（仅管理员；线上多出的条目会被删除）"
+          >
+            <UploadCloud :size="16" />
+            {{ uploading ? '上传中…' : '上传至线上术语库' }}
           </button>
         </div>
       </div>

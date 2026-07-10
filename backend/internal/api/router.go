@@ -191,6 +191,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/admin/users/{id}/reset-password", h.TeamResetUserPassword)
 			r.Delete("/admin/users/{id}", h.TeamDeleteUser)
 			r.Post("/admin/glossary/bulk-import", h.TeamBulkImport)
+			r.Post("/admin/glossary/replace", h.TeamGlossaryReplace) // 完全替换（管理员整库分发）
 			// account self-service
 			r.Post("/account/password", h.TeamChangePassword)
 			r.Post("/account/profile", h.TeamUpdateProfile)
