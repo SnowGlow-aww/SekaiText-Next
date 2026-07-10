@@ -104,6 +104,12 @@ watch(() => settings.settings.uiFontSize, applyUiFontSize, { immediate: true })
 watch(() => settings.settings.debugEnabled, (v) => { enabled.value = v; applyDebug(v) })
 
 onMounted(async () => {
+  // 打包应用里禁用 WebView 原生右键菜单（Back / Reload）：误触 Back 会整页跳走、
+  // Reload 会丢掉未落盘状态。自定义右键菜单（编辑器换括号等）自带 contextmenu
+  // 监听，不受影响；网页开发环境保留原生菜单方便检查元素。
+  if ((window as any).__TAURI_INTERNALS__) {
+    document.addEventListener('contextmenu', (e) => e.preventDefault())
+  }
   // Recovery is cleared on normal exit by the Tauri shell in RELEASE (Rust sends
   // DELETE /api/v1/recovery/clear on RunEvent::Exit — on macOS an Apple-event quit
   // fires ONLY Exit, not ExitRequested, so Exit is the single reliable quit hook).

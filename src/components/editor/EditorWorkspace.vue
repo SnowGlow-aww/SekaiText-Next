@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onActivated, onMounted, nextTick } from 'vue'
+import { computed, ref, watch, onActivated, onDeactivated, onMounted, nextTick } from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -214,6 +214,12 @@ function handleTextChange(row: number, newText: string) {
     pendingEdit = null
     commitTextChange(row, newText)
   }, 300)
+}
+
+// blur 包装：清编辑态（恢复外层选中框）再走原提交逻辑。
+function onEditBlur(e: Event, idx: number) {
+  if (editingRow.value === idx) editingRow.value = -1
+  onBlur(e, idx)
 }
 
 function onBlur(e: Event, idx: number) {
@@ -453,6 +459,7 @@ function focusNext(e: KeyboardEvent) {
   const next = editables[idx + 1]
   if (next) {
     next.focus()
+    next.scrollIntoView({ block: 'center' }) // Enter 逐行推进时保持当前编辑行居中
     const range = document.createRange()
     range.selectNodeContents(next)
     range.collapse(false)
@@ -461,6 +468,77 @@ function focusNext(e: KeyboardEvent) {
     sel?.addRange(range)
   }
 }
+
+// ── 键盘行导航：Esc 退出编辑 → ↑/↓ 切换选中行 → Enter 进入编辑 ────────────────
+// selectedRow 记录当前「选中但未编辑」的行（globalIdx）。编辑框失焦后高亮保留，
+// 方向键在可编辑行之间移动高亮，Enter 重新聚焦进入编辑。
+// editingRow：正在编辑（contenteditable 聚焦）的行——编辑态只显示编辑框自身的
+// 内框，外层行高亮隐藏，避免双框（用户反馈）。
+const selectedRow = ref(-1)
+const editingRow = ref(-1)
+
+function onEditFocus(gidx: number) {
+  selectedRow.value = gidx
+  editingRow.value = gidx
+}
+
+// 按显示顺序取全部可编辑行（data-gidx 标注 globalIdx）。
+function editableEls(): HTMLElement[] {
+  const c = workspaceRef.value
+  return c ? Array.from(c.querySelectorAll<HTMLElement>('[contenteditable="true"][data-gidx]')) : []
+}
+
+function focusEditable(el: HTMLElement) {
+  el.focus()
+  el.scrollIntoView({ block: 'center' }) // 正在编辑的行始终居中
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  const sel = window.getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+}
+
+// Esc inside a contenteditable: commit (blur) and keep the row selected. During
+// IME composition, Escape cancels the candidate — leave it to the input method.
+// stopPropagation 必须有：blur 同步生效后同一事件冒泡到 window 的 onNavKey，
+// 会命中那里的 Escape=清除选中分支，把刚记下的行号立刻抹掉（下次 ↑/↓ 又从头来）。
+function onEditableEsc(e: KeyboardEvent, gidx: number) {
+  if (e.isComposing || (e as any).keyCode === 229) return
+  e.preventDefault()
+  e.stopPropagation()
+  selectedRow.value = gidx
+  ;(e.target as HTMLElement).blur()
+}
+
+// Window-level navigation while NOT editing. Bound on activate/deactivate (the
+// page is kept-alive, so mount/unmount never fires on navigation).
+function onNavKey(e: KeyboardEvent) {
+  const key = e.key
+  if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Enter' && key !== 'Escape') return
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+  // Typing somewhere (title/search input, another editable) — don't hijack.
+  const ae = document.activeElement
+  if (ae instanceof HTMLElement && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return
+  if (key === 'Escape') { selectedRow.value = -1; return }
+  const els = editableEls()
+  if (!els.length) return
+  const cur = els.findIndex(el => Number(el.dataset.gidx) === selectedRow.value)
+  if (key === 'Enter') {
+    if (cur < 0) return
+    e.preventDefault()
+    focusEditable(els[cur])
+    return
+  }
+  e.preventDefault()
+  const next = key === 'ArrowDown'
+    ? (cur < 0 ? 0 : Math.min(cur + 1, els.length - 1))
+    : (cur < 0 ? els.length - 1 : Math.max(cur - 1, 0))
+  selectedRow.value = Number(els[next].dataset.gidx)
+  els[next].scrollIntoView({ block: 'center' })
+}
+onActivated(() => window.addEventListener('keydown', onNavKey))
+onDeactivated(() => window.removeEventListener('keydown', onNavKey))
 
 // Allow the parent (EditorPage) to drop the pending debounced edit before it
 // performs a structural mutation (replace-all / undo / redo) that reorders
@@ -623,7 +701,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 
                   <!-- Edit row -->
                   <div
-                    :class="['p-2 rounded-lg border border-[var(--color-border)] transition-colors hover:bg-[var(--color-primary)]/[0.04]', group.items.length === 1 && !showBaselineRow(item.talk) ? 'flex-1 flex flex-col justify-center' : '', getEditBorder(item.talk) ? `border-l-4 ${getEditBorder(item.talk)}` : '', getEditBg(item.talk)]"
+                    :class="['p-2 rounded-lg border border-[var(--color-border)] transition-colors hover:bg-[var(--color-primary)]/[0.04]', group.items.length === 1 && !showBaselineRow(item.talk) ? 'flex-1 flex flex-col justify-center' : '', getEditBorder(item.talk) ? `border-l-4 ${getEditBorder(item.talk)}` : '', getEditBg(item.talk), selectedRow === item.globalIdx && editingRow !== item.globalIdx ? 'row-selected' : '']"
                   >
                     <div class="flex items-start gap-2">
                       <div class="w-8 flex-shrink-0 text-xs text-[var(--color-text-secondary)] pt-1">
@@ -641,11 +719,14 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                       >
                         <div
                           :contenteditable="item.talk.save && ![''].includes(item.talk.speaker)"
+                          :data-gidx="item.globalIdx"
                           class="leading-relaxed outline-none rounded px-1 -mx-1"
                           style="font-size: var(--editor-font-size)"
                           :class="{ 'cursor-text': item.talk.save && ![''].includes(item.talk.speaker) }"
-                          @blur="onBlur($event, item.globalIdx)"
+                          @focus="onEditFocus(item.globalIdx)"
+                          @blur="onEditBlur($event, item.globalIdx)"
                           @keydown.enter="focusNext"
+                          @keydown.esc="onEditableEsc($event, item.globalIdx)"
                           v-html="renderHighlight(item.talk)"
                         ></div>
                         <div v-if="item.talk.message" class="text-xs text-error mt-0.5">
@@ -751,6 +832,18 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 </template>
 
 <style scoped>
+/* 键盘导航选中行：内描边高亮，不与左侧 border-l 编辑指示条冲突。 */
+.row-selected {
+  box-shadow: inset 0 0 0 1.5px var(--color-primary);
+}
+
+/* 编辑态内框：全局 :focus-visible 只在键盘聚焦时画框，鼠标点进编辑没有指示——
+   这里统一成"只要在编辑就有内框"（外层 row-selected 编辑态已隐藏，恰好互补）。 */
+[contenteditable='true']:focus {
+  outline: 2px solid color-mix(in oklch, var(--accent, var(--color-primary)) 70%, transparent);
+  outline-offset: 2px;
+}
+
 /* Glossary term highlight in source text (injected via v-html, so :deep). */
 :deep(.glossary-hit) {
   border-bottom: 1.5px dotted var(--color-primary);

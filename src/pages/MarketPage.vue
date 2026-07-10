@@ -35,7 +35,7 @@ async function install(id: string, name: string) {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+  <div class="min-h-screen page-bg text-[var(--color-text)]">
     <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
         <button @click="router.push('/')" class="icon-btn -ml-1"><ArrowLeft :size="18" /></button>

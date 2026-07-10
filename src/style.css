@@ -251,12 +251,22 @@ html[data-bg='on'] select.app-input {
 html[data-bg='on'] body {
   background-color: transparent;
 }
+/* 页面根背景：无壁纸=实底主题色；开壁纸=透明（遮罩已在 body::before 固定层）。 */
+.page-bg {
+  background-color: var(--color-bg);
+}
+html[data-bg='on'] .page-bg {
+  background-color: transparent;
+}
 html[data-bg='on'] body::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: -1;
-  background-image: var(--bg-image);
+  /* 遮罩画在这层（固定、不随滚动位移）：页面根开壁纸时是透明的（.page-bg），
+     macOS 弹性滚动把页面滑出边界时，露出的仍是同样的"壁纸+遮罩"——保留回弹
+     手感，遮罩不再出框。 */
+  background-image: linear-gradient(var(--color-bg), var(--color-bg)), var(--bg-image);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -381,9 +391,6 @@ html[data-bg='on'] body::before {
     filter: brightness(1.05) saturate(1.06);
     box-shadow: var(--shadow-accent);
   }
-  .btn-brand:active {
-    transform: translateY(0.5px) scale(0.99);
-  }
 
   /* Icon button — square, subtle hover wash */
   .icon-btn {
@@ -460,4 +467,51 @@ html[data-bg='on'] body::before {
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--color-base-content) 30%, transparent);
   background-clip: padding-box;
+}
+
+/* ══ 全局按压立体感（覆盖所有按钮/链接）════════════════════════════════════
+   按下下沉缩小，松手沿 linear() 弹簧回弹（@supports 回落 ease）。下沉用独立
+   的 translate/scale 通道而非 transform——与任何现有 transform 定位/动画自动
+   叠加、互不覆盖。刻意不放 @layer：需要压过 utilities 层的 transition-colors
+   等声明才能带上弹簧通道，故写成未分层样式，并把常用过渡属性一并列入以免
+   丢失元素原有的颜色/阴影过渡。 */
+button,
+[role='button'],
+a {
+  transition:
+    translate 320ms var(--ease-out),
+    scale 320ms var(--ease-out),
+    background-color 140ms var(--ease-out),
+    color 140ms var(--ease-out),
+    border-color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out),
+    opacity 140ms var(--ease-out),
+    filter 140ms var(--ease-out),
+    transform 140ms var(--ease-out);
+}
+@supports (transition-timing-function: linear(0, 1)) {
+  button,
+  [role='button'],
+  a {
+    transition-timing-function:
+      linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
+      linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
+      ease-out, ease-out, ease-out, ease-out, ease-out, ease-out, ease-out;
+  }
+}
+button:not(:disabled):active,
+[role='button']:active,
+a:active {
+  transition-duration: 70ms;
+  transition-timing-function: ease-out;
+  translate: 0 1px;
+  scale: 0.96;
+}
+/* 实底类按钮按下时追加内阴影，凹陷感更实 */
+.btn:active:not(:disabled),
+.icon-btn:active:not(:disabled) {
+  box-shadow: inset 0 1.5px 3px rgb(0 0 0 / 0.25);
+}
+@media (prefers-reduced-motion: reduce) {
+  button:active, [role='button']:active, a:active { translate: none; scale: none; }
 }

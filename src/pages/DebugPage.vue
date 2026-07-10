@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Terminal, Save, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, Terminal, Save, Trash2, Pause, Play } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
 import { BASE_URL } from '../api/client'
 
@@ -54,7 +54,14 @@ async function fetchServerLogs() {
   }
 }
 
+// 自动滚动可暂停：复现问题时新日志会把现场刷出视野，暂停后位置钉住不动。
+const autoScroll = ref(true)
+function toggleAutoScroll() {
+  autoScroll.value = !autoScroll.value
+  if (autoScroll.value) scrollToBottom()
+}
 function scrollToBottom() {
+  if (!autoScroll.value) return
   nextTick(() => {
     if (logContainer.value) {
       logContainer.value.scrollTop = logContainer.value.scrollHeight
@@ -123,7 +130,7 @@ function clearAll() {
 </script>
 
 <template>
-  <div class="h-screen bg-[var(--color-bg)] text-[var(--color-text)] flex flex-col">
+  <div class="h-screen page-bg text-[var(--color-text)] flex flex-col">
     <!-- Header -->
     <header class="flex items-center justify-between px-4 py-2.5 bg-[var(--color-surface)] border-b border-[var(--color-border)] flex-shrink-0 select-none">
       <div class="flex items-center gap-3">
@@ -134,6 +141,14 @@ function clearAll() {
       </div>
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--color-text-tertiary)]">{{ mergedLogs.length }} lines</span>
+        <button
+          @click="toggleAutoScroll"
+          class="btn btn-ghost btn-xs gap-1"
+          :class="autoScroll ? '' : 'text-warning'"
+          :title="autoScroll ? '暂停自动滚动，钉住当前位置' : '恢复自动滚动到底部'"
+        >
+          <component :is="autoScroll ? Pause : Play" :size="13" /> {{ autoScroll ? '停止滚动' : '恢复滚动' }}
+        </button>
         <button @click="saveLogs" class="btn btn-ghost btn-xs gap-1">
           <Save :size="13" /> 保存日志
         </button>

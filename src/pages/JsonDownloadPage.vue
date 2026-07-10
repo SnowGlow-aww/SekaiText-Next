@@ -75,19 +75,15 @@ watch(() => story.selectedIndex, async (idx) => {
   }
 })
 
-async function handleDownload() {
-  if (!story.selectedType || !story.selectedIndex || story.selectedChapter < 0 || !outputDir.value) {
-    toast.show('请填写所有字段', 'warn')
-    return
-  }
-  const taskId = dlFloat.add(story.selectedIndex + ' ch' + story.selectedChapter)
+async function downloadOne(chapter: number) {
+  const taskId = dlFloat.add(story.selectedIndex + ' ch' + chapter)
   dlFloat.start(taskId)
   try {
     const { taskId: tid } = await api.downloadJson({
       storyType: story.selectedType,
       sort: story.selectedSort,
       index: story.selectedIndex,
-      chapter: story.selectedChapter,
+      chapter,
       source: 'haruki',
       outputDir: outputDir.value,
     })
@@ -110,10 +106,30 @@ async function handleDownload() {
     dlFloat.fail(taskId, e.message || '下载失败')
   }
 }
+
+async function handleDownload() {
+  if (!story.selectedType || !story.selectedIndex || !outputDir.value) {
+    toast.show('请填写所有字段', 'warn')
+    return
+  }
+  // 未选章节 = 下载该索引下的全部章节（逐章排队，各自独立进度）
+  if (story.selectedChapter < 0) {
+    if (!story.chapters.length) {
+      toast.show('该索引没有可下载的章节', 'warn')
+      return
+    }
+    toast.show(`未选择章节，将下载全部 ${story.chapters.length} 章`, 'info')
+    for (const c of story.chapters) {
+      await downloadOne(c.number)
+    }
+    return
+  }
+  await downloadOne(story.selectedChapter)
+}
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+  <div class="min-h-screen page-bg text-[var(--color-text)]">
     <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-3xl mx-auto px-6 h-14 flex items-center gap-3">
         <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
@@ -163,14 +179,15 @@ async function handleDownload() {
             />
           </div>
 
-          <div>
+          <!-- 无排序列时章节是单数项，占满整行居中，别孤零零挂在左下角 -->
+          <div :class="story.sorts.length ? '' : 'sm:col-span-2 sm:justify-self-center sm:w-[calc(50%-0.375rem)]'">
             <label class="app-label">章节</label>
             <SkSelect
               class="mt-1.5"
               :model-value="story.selectedChapter"
               @update:model-value="story.selectedChapter = $event as number"
               :options="story.chapters.map(c => ({ value: c.number, label: c.label }))"
-              placeholder="选择章节"
+              placeholder="不选 = 下载全部章节"
             />
           </div>
         </div>

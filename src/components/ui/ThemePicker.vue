@@ -3,12 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { Monitor, Sun, Moon, Check, Upload, X, ImagePlus, Trash2 } from 'lucide-vue-next'
 import { useAppStore, FONT_OPTIONS, BG_VEIL_MIN } from '../../stores/app'
 import { useSettingsStore } from '../../stores/settings'
+import { usePluginRegistry } from '../../plugin-host/registry'
 import { ACCENT_GROUPS, ACCENT_NAME_BY_COLOR } from '../../data/characterColors'
 import type { ThemeMode } from '../../stores/app'
 import SkSelect from './SkSelect.vue'
 
 const app = useAppStore()
 const settings = useSettingsStore()
+const pluginRegistry = usePluginRegistry()
 
 // Commit the UI zoom on release (@change), not on every drag tick — applying the
 // root font-size live would reflow the whole page (and this slider) under the
@@ -116,8 +118,9 @@ async function onBgFile(e: Event) {
         </div>
       </div>
 
-      <!-- Live2D dock placement: where the player sits relative to the editor -->
-      <div>
+      <!-- Live2D dock placement: where the player sits relative to the editor.
+           Only meaningful (and only shown) while the Live2D plugin is enabled. -->
+      <div v-if="pluginRegistry.isLoaded('live2d')">
         <div class="app-label mb-2">Live2D 对照位置</div>
         <div class="h-9 flex items-center">
           <SkSelect
@@ -128,42 +131,42 @@ async function onBgFile(e: Event) {
           />
         </div>
       </div>
-    </div>
 
-    <!-- Font -->
-    <div>
-      <div class="app-label mb-2">字体</div>
-      <div class="flex items-center gap-2">
-        <SkSelect
-          class="max-w-xs flex-1"
-          :model-value="app.fontFamily"
-          @update:model-value="app.fontFamily = $event as string"
-          :options="fontOptions"
-        />
-        <input ref="fontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" class="sr-only" @change="onFontFile" />
-        <button class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5 shrink-0" @click="fontInput?.click()">
-          <Upload :size="14" /> 导入字体
-        </button>
-      </div>
-      <div v-if="fontError" class="app-help mt-1.5 text-[var(--color-error,#e5484d)]">{{ fontError }}</div>
-      <div v-else class="app-help mt-1.5">支持本地 .ttf / .otf / .woff / .woff2，导入后即可选用</div>
-
-      <!-- Imported fonts (manage / remove) -->
-      <div v-if="app.customFonts.length" class="flex flex-wrap gap-2 mt-2.5">
-        <span
-          v-for="f in app.customFonts"
-          :key="f.id"
-          class="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-[var(--radius-pill)] text-xs border border-[var(--color-border)] bg-[var(--color-bg)]"
-        >
-          {{ f.label }}
-          <button
-            class="grid place-items-center w-4 h-4 rounded-full text-[var(--color-text-tertiary)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)] transition-colors"
-            title="移除此字体"
-            @click="app.removeCustomFont(f.id)"
-          >
-            <X :size="12" />
+      <!-- Font — 与 Live2D 对照位置同排（选择框宽度对齐 200px） -->
+      <div>
+        <div class="app-label mb-2">字体</div>
+        <div class="flex items-center gap-2 h-9">
+          <SkSelect
+            class="w-[200px]"
+            :model-value="app.fontFamily"
+            @update:model-value="app.fontFamily = $event as string"
+            :options="fontOptions"
+          />
+          <input ref="fontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" class="sr-only" @change="onFontFile" />
+          <button class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5 shrink-0" @click="fontInput?.click()">
+            <Upload :size="14" /> 导入字体
           </button>
-        </span>
+        </div>
+        <div v-if="fontError" class="app-help mt-1.5 text-[var(--color-error,#e5484d)]">{{ fontError }}</div>
+        <div v-else class="app-help mt-1.5">支持 .ttf / .otf / .woff / .woff2，导入后即可选用</div>
+
+        <!-- Imported fonts (manage / remove) -->
+        <div v-if="app.customFonts.length" class="flex flex-wrap gap-2 mt-2.5 max-w-[320px]">
+          <span
+            v-for="f in app.customFonts"
+            :key="f.id"
+            class="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-[var(--radius-pill)] text-xs border border-[var(--color-border)] bg-[var(--color-bg)]"
+          >
+            {{ f.label }}
+            <button
+              class="grid place-items-center w-4 h-4 rounded-full text-[var(--color-text-tertiary)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)] transition-colors"
+              title="移除此字体"
+              @click="app.removeCustomFont(f.id)"
+            >
+              <X :size="12" />
+            </button>
+          </span>
+        </div>
       </div>
     </div>
 

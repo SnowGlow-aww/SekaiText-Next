@@ -93,6 +93,11 @@ async function browseVoiceOutputDir() {
   if (dir) settings.settings.voiceOutputDir = dir
 }
 
+async function browseSaveBaseDir() {
+  const dir = await pickDirectory('选择译文保存根目录')
+  if (dir) settings.settings.saveBaseDir = dir
+}
+
 // 重看新手导览：回到主界面再启动（导览锚点都在编辑器页）。
 const tour = useTour()
 function restartTour() {
@@ -220,7 +225,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
 
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+  <div class="min-h-screen page-bg text-[var(--color-text)]">
     <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-4xl mx-auto px-6 h-14 flex items-center gap-3">
         <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
@@ -378,6 +383,22 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             </div>
             <input v-model="settings.settings.saveVoice" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
+
+          <div class="sm:col-span-2">
+            <label class="app-label">译文保存根目录</label>
+            <p class="app-help mt-0.5">译文按 <span class="font-mono">根目录/类型/索引/【模式】标题.txt</span> 分层自动建档与自动保存</p>
+            <div class="flex gap-2 mt-1.5">
+              <input
+                v-model="settings.settings.saveBaseDir"
+                type="text"
+                placeholder="默认 ~/Documents/SekaiText"
+                class="app-input flex-1"
+              />
+              <button v-if="isTauri" @click="browseSaveBaseDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+                <FolderOpen :size="15" /> 浏览
+              </button>
+            </div>
+          </div>
 
           <div class="sm:col-span-2">
             <label class="app-label">语音输出目录</label>

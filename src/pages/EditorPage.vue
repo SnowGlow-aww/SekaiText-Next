@@ -15,7 +15,7 @@ import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import * as LucideIcons from 'lucide-vue-next'
 import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info,
-  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, CheckCircle2, Undo2, Redo2 } from 'lucide-vue-next'
+  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -84,43 +84,61 @@ function doRedo() {
 const canUndo = undo.canUndo
 const canRedo = undo.canRedo
 
-// ── 逐行落盘的明文保险（autosave.txt）─────────────────────────────────────────
+// ── 逐行落盘的自动保存（写正式文件本体）──────────────────────────────────────
 // 每次内容变更（mutationSeq：行编辑/增删行/撤销重做/全部替换…）后短防抖，把当前
-// 译文按正常保存的格式写到「正式输出同目录」的 autosave.txt——崩溃/断电后直接
-// 打开就能用。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
+// 译文写进「当前文档本体」：已打开/已保存的文件直接更新；从未落盘的文档则按选中
+// 模式自动创建规范命名的 txt（<保存根目录>/<类型>/<索引>/【模式】….txt）并绑定为
+// 当前文档。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
 let txtAutosaveTimer: ReturnType<typeof setTimeout> | null = null
-let txtAutosaveEnsuredDir = ''
 watch(() => editor.mutationSeq, () => {
   if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
   txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
 })
-// 输出目录 = 已保存/打开文件的所在目录；从未保存过则用正式保存的分层默认目录。
-// 两者都不可知（如网页端全新文档）时跳过——恢复文件仍在兜底。
-function txtAutosaveDir(): string | null {
-  const p = editor.currentFilePath
-  if (p && /[/\\]/.test(p)) return p.replace(/[/\\][^/\\]*$/, '')
-  const base = settings.settings.saveBaseDir
-  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
-    const sep = (s: string) => s.replace(/[/\\]/g, '_')
-    return `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}`
-  }
-  return null
-}
-async function writeTxtAutosave() {
-  if (editor.talks.length === 0) return
-  const dir = txtAutosaveDir()
-  if (!dir) return
-  const path = `${dir}/autosave.txt`
-  const meta: SaveMetadata | undefined = story.selectedType ? {
+function buildSaveMeta(): SaveMetadata | undefined {
+  return story.selectedType ? {
     type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex,
     chapter: story.selectedChapter, source: story.selectedSource, scenarioId: story.scenarioId,
     mode: app.editorMode,
   } : undefined
+}
+// 规范文件名：【模式】<剧本标号> <标题>.txt——保存对话框、自动建档共用一套。
+function canonicalFileName(): string {
+  const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
+  const title = (editor.titleOverride || story.chapterTitle || '').trim()
+  let fileName = '【' + modeLabel + '】' + (story.saveTitle || 'untitled')
+  if (title) fileName += ' ' + title
+  return fileName + '.txt'
+}
+// 分层规范路径：<saveBaseDir>/<故事类型>/<索引名>/<规范文件名>。缺少根目录或
+// 未选剧情（网页端/全新空文档）时返回 null——此时只有恢复文件兜底。
+function canonicalSavePath(): string | null {
+  const base = settings.settings.saveBaseDir
+  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
+    const sep = (s: string) => s.replace(/[/\\]/g, '_')
+    return `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}/${canonicalFileName()}`
+  }
+  return null
+}
+async function writeTxtAutosave() {
+  if (editor.talks.length === 0 || !isTauri) return
+  let path = editor.currentFilePath
+  let binding = false
+  if (!path || !/[/\\]/.test(path)) {
+    const canonical = canonicalSavePath()
+    if (!canonical) return
+    path = canonical
+    binding = true
+  }
+  // 写盘期间若有新编辑（mutationSeq 变化），写入内容已过期，不清脏标记——
+  // 下一轮防抖会再写一次。
+  const seq = editor.mutationSeq
   try {
-    if (txtAutosaveEnsuredDir !== dir) { await api.ensureDir(path); txtAutosaveEnsuredDir = dir }
-    await api.translationSave(path, editor.dstTalks, app.saveN, meta)
+    if (binding) await api.ensureDir(path)
+    await api.translationSave(path, editor.dstTalks, app.saveN, buildSaveMeta())
+    if (binding) editor.currentFilePath = path
+    if (editor.mutationSeq === seq) editor.markSaved()
   } catch (e) {
-    console.warn('[Autosave] autosave.txt write failed', e) // 保险动作静默失败，不打扰编辑
+    console.warn('[Autosave] 自动保存写入失败', path, e) // 静默失败，不打扰编辑
   }
 }
 
@@ -379,35 +397,34 @@ async function handleOpen() {
   } catch (e: any) { toast.show('Open failed: ' + (e.message || String(e)), 'error') }
 }
 
-async function handleSave() {
+async function handleSave(saveAs = false) {
   if (editor.talks.length === 0) return
   // Flush (not cancel) the pending debounced edit so the file is serialized
   // from a dstTalks that carries the last blurred edit in its fully processed
   // form. Clicking 保存 within 300ms of leaving a field used to race this.
   try { await workspace.value?.flushPendingEdit() } catch { /* raw commit already in arrays */ }
-  const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
+  const meta = buildSaveMeta()
+  // 保存 = 直接写当前文档本体（已打开/已保存过的文件），不再弹对话框重建文件。
+  // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。
+  const bound = editor.currentFilePath
+  if (!saveAs && isTauri && bound && /[/\\]/.test(bound)) {
+    try {
+      await api.translationSave(bound, editor.dstTalks, app.saveN, meta)
+      editor.markSaved()
+      await api.recoveryClear().catch(() => {})
+      console.log('[Save] saved in place', { path: bound })
+      toast.show('已保存', 'success')
+      return
+    } catch (e: any) {
+      console.warn('[Save] in-place save failed, falling back to dialog', { path: bound, error: e?.message || String(e) })
+    }
+  }
+  // 另存为 / 首次保存：对话框默认落在分层规范路径 <saveBaseDir>/<类型>/<索引>/。
   // The 译文 header input (editor.titleOverride) owns the title segment. The
   // filename is always rebuilt as 【模式】<saveTitle> <title>.txt — the prefix
   // and .txt suffix are fixed, only the title part is user-editable. Empty
   // override falls back to the story's chapterTitle.
-  const title = (editor.titleOverride || story.chapterTitle || '').trim()
-  let fileName = '【' + modeLabel + '】' + (story.saveTitle || 'untitled')
-  if (title) fileName += ' ' + title
-  fileName += '.txt'
-  // Layered output: <saveBaseDir>/<故事类型>/<索引名>/<【模式】标题.txt>
-  let defaultName: string
-  const base = settings.settings.saveBaseDir
-  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
-    const sep = (s: string) => s.replace(/[/\\]/g, '_')
-    defaultName = `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}/${fileName}`
-  } else {
-    defaultName = fileName
-  }
-  const meta: SaveMetadata | undefined = story.selectedType ? {
-    type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex,
-    chapter: story.selectedChapter, source: story.selectedSource, scenarioId: story.scenarioId,
-    mode: app.editorMode,
-  } : undefined
+  const defaultName = canonicalSavePath() || canonicalFileName()
   console.log('[Save] starting save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri: isTauri })
   try {
     const path = await fileDialog.saveTranslation(defaultName, editor.dstTalks, app.saveN, meta)
@@ -435,26 +452,6 @@ async function handleClear() {
   editor.clearAll()
   undo.clear()
   toast.show('已清空', 'info')
-}
-
-async function handleConfirm() {
-  if (editor.talks.length === 0) return
-  if (!(await confirm({ title: '确认合意完成', message: '确认合意完成？所有差异将以当前译文为准。', tone: 'primary', confirmText: '确认' }))) return
-  undo.pushSnapshot(editor.talks, editor.dstTalks)
-  // New model: confirming accepts every current text as the agreed baseline,
-  // clearing all diffs. No row removal — row count is fixed.
-  for (const talk of editor.talks) {
-    talk.checked = true
-    talk.baseline = talk.text
-    talk.diff = undefined
-  }
-  for (const talk of editor.dstTalks) {
-    talk.checked = true
-    talk.baseline = talk.text
-    talk.diff = undefined
-  }
-  editor.markUnsaved()
-  toast.show('合意已确认', 'success')
 }
 
 // 合意: import a 校对稿 as the editable text, comparing it against the already
@@ -577,7 +574,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
 </script>
 
 <template>
-  <div class="h-screen bg-[var(--color-bg)] flex flex-col">
+  <div class="h-screen page-bg flex flex-col">
     <div class="flex flex-1 min-h-0">
       <aside class="flex flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] flex-shrink-0 transition-all duration-200 overflow-hidden" :class="sidebarOpen ? 'w-36' : 'w-12'">
         <button @click="sidebarOpen = !sidebarOpen" class="flex items-center gap-2 h-10 px-3 text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors flex-shrink-0">
@@ -604,12 +601,17 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
         </div>
       </aside>
       <div class="flex-1 flex flex-col min-w-0">
-        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2" data-tour="story-nav"><StoryNavigator :auto-pull="true"/></header>
+        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 flex items-center gap-2 flex-wrap" data-tour="story-nav">
+          <StoryNavigator :auto-pull="true"/>
+          <div class="w-px h-5 bg-[var(--color-border)]" />
+          <button @click="handleClear" class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5 whitespace-nowrap"><Eraser :size="15" />清空</button>
+        </header>
         <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
           <div class="flex items-center gap-1 flex-wrap" data-tour="toolbar">
             <button @click="handleOpen" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
-            <button @click="handleSave" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
-            <button @click="handleClear" class="btn btn-sm btn-ghost gap-1.5"><Eraser :size="15" />清空</button>
+            <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><FileInput :size="15" />导入校对稿</button>
+            <!-- @click 必须写 handleSave()：裸引用会把 MouseEvent 当 saveAs 传入 -->
+            <button @click="handleSave()" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
             <button @click="doUndo" :disabled="!canUndo" :title="'撤销最近一次修改 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'undo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Undo2 :size="15" />撤销</button>
             <button @click="doRedo" :disabled="!canRedo" :title="'重做 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'redo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Redo2 :size="15" />重做</button>
             <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
@@ -624,8 +626,6 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
             <template v-if="app.editorMode >= 1">
               <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
               <button class="tbar-toggle" :aria-pressed="app.showCompare" @click="app.showCompare = !app.showCompare"><Columns2 :size="15" />对比</button>
-              <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"><FileInput :size="15" />导入校对稿</button>
-              <button v-if="app.editorMode === 2" @click="handleConfirm" class="btn btn-sm btn-brand gap-1.5"><CheckCircle2 :size="15" />确认</button>
             </template>
           </div>
           <!-- Search / replace bar. The left group is width-matched to the
@@ -731,7 +731,26 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
   font-weight: 500;
   white-space: nowrap;
   color: var(--color-text-secondary);
-  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+    translate 320ms var(--ease-out), scale 320ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+/* 立体按压：scoped transition（未分层+更高特异性）会盖过全局 button 的声明，
+   弹簧通道须在此重申；下沉的 translate/scale 值直接来自全局 button:active */
+@supports (transition-timing-function: linear(0, 1)) {
+  .tbar-toggle {
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      translate 320ms linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
+      scale 320ms linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
+      box-shadow 140ms var(--ease-out);
+  }
+}
+.tbar-toggle:active {
+  transition-duration: 70ms;
+  transition-timing-function: ease-out;
+  box-shadow: inset 0 1.5px 3px rgb(0 0 0 / 0.25);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tbar-toggle:active { box-shadow: none; }
 }
 .tbar-toggle:hover {
   background: color-mix(in oklch, var(--color-base-content) 8%, transparent);
