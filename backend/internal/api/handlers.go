@@ -970,6 +970,178 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// resolveSaveBaseDir 返回当前生效的译文保存根目录（空设置回填默认值）。
+func (h *Handler) resolveSaveBaseDir() string {
+	s, err := h.loadSettings()
+	if err != nil {
+		s = model.DefaultSettings()
+	}
+	if s.SaveBaseDir != "" {
+		return s.SaveBaseDir
+	}
+	return defaultSaveBaseDir()
+}
+
+// OpenSaveDir 在系统文件管理器中打开译文保存根目录（顶栏「文稿目录」按钮）。
+// 目录还没生成时先建好再打开，首次点击也能落到正确位置。
+func (h *Handler) OpenSaveDir(w http.ResponseWriter, r *http.Request) {
+	dir := h.resolveSaveBaseDir()
+	if dir == "" {
+		writeError(w, http.StatusInternalServerError, "无法确定保存目录")
+		return
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[open-save-dir] mkdir error: %v", err)
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+	if err := cmd.Start(); err != nil {
+		writeError(w, http.StatusInternalServerError, "open failed: "+err.Error())
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
+}
+
+// MigrateSaveDir 更换译文保存根目录：把旧根目录里已生成的内容整体搬到新位置
+// （同卷 rename、跨卷回落复制+删除；目标已有同名目录则递归合并、同名文件一律
+// 跳过不覆盖），随后立即把新路径持久化进设置。旧目录搬空后删除。
+func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NewDir string `json:"newDir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.NewDir) == "" {
+		writeError(w, http.StatusBadRequest, "newDir required")
+		return
+	}
+	newAbs, err := filepath.Abs(strings.TrimSpace(req.NewDir))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid newDir: "+err.Error())
+		return
+	}
+	oldAbs := ""
+	if d := h.resolveSaveBaseDir(); d != "" {
+		if a, err := filepath.Abs(d); err == nil {
+			oldAbs = a
+		}
+	}
+	sep := string(filepath.Separator)
+	// 新目录在旧目录内部会把树搬进自己的子孙（无限嵌套/丢数据），直接拒绝。
+	if oldAbs != "" && newAbs != oldAbs && strings.HasPrefix(newAbs+sep, oldAbs+sep) {
+		writeError(w, http.StatusBadRequest, "新目录不能位于当前保存目录内部")
+		return
+	}
+	if err := os.MkdirAll(newAbs, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "无法创建新目录: "+err.Error())
+		return
+	}
+	moved, skipped := 0, 0
+	if oldAbs != "" && oldAbs != newAbs {
+		if entries, err := os.ReadDir(oldAbs); err == nil {
+			for _, e := range entries {
+				src := filepath.Join(oldAbs, e.Name())
+				dst := filepath.Join(newAbs, e.Name())
+				if err := moveMerge(src, dst); err != nil {
+					skipped++
+					log.Printf("[migrate-save-dir] skip %s: %v", src, err)
+				} else {
+					moved++
+				}
+			}
+			_ = os.Remove(oldAbs) // 只在已搬空时成功
+		}
+	}
+	s, err := h.loadSettings()
+	if err != nil {
+		s = model.DefaultSettings()
+	}
+	s.SaveBaseDir = newAbs
+	if err := h.saveSettings(s); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings save failed: "+err.Error())
+		return
+	}
+	log.Printf("[migrate-save-dir] %s -> %s (moved %d, skipped %d)", oldAbs, newAbs, moved, skipped)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"oldDir": oldAbs, "newDir": newAbs, "moved": moved, "skipped": skipped,
+	})
+}
+
+// moveMerge 把 src 移动到 dst：dst 不存在时先试 rename（同卷瞬间完成），失败
+// （跨卷等）回落复制+删除；dst 已存在时目录递归合并、文件跳过（绝不覆盖）。
+func moveMerge(src, dst string) error {
+	if _, err := os.Lstat(dst); os.IsNotExist(err) {
+		if err := os.Rename(src, dst); err == nil {
+			return nil
+		}
+		if err := copyTree(src, dst); err != nil {
+			return err
+		}
+		return os.RemoveAll(src)
+	}
+	si, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	di, err := os.Stat(dst)
+	if err != nil {
+		return err
+	}
+	if si.IsDir() && di.IsDir() {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		var firstErr error
+		for _, e := range entries {
+			if err := moveMerge(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if firstErr != nil {
+			return firstErr
+		}
+		return os.Remove(src)
+	}
+	return fmt.Errorf("目标已存在，跳过: %s", dst)
+}
+
+func copyTree(src, dst string) error {
+	si, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if si.IsDir() {
+		if err := os.MkdirAll(dst, si.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := copyTree(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, si.Mode().Perm())
+}
+
 // defaultSaveBaseDir picks a user-visible home for translation output:
 // ~/Documents/SekaiText when Documents exists (macOS/Windows), else ~/SekaiText.
 func defaultSaveBaseDir() string {

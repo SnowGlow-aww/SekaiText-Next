@@ -109,6 +109,8 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 
 		// Reveal the app data directory in the OS file manager
 		r.Post("/open-data-dir", h.OpenDataDir)
+		r.Post("/save-dir/open", h.OpenSaveDir)
+		r.Post("/save-dir/migrate", h.MigrateSaveDir)
 
 		// Open an external http/https link in the system browser
 		r.Post("/open-url", h.OpenURL)

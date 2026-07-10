@@ -60,7 +60,6 @@ async function confirmDiscardUnsaved(): Promise<boolean> {
 }
 const debug = useDebugLog()
 const dlFloat = useDownloadFloat()
-const fileInput = ref<HTMLInputElement | null>(null)
 
 const unitMap = ref<Record<string, string>>({})
 async function loadUnitDict() {
@@ -162,37 +161,14 @@ async function handleRefresh() {
   }
 }
 
-async function handleLocalLoad() {
-  const file = fileInput.value?.files?.[0]
-  if (!file) return
-  if (!(await confirmDiscardUnsaved())) {
-    if (fileInput.value) fileInput.value.value = ''
-    return
-  }
+async function openSaveDir() {
   try {
-    const text = await file.text()
-    await story.loadStoryLocal(text)
-    if (story.sourceTalks.length > 0) {
-      debug.log(`本地故事载入成功 ${story.sourceTalks.length}行`)
-      editor.setSourceTalks(story.sourceTalks)
-      const dstTalks = await api.translationCreate({
-        sourceTalks: story.sourceTalks,
-        jp: false,
-      })
-      editor.setTalks(dstTalks, dstTalks, [])
-      editor.majorClue = null
-      // Fresh template = clean state; keeping the OLD document's dirty flag
-      // would let the 30s autosave overwrite the recovery file with this
-      // near-empty template.
-      editor.markSaved()
-      toast.show(`已载入 ${story.sourceTalks.length} 行`, 'success')
-    }
+    await api.openSaveDir()
   } catch (e: any) {
-    debug.log('本地载入失败: ' + e.message, 'error')
-    toast.show('本地载入失败: ' + (e.message || '未知错误'), 'error')
+    toast.show('打开失败: ' + (e.message || '未知错误'), 'error')
   }
-  if (fileInput.value) fileInput.value.value = ''
 }
+
 async function handleLoad() {
   debug.log(`载入按钮点击 loading=${story.loading} selectedType="${story.selectedType}"`)
   if (!(await confirmDiscardUnsaved())) return
@@ -209,7 +185,10 @@ async function handleLoad() {
       })
       editor.setTalks(dstTalks, dstTalks, [])
       editor.majorClue = null
-      editor.markSaved() // see handleLocalLoad: new template must start clean
+      // Fresh template = clean state; keeping the OLD document's dirty flag
+      // would let the 30s autosave overwrite the recovery file with this
+      // near-empty template.
+      editor.markSaved()
       dlFloat.done(taskId, `已载入 ${story.sourceTalks.length} 行`)
     } else {
       debug.log('故事载入返回0行', 'warn')
@@ -283,20 +262,14 @@ async function handleLoad() {
       {{ story.loading ? '载入中…' : '载入' }}
     </button>
 
-    <input
-      ref="fileInput"
-      type="file"
-      accept=".json"
-      class="hidden"
-      @change="handleLocalLoad"
-    />
+    <!-- 打开译文保存根目录（目录不存在时后端先建再开）——用户从这里直达自己的文稿 -->
     <button
-      @click="fileInput?.click()"
+      @click="openSaveDir"
       class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
-      :disabled="story.loading"
+      title="在文件管理器中打开译文保存目录"
     >
       <FolderOpen :size="15" />
-      本地
+      文稿目录
     </button>
   </div>
 </template>

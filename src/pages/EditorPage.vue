@@ -419,7 +419,25 @@ async function handleSave(saveAs = false) {
       console.warn('[Save] in-place save failed, falling back to dialog', { path: bound, error: e?.message || String(e) })
     }
   }
-  // 另存为 / 首次保存：对话框默认落在分层规范路径 <saveBaseDir>/<类型>/<索引>/。
+  // 首次落盘也不问位置：直接按 <保存根目录>/<类型>/<索引>/ 分级自动建档并绑定。
+  if (!saveAs && isTauri) {
+    const canonical = canonicalSavePath()
+    if (canonical) {
+      try {
+        await api.ensureDir(canonical)
+        await api.translationSave(canonical, editor.dstTalks, app.saveN, meta)
+        editor.currentFilePath = canonical
+        editor.markSaved()
+        await api.recoveryClear().catch(() => {})
+        console.log('[Save] auto-bound canonical path', { path: canonical })
+        toast.show('已保存', 'success')
+        return
+      } catch (e: any) {
+        console.warn('[Save] canonical save failed, falling back to dialog', { canonical, error: e?.message || String(e) })
+      }
+    }
+  }
+  // 兜底对话框：算不出规范路径（未选剧情的空白文档/网页端）或上面写入失败。
   // The 译文 header input (editor.titleOverride) owns the title segment. The
   // filename is always rebuilt as 【模式】<saveTitle> <title>.txt — the prefix
   // and .txt suffix are fixed, only the title part is user-editable. Empty

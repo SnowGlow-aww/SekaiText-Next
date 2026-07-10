@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2, Globe, Github, Compass } from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settings'
+import { useEditorStore } from '../stores/editor'
 import { useAppUpdateStore } from '../stores/appUpdate'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -19,6 +20,7 @@ import { useFileDialog } from '../composables/useFileDialog'
 
 const router = useRouter()
 const settings = useSettingsStore()
+const editor = useEditorStore()
 const toast = useToast()
 const { confirm } = useConfirm()
 const pluginRegistry = usePluginRegistry()
@@ -93,9 +95,37 @@ async function browseVoiceOutputDir() {
   if (dir) settings.settings.voiceOutputDir = dir
 }
 
-async function browseSaveBaseDir() {
-  const dir = await pickDirectory('选择译文保存根目录')
-  if (dir) settings.settings.saveBaseDir = dir
+// 更换文稿保存位置：后端把旧根目录下已生成的内容整体迁移到新位置（同名文件
+// 不覆盖）并立即持久化设置；随后把编辑器各模式已绑定的文档路径改写到新根，
+// 否则 autosave 会把译文写回旧位置。还没生成过任何文稿时等价于纯切换。
+async function changeSaveBaseDir() {
+  const dir = await pickDirectory('选择文稿保存位置')
+  if (!dir || dir === settings.settings.saveBaseDir) return
+  const from = settings.settings.saveBaseDir || '默认位置'
+  if (!(await confirm({
+    title: '更换文稿保存位置',
+    message: `将把现有文稿从「${from}」迁移到「${dir}」，之后的自动保存也会落在新位置。`,
+    detail: '同名文件不会被覆盖。',
+    tone: 'primary',
+    confirmText: '迁移',
+  }))) return
+  try {
+    const res = await api.migrateSaveDir(dir)
+    settings.settings.saveBaseDir = res.newDir
+    editor.rebindPaths(res.oldDir, res.newDir)
+    toast.show(res.moved > 0 ? `已迁移 ${res.moved} 项到新位置` : '已切换保存位置', 'success')
+    if (res.skipped > 0) toast.show(`${res.skipped} 项因目标已存在被跳过（保留在原目录）`, 'warn')
+  } catch (e: any) {
+    toast.show('迁移失败: ' + (e.message || '未知错误'), 'error')
+  }
+}
+
+async function openSaveDirNow() {
+  try {
+    await api.openSaveDir()
+  } catch (e: any) {
+    toast.show('打开失败: ' + (e.message || '未知错误'), 'error')
+  }
 }
 
 // 重看新手导览：回到主界面再启动（导览锚点都在编辑器页）。
@@ -361,6 +391,31 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
         </div>
       </section>
 
+      <!-- ====== 文稿保存路径 ====== -->
+      <section class="app-card p-5">
+        <div class="flex items-center gap-2 mb-1.5">
+          <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><FolderOpen :size="15" /></span>
+          <div class="section-title">文稿保存路径</div>
+        </div>
+        <p class="app-help mb-3">译文自动建档与保存的根目录，按 <span class="font-mono">故事类型/索引/【模式】标题.txt</span> 自动分级归档；点「保存」与自动保存都落在这里。</p>
+        <div class="flex gap-2">
+          <input
+            :value="settings.settings.saveBaseDir"
+            type="text"
+            readonly
+            placeholder="默认 ~/Documents/SekaiText"
+            class="app-input flex-1 cursor-default"
+          />
+          <button v-if="isTauri" @click="changeSaveBaseDir" class="btn btn-sm btn-brand whitespace-nowrap">
+            <FolderOpen :size="15" /> 更换位置
+          </button>
+          <button v-if="isTauri" @click="openSaveDirNow" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+            打开
+          </button>
+        </div>
+        <div class="app-help mt-1.5">更换位置时会把已生成的文稿自动迁移到新目录（同名文件不覆盖）；还没生成过则直接在新位置建档。</div>
+      </section>
+
       <!-- ====== 文件保存 ====== -->
       <section class="app-card p-5">
         <div class="flex items-center gap-2 mb-4">
@@ -383,22 +438,6 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
             </div>
             <input v-model="settings.settings.saveVoice" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
-
-          <div class="sm:col-span-2">
-            <label class="app-label">译文保存根目录</label>
-            <p class="app-help mt-0.5">译文按 <span class="font-mono">根目录/类型/索引/【模式】标题.txt</span> 分层自动建档与自动保存</p>
-            <div class="flex gap-2 mt-1.5">
-              <input
-                v-model="settings.settings.saveBaseDir"
-                type="text"
-                placeholder="默认 ~/Documents/SekaiText"
-                class="app-input flex-1"
-              />
-              <button v-if="isTauri" @click="browseSaveBaseDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
-                <FolderOpen :size="15" /> 浏览
-              </button>
-            </div>
-          </div>
 
           <div class="sm:col-span-2">
             <label class="app-label">语音输出目录</label>

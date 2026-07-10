@@ -119,6 +119,15 @@ export const useEditorStore = defineStore('editor', () => {
   // seeding: deriving a proofread/agreement baseline from a translation is an
   // explicit load-time action (see EditorPage.handleOpen), not a side effect of
   // switching tabs.
+  // 保存根目录迁移后，把所有模式里已绑定的文档路径从旧根改写到新根——
+  // 否则 autosave 会把译文写回旧位置，把刚迁走的目录又建回来。
+  function rebindPaths(oldRoot: string, newRoot: string) {
+    if (!oldRoot || oldRoot === newRoot) return
+    const rewrite = (p: string) => p && p.startsWith(oldRoot) ? newRoot + p.slice(oldRoot.length) : p
+    currentFilePath.value = rewrite(currentFilePath.value)
+    for (const state of modeCache.values()) state.currentFilePath = rewrite(state.currentFilePath)
+  }
+
   function switchMode(newMode: EditorMode) {
     if (newMode === currentMode.value) return
     saveModeState(currentMode.value)
@@ -131,6 +140,6 @@ export const useEditorStore = defineStore('editor', () => {
     currentFilePath, titleOverride, hasUnsavedChanges, majorClue, mutationSeq,
     currentMode,
     setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
-    saveModeState, loadModeState, switchMode,
+    saveModeState, loadModeState, switchMode, rebindPaths,
   }
 })

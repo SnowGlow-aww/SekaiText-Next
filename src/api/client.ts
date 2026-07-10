@@ -304,6 +304,13 @@ export const api = {
 
   openDataDir: () =>
     request<{ dir: string }>('/open-data-dir', { method: 'POST' }),
+  openSaveDir: () =>
+    request<{ dir: string }>('/save-dir/open', { method: 'POST' }),
+  migrateSaveDir: (newDir: string) =>
+    request<{ oldDir: string; newDir: string; moved: number; skipped: number }>('/save-dir/migrate', {
+      method: 'POST',
+      body: JSON.stringify({ newDir }),
+    }),
   openUrl: (url: string) =>
     request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
 
