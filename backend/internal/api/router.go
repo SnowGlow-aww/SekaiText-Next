@@ -230,6 +230,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/timing/sync/push", h.EngineTimingSyncPush)
 			r.Post("/timing/sync/pull", h.EngineTimingSyncPull)
 			r.Post("/suppress/start", h.EngineSuppressStart)
+			r.Get("/suppress/probe", h.EngineSuppressProbe) // 可用编码器（硬件验证）+ 平台推荐默认值
 			r.Get("/suppress/progress", h.EngineSuppressProgress)
 			r.Post("/cancel", h.EngineCancel)
 			r.Get("/tasks", h.EngineTasks)                    // 全部任务快照（并行模式任务列表）

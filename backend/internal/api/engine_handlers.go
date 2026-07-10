@@ -370,6 +370,24 @@ func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"taskId": job.TaskID})
 }
 
+// EngineSuppressProbe returns the suppress runtime info plus hardware-verified
+// encoders and the recommended default (engine ≥2.1.0; older engines omit the
+// encoder fields and the plugin falls back to a platform-safe static list).
+func (h *Handler) EngineSuppressProbe(w http.ResponseWriter, r *http.Request) {
+	if h.engine == nil || !h.engine.Available() {
+		writeError(w, http.StatusServiceUnavailable, "压制内核未安装")
+		return
+	}
+	res, err := h.engine.SuppressProbe()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "探测压制环境失败: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res)
+}
+
 func (h *Handler) EngineSuppressProgress(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	job, ok := h.engineSuppressJob(taskID)

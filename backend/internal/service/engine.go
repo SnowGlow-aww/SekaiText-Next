@@ -37,12 +37,16 @@ type EngineManager struct {
 	enginePath string
 	ffmpegPath string
 
-	mu            sync.Mutex // guards spare + job maps/orders
+	mu            sync.Mutex // guards spare + job maps/orders + probeCache
 	spare         *engineProc
 	timingJobs    map[string]*EngineTimingJob
 	timingOrder   []string
 	suppressJobs  map[string]*EngineSuppressJob
 	suppressOrder []string
+
+	// suppress.probe 结果（可用编码器+推荐值）。首跑要对每个硬件编码器试编码
+	// （数秒），显卡不会中途更换，成功结果缓存整个后端生命周期。
+	probeCache json.RawMessage
 }
 
 // 并行上限：识别/压制本身就吃满多核，同域 4 个并行进程已经远超普通机器的合理负载；
@@ -873,6 +877,36 @@ func (em *EngineManager) pickSuppressForCancel(taskID string) *EngineSuppressJob
 }
 
 // Ping returns the engine's readiness/version handshake (served by the spare proc).
+// SuppressProbe asks the engine for the suppress runtime plus the list of
+// hardware-verified encoders and the per-platform recommended default. 老引擎
+// (≤2.0.0) 的响应没有 encoders/recommended 字段——原样透传，由前端兜底。
+func (em *EngineManager) SuppressProbe() (json.RawMessage, error) {
+	em.mu.Lock()
+	cached := em.probeCache
+	em.mu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	proc, err := em.spareProc()
+	if err != nil {
+		return nil, err
+	}
+	// 首跑要给每个编进 ffmpeg 的硬件编码器各跑一次试编码（坏驱动挂死的单项在
+	// 引擎侧 20s 超时剔除），给足余量。
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := proc.request(ctx, "suppress.probe", map[string]string{"ffmpegPath": em.ffmpegPath})
+	if err != nil {
+		return nil, err
+	}
+
+	em.mu.Lock()
+	em.probeCache = res
+	em.mu.Unlock()
+	return res, nil
+}
+
 func (em *EngineManager) Ping() (map[string]interface{}, error) {
 	proc, err := em.spareProc()
 	if err != nil {
