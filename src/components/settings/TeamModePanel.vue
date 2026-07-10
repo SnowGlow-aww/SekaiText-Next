@@ -13,6 +13,12 @@ const { show } = useToast()
 const { confirm } = useConfirm()
 const ok = (m: string) => show(m, 'success')
 const err = (m: string) => show(m, 'error')
+// 上次同步显示时间而非内部版本号（用户点名：v16 这种同步版本对使用者没有意义）
+const fmtSyncTime = (at: number) => {
+  const d = new Date(at)
+  const today = new Date().toDateString() === d.toDateString()
+  return (today ? '' : d.toLocaleDateString() + ' ') + d.toLocaleTimeString()
+}
 
 const serverUrl = ref('')
 const username = ref('')
@@ -167,7 +173,7 @@ function roleLabel(role: string) {
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <div class="text-xs text-[var(--color-text-secondary)]">
           <template v-if="team.lastSync">
-            上次同步：v{{ team.lastSync.version }}
+            上次同步：{{ fmtSyncTime(team.lastSync.at) }}
             <span v-if="team.lastSync.changed" class="text-primary">（有更新）</span>
           </template>
           <template v-else>每 60 秒自动检查更新</template>
