@@ -13,7 +13,10 @@ import (
 //
 // tools.lua 语义（逐条对齐）：
 //   cln: 对话行按文本中 \N 个数改样式名（0→1行 1→2行 2→3行；1920×1440 视频加
-//        " - 1920*1440" 后缀，2560×1600 无后缀），并删掉文本里的 \N。
+//        " - 1920*1440" 后缀，2560×1600 无后缀）。与 tools.lua 不同：保留文本里的
+//        \N——分行是译者手动断的句，删掉后 2行/3行 样式只剩一行长条（用户反馈）。
+//        地点横幅同理改名 BannerMask→遮罩、BannerText→地点名称（团队成品口径：
+//        事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
 //   dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
 type AssPostOptions struct {
 	Clean         bool   `json:"clean"`
@@ -34,6 +37,14 @@ type AssPostResult struct {
 
 // 引擎在每条对话前后输出的 Screen 注释标记，如 "-----  012  -----  Start"。
 var dialogMarkerRe = regexp.MustCompile(`^-+\s+(\d+)\s+-+\s+(.+)$`)
+
+// 地点横幅样式改名映射（团队成品口径，见文件头 cln 注释）。引擎事件的覆写标签
+// （\fad\blur\an7\p1 + 左右 clip 展开 + \fshp 位移 + \an5\fs\move）与团队成品
+// 逐字一致，改名即等效；「地点角标」marker 团队样式包里没有对应，保持原样。
+var bannerStyleRename = map[string]string{
+	"BannerMask": "遮罩",
+	"BannerText": "地点名称",
+}
 
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，
 // Text（最后一个字段）保留其中的逗号。
@@ -235,17 +246,21 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			if style == "Character" || style == "Screen" {
 				continue
 			}
-			// cln: Line1/2/3 按 \N 个数改名并去 \N
+			// cln: Line1/2/3 按 \N 个数改名（\N 本身保留，见文件头注释）
 			if style == "Line1" || style == "Line2" || style == "Line3" {
 				n := strings.Count(text, `\N`)
 				if newName, ok := cleanStyleFor(n, playX, playY); ok {
 					ev.Fields[styleI] = newName
-					ev.Fields[textI] = strings.ReplaceAll(text, `\N`, "")
 					newStyles[newName] = true
 				} else {
 					res.Warnings = append(res.Warnings,
 						fmt.Sprintf("某行含 %d 个 \\N，超出 1行/2行/3行 映射，保留原样式 %s", n, style))
 				}
+			}
+			// 地点横幅按团队成品口径改名（事件标签原样保留，只换样式名）
+			if newName, ok := bannerStyleRename[style]; ok {
+				ev.Fields[styleI] = newName
+				newStyles[newName] = true
 			}
 		}
 
@@ -290,7 +305,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			}
 			engineDefs[name] = ln
 			switch name {
-			case "Line1", "Line2", "Line3", "Character", "Screen":
+			case "Line1", "Line2", "Line3", "Character", "Screen", "BannerMask", "BannerText":
 				if !usedStyles[name] {
 					continue // 已无事件引用，删定义
 				}
@@ -307,24 +322,29 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 				present[n] = true
 			}
 		}
-		// 先补事件实际用到的新样式
+		// 先补事件实际用到的新样式（模板定义优先，缺了才克隆引擎定义改名）
+		type styleFill struct{ name, src string }
+		var fills []styleFill
 		for _, base := range []string{"1行", "2行", "3行"} {
-			for _, name := range []string{base, base + " - 1920*1440"} {
-				if !newStyles[name] || present[name] {
-					continue
-				}
-				if tmpl, ok := tmplStyles[name]; ok {
-					kept = append(kept, tmpl)
-				} else {
-					src := map[string]string{"1行": "Line1", "2行": "Line2", "3行": "Line3"}[base]
-					if def, ok := engineDefs[src]; ok {
-						kept = append(kept, renameStyleLine(def, name))
-					}
-					res.Warnings = append(res.Warnings,
-						fmt.Sprintf("未配置团队样式模板，样式「%s」暂用引擎默认定义，渲染效果可能与成品不符", name))
-				}
-				present[name] = true
+			src := map[string]string{"1行": "Line1", "2行": "Line2", "3行": "Line3"}[base]
+			fills = append(fills, styleFill{base, src}, styleFill{base + " - 1920*1440", src})
+		}
+		// 固定顺序追加（map 遍历顺序不定，别让导出产物的样式顺序抖动）
+		fills = append(fills, styleFill{"遮罩", "BannerMask"}, styleFill{"地点名称", "BannerText"})
+		for _, f := range fills {
+			if !newStyles[f.name] || present[f.name] {
+				continue
 			}
+			if tmpl, ok := tmplStyles[f.name]; ok {
+				kept = append(kept, tmpl)
+			} else {
+				if def, ok := engineDefs[f.src]; ok {
+					kept = append(kept, renameStyleLine(def, f.name))
+				}
+				res.Warnings = append(res.Warnings,
+					fmt.Sprintf("未配置团队样式模板，样式「%s」暂用引擎默认定义，渲染效果可能与成品不符", f.name))
+			}
+			present[f.name] = true
 		}
 		// 模板里其余样式一并带上（标题等），方便 Aegisub 内直接可用
 		for _, name := range tmplOrder {

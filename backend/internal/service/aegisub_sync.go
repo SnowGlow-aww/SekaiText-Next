@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Aegisub 侧的同步宏：随导出写到 .ass 同目录。用户把它装进 Aegisub 的
@@ -199,11 +200,16 @@ func aegisubAutoloadDir() string {
 	return filepath.Join(root, "automation", "autoload")
 }
 
-// InstallAegisubSyncMacro 尽力把同步宏直接装进本机 Aegisub 的 autoload 目录，
+// InstallAegisubSyncMacro 尽力把同步宏直接装进 Aegisub 的 autoload 目录，
 // 让「自动化 → SekaiText → 从轴机拉取」开箱即用（重启 Aegisub 后生效）。
-// 返回安装路径；未检测到 Aegisub 时返回空串且不算错误。
-func InstallAegisubSyncMacro() (string, error) {
-	dir := aegisubAutoloadDir()
+// overrideDir 非空时优先（便携版/自定义安装位置探测不到，用户在插件里指一次
+// automation/autoload 目录即可）；为空则自动探测。返回安装路径；探测不到且
+// 未指定时返回空串且不算错误。
+func InstallAegisubSyncMacro(overrideDir string) (string, error) {
+	dir := strings.TrimSpace(overrideDir)
+	if dir == "" {
+		dir = aegisubAutoloadDir()
+	}
 	if dir == "" {
 		return "", nil
 	}

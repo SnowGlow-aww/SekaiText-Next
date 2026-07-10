@@ -39,6 +39,7 @@ type Handler struct {
 	appUpdate       *service.AppUpdateService
 	team            *service.TeamService
 	engine          *service.EngineManager
+	voiceAlign      *service.VoiceAligner
 	downloadTasks   sync.Map // map[string]*model.DownloadTaskProgress
 	live2dSyncTasks sync.Map // map[string]*model.Live2DSyncProgress
 }
@@ -66,6 +67,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		appUpdate:  service.NewAppUpdateService(),
 		team:       service.NewTeamService(cfg.DataDir),
 		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
+		voiceAlign: service.NewVoiceAligner(cfg.DataDir, cfg.FfmpegPath),
 	}
 	h.startDownloadTaskGC()
 	// 让「下载源」设置（CDN 加速 / GitHub 直连）在启动时即生效。
@@ -506,15 +508,17 @@ var live2dAllowedHosts = []string{
 	"https://sekai-assets-bdf29c81.seiunx.net/",
 }
 
-// live2dCDNUpstream rewrites an exmeaning model-body URL to the project's edge CDN so
-// runtime playback fetches also go through the mirror cache (the CDN falls back to
-// exmeaning on a miss). Non-exmeaning URLs (sekai.best model_list/motion) pass
-// through unchanged — sekai.best can't be mirror-fetched from the mainland.
+// live2dCDNUpstream rewrites an exmeaning asset URL to the project's edge CDN so
+// runtime playback fetches go through the mirror cache (the CDN falls back to
+// exmeaning on a miss). 例外：/sound/ 音频路径（语音/BGM）一律直连 exmeaning——
+// 镜像回源会把音频持久化进自家 OSS 桶白吃存储（桶里曾因此长出 43MB 的
+// sekai-jp-assets/sound/；用户拍板：背景等图片可以镜像，只有音频不写）。
+// Non-exmeaning URLs (sekai.best model_list/motion) pass through unchanged.
 func live2dCDNUpstream(url string) string {
 	const exm = "https://storage2.exmeaning.com/"
 	const cdn = "https://sakimizuki.accr.cc/"
-	if strings.HasPrefix(url, exm) {
-		return cdn + strings.TrimPrefix(url, exm)
+	if rest, ok := strings.CutPrefix(url, exm); ok && !strings.Contains(rest, "/sound/") {
+		return cdn + rest
 	}
 	return url
 }

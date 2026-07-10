@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sekaitext/backend/internal/model"
+	"sekaitext/backend/internal/service"
 )
 
 // --- Plugin auto-update ---
@@ -168,6 +169,7 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("open", p)
 	case "windows":
 		cmd = exec.Command("cmd", "/c", "start", "", p)
+		service.HideConsoleWindow(cmd)
 	default:
 		cmd = exec.Command("xdg-open", p)
 	}

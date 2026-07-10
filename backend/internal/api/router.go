@@ -221,6 +221,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/timing/line/separator", h.EngineTimingLineSeparator)
 			r.Post("/timing/line/translation", h.EngineTimingLineTranslation)
 			r.Post("/timing/line/estimate", h.EngineTimingLineEstimate)
+			r.Post("/timing/line/voicepauses", h.EngineTimingLineVoicePauses) // 语音停顿候选（分句对齐）
 			r.Get("/timing/frame", h.EngineTimingFrame)
 			r.Get("/timing/sync/status", h.EngineTimingSyncStatus)
 			r.Post("/timing/sync/push", h.EngineTimingSyncPush)
@@ -228,6 +229,9 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/suppress/start", h.EngineSuppressStart)
 			r.Get("/suppress/progress", h.EngineSuppressProgress)
 			r.Post("/cancel", h.EngineCancel)
+			r.Get("/tasks", h.EngineTasks)                    // 全部任务快照（并行模式任务列表）
+			r.Post("/timing/close", h.EngineTimingClose)      // 关闭任务并释放其引擎进程
+			r.Post("/aegisub/install", h.EngineAegisubInstall) // 手动安装 Aegisub 同步宏（可指定目录）
 		})
 
 		// Assets

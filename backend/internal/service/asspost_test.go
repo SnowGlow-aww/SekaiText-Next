@@ -50,22 +50,23 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 	if strings.Contains(out, "Character,") || strings.Contains(out, ",Screen,") {
 		t.Errorf("Character/Screen 行未删干净:\n%s", out)
 	}
-	// cln：一个\N → 2行；分句半行无\N → 1行；\N 从文本里剥掉
+	// cln：一个\N → 2行；分句半行无\N → 1行；\N 本身保留（分行是译者手动断的句，
+	// 删掉后 2行/3行 样式只剩一行长条——用户反馈后改为保留）
 	if !strings.Contains(out, ",2行,") {
 		t.Errorf("含一个\\N 的行应改为 2行 样式")
 	}
-	if strings.Contains(out, `\N`) {
-		t.Errorf("\\N 应被移除")
-	}
-	if !strings.Contains(out, "第一句上第一句下") {
-		t.Errorf("去\\N 后文本应拼接")
+	if !strings.Contains(out, `第一句上\N第一句下`) {
+		t.Errorf("\\N 应保留在文本中:\n%s", out)
 	}
 	if !strings.Contains(out, ",1行,") {
 		t.Errorf("分句半行应为 1行 样式")
 	}
-	// banner 不动
-	if !strings.Contains(out, "BannerText") || !strings.Contains(out, "场景横幅") {
-		t.Errorf("banner 行不应受影响")
+	// banner 按团队成品口径改名：BannerText→地点名称（事件文本原样保留）
+	if !strings.Contains(out, ",地点名称,") || !strings.Contains(out, "场景横幅") {
+		t.Errorf("banner 行应改用 地点名称 样式且文本保留:\n%s", out)
+	}
+	if strings.Contains(out, ",BannerText,") {
+		t.Errorf("banner 事件不应再引用引擎样式 BannerText")
 	}
 	// 同步标识：对话组打上 st:N，banner 不打
 	if !strings.Contains(out, ",st:1,第一句上") {
@@ -115,7 +116,7 @@ func TestPostProcessStyleTemplate(t *testing.T) {
 	dir := t.TempDir()
 	tmpl := filepath.Join(dir, "styles.ass")
 	if err := os.WriteFile(tmpl, []byte(
-		"[V4+ Styles]\nStyle: 1行,思源黑体,72\nStyle: 2行,思源黑体,72\nStyle: 3行,思源黑体,72\nStyle: 标题,思源黑体,90\n"), 0644); err != nil {
+		"[V4+ Styles]\nStyle: 1行,思源黑体,72\nStyle: 2行,思源黑体,72\nStyle: 3行,思源黑体,72\nStyle: 标题,思源黑体,90\nStyle: 地点名称,思源黑体,70\nStyle: 遮罩,Arial,100\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	post, err := PostProcessAss(sampleAss, AssPostOptions{Clean: true, StyleTemplate: tmpl})
@@ -138,7 +139,7 @@ func TestPostProcessStyleTemplate(t *testing.T) {
 
 func TestPostProcessStyleTemplateContent(t *testing.T) {
 	// 插件内置模板走整段文本直传（BOM+CRLF 也要能吃）；显式路径优先于内容。
-	content := "\ufeff[V4+ Styles]\r\nStyle: 1行,内容版,70\r\nStyle: 2行,内容版,70\r\nStyle: 3行,内容版,70\r\nStyle: 遮罩,Arial,100\r\n"
+	content := "\ufeff[V4+ Styles]\r\nStyle: 1行,内容版,70\r\nStyle: 2行,内容版,70\r\nStyle: 3行,内容版,70\r\nStyle: 遮罩,Arial,100\r\nStyle: 地点名称,内容版,70\r\n"
 	post, err := PostProcessAss(sampleAss, AssPostOptions{Clean: true, StyleTemplateContent: content})
 	if err != nil {
 		t.Fatalf("PostProcessAss: %v", err)

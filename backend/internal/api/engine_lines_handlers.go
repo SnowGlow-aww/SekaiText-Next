@@ -6,15 +6,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"sekaitext/backend/internal/service"
 )
 
-// 行列表 / 分句编辑 / Aegisub 同步。全部绑定到具体 taskId（同 export 的语义）：
-// 新一轮打轴开始后旧任务的这些端点全部 404，杜绝编辑到引擎里换掉的数据。
+// 行列表 / 分句编辑 / Aegisub 同步。全部绑定到具体 taskId（同 export 的语义），
+// 每个任务独占一个引擎进程：任务被关闭/替换后这些端点 404，杜绝编辑到别的任务。
 
 // EngineTimingLines 代理引擎的 subtitle.lines（引擎是唯一权威，broker 不缓存）。
 // 运行中也可调用：引擎只返回已定稿的行，插件用它渲染实时增长的行列表。
@@ -23,11 +25,12 @@ func (h *Handler) EngineTimingLines(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "打轴内核未安装")
 		return
 	}
-	if _, ok := h.engineTimingJob(r.URL.Query().Get("task")); !ok {
+	job, ok := h.engineTimingJob(r.URL.Query().Get("task"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	raw, err := h.engine.TimingLines()
+	raw, err := h.engine.TimingLines(job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "获取行列表失败: "+err.Error())
 		return
@@ -82,7 +85,7 @@ func (h *Handler) EngineTimingLineSeparator(w http.ResponseWriter, r *http.Reque
 	if body.SeparatorContentIndex != nil {
 		params["separatorContentIndex"] = *body.SeparatorContentIndex
 	}
-	raw, err := h.engine.TimingLineCall("subtitle.setSeparator", params)
+	raw, err := h.engine.TimingLineCall(job, "subtitle.setSeparator", params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "设置分句失败: "+err.Error())
 		return
@@ -110,7 +113,7 @@ func (h *Handler) EngineTimingLineTranslation(w http.ResponseWriter, r *http.Req
 	if body.UseSeparator != nil {
 		params["useSeparator"] = *body.UseSeparator
 	}
-	raw, err := h.engine.TimingLineCall("subtitle.setTranslation", params)
+	raw, err := h.engine.TimingLineCall(job, "subtitle.setTranslation", params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "修改译文失败: "+err.Error())
 		return
@@ -123,7 +126,8 @@ func (h *Handler) EngineTimingLineTranslation(w http.ResponseWriter, r *http.Req
 // 与正式导出的区别：不更新导出/同步基线（ExportAssPath/MTime/DirtyLines 全不动），
 // 纯粹是逐行微调后的落盘保险——崩溃/误退后打开 autosave.ass 即可拿回全部微调。
 func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireDoneTimingJob(w, r); !ok {
+	job, ok := h.requireDoneTimingJob(w, r)
+	if !ok {
 		return
 	}
 	var body struct {
@@ -135,7 +139,7 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	content, err := h.engine.Export()
+	content, err := h.engine.Export(job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "组装字幕失败: "+err.Error())
 		return
@@ -160,7 +164,12 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "创建输出目录失败: "+err.Error())
 		return
 	}
-	assPath := filepath.Join(outDir, "autosave.ass")
+	// 并行多任务时各任务的保险文件不能互相覆盖：按剧本名区分。
+	job.Mu.Lock()
+	scriptPath := job.ScriptPath
+	job.Mu.Unlock()
+	base := strings.TrimSuffix(assFileNameFor(scriptPath), ".ass")
+	assPath := filepath.Join(outDir, "autosave-"+base+".ass")
 	if err := os.WriteFile(assPath, []byte(content), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "写入失败: "+err.Error())
 		return
@@ -170,7 +179,8 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 
 // EngineTimingLineEstimate 按打字速度估算给定文本分割点对应的换行帧（只算不落地）。
 func (h *Handler) EngineTimingLineEstimate(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireDoneTimingJob(w, r); !ok {
+	job, ok := h.requireDoneTimingJob(w, r)
+	if !ok {
 		return
 	}
 	var body struct {
@@ -185,12 +195,147 @@ func (h *Handler) EngineTimingLineEstimate(w http.ResponseWriter, r *http.Reques
 	if body.SeparatorContentIndex != nil {
 		params["separatorContentIndex"] = *body.SeparatorContentIndex
 	}
-	raw, err := h.engine.TimingLineCall("subtitle.estimateSeparator", params)
+	raw, err := h.engine.TimingLineCall(job, "subtitle.estimateSeparator", params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "估算失败: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, json.RawMessage(raw))
+}
+
+// EngineTimingLineVoicePauses 语音停顿候选：按行定位剧本里的 VoiceId → 直连
+// exmeaning 拉音频（会话级本地缓存）→ ffmpeg silencedetect 找语句间停顿 →
+// 换算成视频帧，给分句微调当候选换行点（打轴习惯：人声按语音节奏分句）。
+func (h *Handler) EngineTimingLineVoicePauses(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.requireDoneTimingJob(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Index *int `json:"index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Index == nil {
+		writeError(w, http.StatusBadRequest, "index 必填")
+		return
+	}
+
+	rawLines, err := h.engine.TimingLines(job)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "获取引擎行列表失败: "+err.Error())
+		return
+	}
+	var st struct {
+		Fps   float64 `json:"fps"`
+		Lines []struct {
+			Type       string `json:"type"`
+			Index      int    `json:"index"`
+			StartIndex int    `json:"startIndex"`
+			EndIndex   int    `json:"endIndex"`
+			Body       string `json:"body"`
+		} `json:"lines"`
+	}
+	if err := json.Unmarshal(rawLines, &st); err != nil || st.Fps <= 0 {
+		writeError(w, http.StatusInternalServerError, "引擎行列表格式异常")
+		return
+	}
+	// 目标行 + 它是同文本对话行里的第几次出现（用于在剧本 TalkData 里对位——
+	// 引擎行序与 TalkData 序未必一一对应，按原文匹配最稳）
+	compact := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	targetIdx := -1
+	occurrence := 0
+	var targetBody string
+	var startFrame, endFrame int
+	for i, ln := range st.Lines {
+		if ln.Type != "dialog" {
+			continue
+		}
+		if ln.Index == *body.Index {
+			targetIdx = i
+			targetBody = compact(ln.Body)
+			startFrame, endFrame = ln.StartIndex, ln.EndIndex
+			break
+		}
+	}
+	if targetIdx < 0 {
+		writeError(w, http.StatusNotFound, "行不存在")
+		return
+	}
+	for _, ln := range st.Lines[:targetIdx] {
+		if ln.Type == "dialog" && compact(ln.Body) == targetBody {
+			occurrence++
+		}
+	}
+
+	job.Mu.Lock()
+	scriptPath := job.ScriptPath
+	job.Mu.Unlock()
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取剧本失败: "+err.Error())
+		return
+	}
+	var story service.UnityStoryData
+	if err := json.Unmarshal(data, &story); err != nil {
+		writeError(w, http.StatusInternalServerError, "解析剧本失败: "+err.Error())
+		return
+	}
+	var voice *service.VoiceData
+	seen := 0
+	for i := range story.TalkData {
+		if compact(story.TalkData[i].Body) != targetBody {
+			continue
+		}
+		if seen == occurrence {
+			if len(story.TalkData[i].Voices) > 0 {
+				voice = &story.TalkData[i].Voices[0]
+			}
+			break
+		}
+		seen++
+	}
+	if voice == nil || voice.VoiceID == "" {
+		// 虚拟歌手等无语音台词：明确告知，前端引导用「按字数均分」
+		writeJSON(w, http.StatusOK, map[string]interface{}{"noVoice": true, "pauses": []interface{}{}})
+		return
+	}
+
+	// 语音文件夹名 = 剧本资源文件名（JSON 内的 ScenarioId 可能是坏日文名，
+	// 资源文件名才可靠——卡面语音修复时验证过的口径）
+	scenarioID := strings.TrimSuffix(filepath.Base(scriptPath), filepath.Ext(scriptPath))
+	info, err := h.voiceAlign.Analyze(scenarioID, voice.VoiceID, voice.Character2dId)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "语音获取/分析失败: "+err.Error())
+		return
+	}
+
+	// 停顿中点 → 帧（语音起点≈台词框出现帧），并夹进本行帧区间
+	type pauseOut struct {
+		Frame    int     `json:"frame"`
+		TimeSec  float64 `json:"timeSec"`
+		Duration float64 `json:"durationSec"`
+	}
+	var pauses []pauseOut
+	seenFrame := map[int]bool{}
+	for _, p := range info.Pauses {
+		mid := (p.Start + p.End) / 2
+		frame := startFrame + int(math.Round(mid*st.Fps))
+		if frame <= startFrame {
+			frame = startFrame + 1
+		}
+		if frame >= endFrame {
+			frame = endFrame - 1
+		}
+		if seenFrame[frame] {
+			continue
+		}
+		seenFrame[frame] = true
+		pauses = append(pauses, pauseOut{Frame: frame, TimeSec: mid, Duration: p.End - p.Start})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"voiceId":     voice.VoiceID,
+		"durationSec": info.Duration,
+		"pauses":      pauses,
+	})
 }
 
 // EngineTimingFrame 取指定帧画面（base64 jpeg），分隔帧微调的所见即所得预览。
@@ -199,7 +344,8 @@ func (h *Handler) EngineTimingFrame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "打轴内核未安装")
 		return
 	}
-	if _, ok := h.engineTimingJob(r.URL.Query().Get("task")); !ok {
+	job, ok := h.engineTimingJob(r.URL.Query().Get("task"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -209,7 +355,7 @@ func (h *Handler) EngineTimingFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maxWidth, _ := strconv.Atoi(r.URL.Query().Get("maxWidth"))
-	raw, rerr := h.engine.TimingFrame(frame, maxWidth)
+	raw, rerr := h.engine.TimingFrame(job, frame, maxWidth)
 	if rerr != nil {
 		writeError(w, http.StatusInternalServerError, "取帧失败: "+rerr.Error())
 		return
@@ -283,7 +429,7 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := h.engine.Export()
+	content, err := h.engine.Export(job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "重新组装字幕失败: "+err.Error())
 		return
@@ -330,8 +476,35 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// EngineTimingSyncPull 回读 Aegisub 保存的 .ass：对每条分句行，用磁盘上第二半的
-// 起始时间反推换行帧写回引擎，让轴机列表反映 Aegisub 里的精调、且再导出不丢。
+// assOverrideTagRe 匹配 ASS 覆写标签块（打字机逐字 alpha 标签等）。
+var assOverrideTagRe = regexp.MustCompile(`\{[^{}]*\}`)
+
+// normalizeAssText 把 ASS 文本与引擎译文拉到同一口径再比较：
+// \N/\n → 真换行；省略号按引擎打字机的替换规则归一（…→...、"... ..."→......）。
+func normalizeAssText(s string) string {
+	s = strings.ReplaceAll(s, `\N`, "\n")
+	s = strings.ReplaceAll(s, `\n`, "\n")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "…", "...")
+	s = strings.ReplaceAll(s, "... ...", "......")
+	return s
+}
+
+// trimAllLen 对齐引擎 TrimAll().Length 的计数口径（C# UTF-16 长度；去首尾空白与
+// 换行/\R/\N 标记），分割点索引按此传给引擎。
+func trimAllLen(s string) int {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, `\R`, "")
+	s = strings.ReplaceAll(s, `\N`, "")
+	return len(utf16.Encode([]rune(s)))
+}
+
+// EngineTimingSyncPull 回读 Aegisub 保存的 .ass：
+//   - 译文：剥掉覆写标签后与引擎当前译文不一致的行，写回引擎（在 Aegisub 里改字
+//     从此不再被下次导出冲掉）；
+//   - 分句行：用磁盘上第二半的起始时间反推换行帧写回引擎。
 func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 	job, ok := h.requireDoneTimingJob(w, r)
 	if !ok {
@@ -355,7 +528,7 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawLines, err := h.engine.TimingLines()
+	rawLines, err := h.engine.TimingLines(job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "获取引擎行列表失败: "+err.Error())
 		return
@@ -363,13 +536,15 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 	var engineState struct {
 		Fps   float64 `json:"fps"`
 		Lines []struct {
-			Type          string `json:"type"`
-			Index         int    `json:"index"`
-			StartIndex    int    `json:"startIndex"`
-			EndIndex      int    `json:"endIndex"`
-			Shake         bool   `json:"shake"`
-			UseSeparator  bool   `json:"useSeparator"`
-			SeparateFrame int    `json:"separateFrame"`
+			Type           string `json:"type"`
+			Index          int    `json:"index"`
+			StartIndex     int    `json:"startIndex"`
+			EndIndex       int    `json:"endIndex"`
+			Shake          bool   `json:"shake"`
+			UseSeparator   bool   `json:"useSeparator"`
+			SeparateFrame  int    `json:"separateFrame"`
+			Body           string `json:"body"`
+			BodyTranslated string `json:"bodyTranslated"`
 		} `json:"lines"`
 	}
 	if err := json.Unmarshal(rawLines, &engineState); err != nil || engineState.Fps <= 0 {
@@ -377,10 +552,10 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	applied, checked := 0, 0
+	applied, textApplied, checked := 0, 0, 0
 	var skipped []string
 	for _, ln := range engineState.Lines {
-		if ln.Type != "dialog" || !ln.UseSeparator || ln.Shake {
+		if ln.Type != "dialog" {
 			continue
 		}
 		tag := "st:" + strconv.Itoa(ln.Index+1)
@@ -388,7 +563,7 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		// 只看正文 Dialogue（滤掉角色名/调试注释）；分句行恰好两半才能反推边界。
+		// 只看正文 Dialogue（滤掉角色名/调试注释）。
 		var bodies []service.SyncedEvent
 		for _, ev := range evs {
 			if ev.Kind != "Dialogue" || ev.Style == "Character" || ev.Style == "Screen" {
@@ -396,10 +571,53 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 			}
 			bodies = append(bodies, ev)
 		}
-		if len(bodies) != 2 {
-			if len(bodies) > 0 {
-				skipped = append(skipped, tag)
+		if len(bodies) == 0 {
+			continue
+		}
+
+		// --- 译文回读。抖动行导出为逐帧多事件，无法唯一还原文本，跳过。 ---
+		if !ln.Shake && len(bodies) <= 2 {
+			engineText := normalizeAssText(ln.BodyTranslated)
+			var newText string
+			if len(bodies) == 1 {
+				newText = normalizeAssText(assOverrideTagRe.ReplaceAllString(bodies[0].Text, ""))
+			} else {
+				h0 := normalizeAssText(assOverrideTagRe.ReplaceAllString(bodies[0].Text, ""))
+				h1 := normalizeAssText(assOverrideTagRe.ReplaceAllString(bodies[1].Text, ""))
+				if strings.Contains(engineText, "\n") {
+					newText = h0 + "\n" + h1 // 引擎侧本就是显式换行（QuickEdit 语义），保持
+				} else {
+					newText = h0 + h1 // 引擎侧按索引分半，别凭空引入换行
+				}
 			}
+			// 未翻译的行导出的是原文——原样回读会把原文当译文写回，跳过。
+			untranslatedEcho := engineText == "" && newText == normalizeAssText(ln.Body)
+			if newText != "" && newText != engineText && !untranslatedEcho {
+				params := map[string]interface{}{
+					"index": ln.Index, "text": newText, "useSeparator": ln.UseSeparator,
+				}
+				if _, err := h.engine.TimingLineCall(job, "subtitle.setTranslation", params); err != nil {
+					skipped = append(skipped, tag)
+				} else {
+					textApplied++
+					if len(bodies) == 2 && !strings.Contains(newText, "\n") {
+						// 无显式换行时 setTranslation 不动分割点；用户改写两半后
+						// 边界=前半长度（引擎 TrimAll 计数口径）。
+						h0 := normalizeAssText(assOverrideTagRe.ReplaceAllString(bodies[0].Text, ""))
+						_, _ = h.engine.TimingLineCall(job, "subtitle.setSeparator",
+							map[string]interface{}{"index": ln.Index, "separatorContentIndex": trimAllLen(h0)})
+					}
+					// 来自 Aegisub 的值不标脏：推回去只会是空转
+				}
+			}
+		}
+
+		// --- 换行帧回读：分句行恰好两半才能反推边界。 ---
+		if !ln.UseSeparator || ln.Shake {
+			continue
+		}
+		if len(bodies) != 2 {
+			skipped = append(skipped, tag)
 			continue
 		}
 		checked++
@@ -418,13 +636,12 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		if frame == ln.SeparateFrame {
 			continue
 		}
-		if _, err := h.engine.TimingLineCall("subtitle.setSeparator",
+		if _, err := h.engine.TimingLineCall(job, "subtitle.setSeparator",
 			map[string]interface{}{"index": ln.Index, "separateFrame": frame}); err != nil {
 			skipped = append(skipped, tag)
 			continue
 		}
 		applied++
-		// 来自 Aegisub 的值不标脏：推回去只会是空转
 	}
 
 	// 同步完成后以当前磁盘状态为基准，status 不再报"外部已改动"
@@ -435,9 +652,10 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		job.Mu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"applied": applied,
-		"checked": checked,
-		"skipped": skipped,
+		"applied":     applied,
+		"textApplied": textApplied,
+		"checked":     checked,
+		"skipped":     skipped,
 	})
 }
 

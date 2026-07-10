@@ -108,7 +108,10 @@ func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "打轴内核未安装")
 		return
 	}
-	var req service.TimingParams
+	var req struct {
+		service.TimingParams
+		Parallel bool `json:"parallel"` // true=并行模式（多任务并存）；false=老语义单飞
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -129,7 +132,7 @@ func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 	// GetDouble() (which would otherwise throw and 500 the start).
 	req.Threshold = sanitizeThreshold(req.Threshold)
 
-	job, err := h.engine.StartTiming(newTaskID(), req)
+	job, err := h.engine.StartTiming(newTaskID(), req.TimingParams, req.Parallel)
 	if err != nil {
 		if errors.Is(err, service.ErrTimingBusy) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -209,14 +212,15 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	// body keeps the legacy behavior (raw engine output, default subtitles dir).
 	var body struct {
 		OutputDir            string `json:"outputDir"`
-		Clean                bool   `json:"clean"`                // 内建 tools.lua：改样式/去\N/删 Character+Screen 行
+		Clean                bool   `json:"clean"`                // 内建 tools.lua：改样式/删 Character+Screen 行（\N 保留）
 		SyncTags             bool   `json:"syncTags"`             // Effect 埋 st:N 标识（Aegisub 同步的键）
 		StyleTemplate        string `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
 		StyleTemplateContent string `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
+		AegisubDir           string `json:"aegisubDir"`           // 用户指定的 Aegisub automation/autoload 目录（便携版）
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
 
-	content, err := h.engine.Export()
+	content, err := h.engine.Export(job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "导出字幕失败: "+err.Error())
 		return
@@ -281,7 +285,7 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		} else {
 			warnings = append(warnings, "写入 Aegisub 同步宏失败: "+serr.Error())
 		}
-		if p, serr := service.InstallAegisubSyncMacro(); serr != nil {
+		if p, serr := service.InstallAegisubSyncMacro(body.AegisubDir); serr != nil {
 			warnings = append(warnings, "安装 Aegisub 同步宏失败: "+serr.Error())
 		} else {
 			aegisubMacro = p
@@ -335,7 +339,10 @@ func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "压制内核未安装")
 		return
 	}
-	var req service.SuppressParams
+	var req struct {
+		service.SuppressParams
+		Parallel bool `json:"parallel"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -349,7 +356,7 @@ func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := h.engine.StartSuppress(newTaskID(), req)
+	job, err := h.engine.StartSuppress(newTaskID(), req.SuppressParams, req.Parallel)
 	if err != nil {
 		if errors.Is(err, service.ErrSuppressBusy) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -394,7 +401,8 @@ func (h *Handler) EngineSuppressProgress(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, snap)
 }
 
-// EngineCancel stops the active run in a domain ("timing" | "suppress").
+// EngineCancel stops a run in a domain ("timing" | "suppress")。带 task 参数时
+// 精确取消该任务（并行模式必带）；不带时取消该域当前 running 任务（老插件兼容）。
 func (h *Handler) EngineCancel(w http.ResponseWriter, r *http.Request) {
 	if h.engine == nil {
 		writeError(w, http.StatusServiceUnavailable, "内核未安装")
@@ -405,14 +413,61 @@ func (h *Handler) EngineCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "未知取消域（应为 timing 或 suppress）: "+domain)
 		return
 	}
-	if err := h.engine.Cancel(domain); err != nil {
+	if err := h.engine.Cancel(domain, r.URL.Query().Get("task")); err != nil {
 		writeError(w, http.StatusInternalServerError, "取消失败: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled"})
 }
 
-// helpers — single active job per domain (the engine has no correlation ids).
+// EngineTasks 快照全部已注册任务，插件页面重挂载后据此找回任务列表。
+func (h *Handler) EngineTasks(w http.ResponseWriter, r *http.Request) {
+	if h.engine == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"timing": []interface{}{}, "suppress": []interface{}{}})
+		return
+	}
+	timing, suppress := h.engine.Tasks()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"timing": timing, "suppress": suppress})
+}
+
+// EngineTimingClose 关闭并移除一个打轴任务，释放其独占的引擎进程。
+func (h *Handler) EngineTimingClose(w http.ResponseWriter, r *http.Request) {
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "内核未安装")
+		return
+	}
+	taskID := r.URL.Query().Get("task")
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task 必填")
+		return
+	}
+	if err := h.engine.CloseTiming(taskID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
+// EngineAegisubInstall 手动把同步宏装进指定（或自动探测的）Aegisub autoload 目录。
+// 便携版 Aegisub 的配置跟着 exe 走、自动探测不到，用户浏览选一次目录即可。
+func (h *Handler) EngineAegisubInstall(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	p, err := service.InstallAegisubSyncMacro(body.Dir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "安装失败: "+err.Error())
+		return
+	}
+	if p == "" {
+		writeError(w, http.StatusNotFound, "未检测到本机 Aegisub 配置目录；请手动指定 automation/autoload 目录")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"installed": p})
+}
+
+// helpers — jobs are registered per taskId (one engine process per job).
 func (h *Handler) engineTimingJob(taskID string) (*service.EngineTimingJob, bool) {
 	if h.engine == nil || taskID == "" {
 		return nil, false
