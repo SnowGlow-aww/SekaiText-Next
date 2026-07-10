@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,11 +32,87 @@ var httpClient = &http.Client{
 	// Disable compression to get accurate Content-Length for progress
 }
 
-// normalizeETag 抹平强/弱 ETag 与引号差异（边缘压缩可能把强标记降级为 W/）。
+// normalizeETag 抹平强/弱 ETag、引号与压缩变体差异：Go 客户端默认请求 gzip，
+// 边缘返回压缩变体时会把 ETag 改写成 "xxx-gzip"，不剥掉后缀会把镜像误判为
+// 过期、全部回落慢源站（v5.7.0 实际踩到）。
 func normalizeETag(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "W/")
-	return strings.Trim(s, `"`)
+	s = strings.Trim(s, `"`)
+	for _, suf := range []string{"-gzip", "-br", "-zstd"} {
+		s = strings.TrimSuffix(s, suf)
+	}
+	return s
+}
+
+// masterTables 一轮元数据刷新要拉的全部表。
+var masterTables = []string{
+	"events", "eventStories", "eventCards", "cards", "unitStories",
+	"actionSets", "character2ds", "specialStories", "systemLive2ds",
+}
+
+// prefetched 是本轮刷新的表级内存缓存：UpdateAllFromCDN 起始并发预取填入，
+// 各 update 步骤经 fetchCDN 消费（LoadAndDelete 用完即释放 ~42MB）。
+var prefetched sync.Map
+
+func headETag(url string, timeout time.Duration) string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	return normalizeETag(resp.Header.Get("ETag"))
+}
+
+// probeMirrorTrusted 决定探针能否借道镜像：用一张小表做锚点，比较「镜像探针
+// （唯一 probe 参数击穿缓存，由边缘转发到源站）」与「直连源站探针」的 ETag。
+// 一致 = 边缘确实把查询串计入缓存键且透传源站响应，镜像探针可信（后续 9 张表
+// 的探针全走快路）；不一致 = 边缘配置有诈，全部退回直连探针（慢但正确）；
+// 源站直连失败 = 没有对照物，信镜像探针总好过全盲。
+func probeMirrorTrusted() bool {
+	const anchor = "unitStories"
+	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
+	mirrorETag := headETag(fmt.Sprintf(harukiMirrorMasterURL, anchor)+"?probe="+nonce, 10*time.Second)
+	if mirrorETag == "" {
+		return false
+	}
+	originETag := headETag(fmt.Sprintf(harukiNeoMasterURL, anchor), 20*time.Second)
+	if originETag == "" {
+		log.Printf("[update] anchor origin probe unreachable, trusting mirror probes unverified")
+		return true
+	}
+	if mirrorETag != originETag {
+		log.Printf("[update] anchor mismatch (mirror %s vs origin %s) — edge cache-key misconfigured? probing origin directly", mirrorETag, originETag)
+		return false
+	}
+	return true
+}
+
+// prefetchTables 并发拉齐全部表：此前每表「探针+下载」串行共 18 次网络往返，
+// 到源站的慢路由会把整轮拖到分钟级；并发后整轮 ≈ 最慢一张表的耗时。
+func prefetchTables(probeMirror bool) {
+	var wg sync.WaitGroup
+	for _, t := range masterTables {
+		wg.Add(1)
+		go func(table string) {
+			defer wg.Done()
+			if data, err := fetchTable(table, probeMirror); err == nil {
+				prefetched.Store(table, data)
+			} else {
+				log.Printf("[update] prefetch %s failed: %v", table, err)
+			}
+		}(t)
+	}
+	wg.Wait()
 }
 
 func fetchURL(url string) ([]byte, string, error) {
@@ -52,17 +130,25 @@ func fetchURL(url string) ([]byte, string, error) {
 }
 
 func fetchCDN(table string) ([]byte, error) {
+	if v, ok := prefetched.LoadAndDelete(table); ok {
+		return v.([]byte), nil
+	}
+	return fetchTable(table, true)
+}
+
+func fetchTable(table string, probeMirror bool) ([]byte, error) {
 	originURL := fmt.Sprintf(harukiNeoMasterURL, table)
 
-	// 1. 源站 ETag 探针。拿不到就没法验证镜像新鲜度，直接走源站。
+	// 1. 源站 ETag 探针。优先借道镜像（唯一 probe 参数击穿边缘缓存，请求由
+	// 边缘代问源站，避开用户到源站的慢路由）；镜像探针失败或不可信再直连。
+	// 拿不到 ETag 就没法验证镜像新鲜度，走后面的兜底链。
 	originETag := ""
-	if req, err := http.NewRequest(http.MethodHead, originURL, nil); err == nil {
-		if resp, err := httpClient.Do(req); err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				originETag = normalizeETag(resp.Header.Get("ETag"))
-			}
-		}
+	if probeMirror {
+		nonce := fmt.Sprintf("%d", time.Now().UnixNano())
+		originETag = headETag(fmt.Sprintf(harukiMirrorMasterURL, table)+"?probe="+nonce, 10*time.Second)
+	}
+	if originETag == "" {
+		originETag = headETag(originURL, 20*time.Second)
 	}
 
 	// 2. 镜像下载 + ETag 校验：一致 = 与源站字节级同版，采用。
@@ -659,7 +745,11 @@ func (lm *ListManager) UpdateAllFromCDN(dir string, pt *ProgressTracker) {
 		{"greets", lm.updateGreets},
 	}
 
-	pt.SetTotal(len(steps))
+	pt.SetTotal(len(steps) + 1)
+
+	// 并发预取全部表（探针可信度先做一次锚点交叉校验），后续步骤直接吃缓存。
+	pt.Advance("并发下载元数据...")
+	prefetchTables(probeMirrorTrusted())
 
 	for _, step := range steps {
 		pt.Advance("正在更新 " + step.name + "...")
