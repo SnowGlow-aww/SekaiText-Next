@@ -105,14 +105,18 @@ export const useLive2dDockStore = defineStore('live2dDock', () => {
   async function openWindow(jump: Live2dJump) {
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-      const { emit } = await import('@tauri-apps/api/event')
+      // emitTo targets ONLY the live2d window. A broadcast emit() also reaches
+      // this main window, where a kept-alive #/live2d player page (visited via
+      // the sidebar earlier) still holds a 'live2d:jump' listener — it would
+      // seek + play the voice IN PARALLEL with the separate window (double audio).
+      const { emitTo } = await import('@tauri-apps/api/event')
       const label = 'live2d'
       // getByLabel is sync in some versions, async in others — await tolerates both.
       const existing = await WebviewWindow.getByLabel(label)
       if (existing) {
         forcedDock.value = null
         await existing.setFocus().catch(() => {})
-        await emit('live2d:jump', jump)
+        await emitTo(label, 'live2d:jump', jump)
         return
       }
       // Hash route + query so a cold window self-seeks on mount without an event.
@@ -137,7 +141,7 @@ export const useLive2dDockStore = defineStore('live2dDock', () => {
       })
       // Belt-and-braces: also push the jump once the window reports created, in
       // case the page's listener attaches before it parses the URL query.
-      w.once('tauri://created', () => { forcedDock.value = null; void emit('live2d:jump', jump) })
+      w.once('tauri://created', () => { forcedDock.value = null; void emitTo(label, 'live2d:jump', jump) })
       w.once('tauri://error', () => {
         // Window couldn't open (perm/path) → degrade to a docked panel. forcedDock
         // makes EditorPage.dockSide mount the dock even though placement is 'window'.
