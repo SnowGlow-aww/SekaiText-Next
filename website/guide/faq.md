@@ -42,6 +42,10 @@ sudo xattr -cr "/Applications/SekaiText Next.app"
 
 基本都是视频和剧情选错对应关系——确认录屏与所选剧情是同一期活动/同一话（注意脚本编号与活动实装编号可能有偏移）。
 
+### Windows 压制启动就失败（`Unknown encoder` / `Header too large`）？
+
+5.7.2 及更早版本的已知问题：压制编码器默认了 macOS 专属项，装过老版 SekaiTools 的机器还会被残留组件抢走压制管线。升级 SekaiText 到 **5.7.3** 并在插件市场把「自动轴机 + 压制」更到 **3.1.0** 即可——编码器现在按显卡自动判定（NVIDIA / Intel / AMD 硬编逐个验证后才列出），无硬编时自动用 x264 软编。
+
 ## 其他
 
 ### 译文保存在哪里？会丢吗？
