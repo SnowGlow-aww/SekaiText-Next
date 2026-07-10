@@ -123,6 +123,14 @@ export function pluginIntroTour(pluginId: string): TourDef | null {
  * 补丁版本不打扰。发版时若有值得展示的变化，在这里加一条。
  */
 const WHATS_NEW: Record<string, { title?: string; body: string; link?: TourStep['link'] }> = {
+  '5.5': {
+    body:
+      '· 轴机并行任务：可同时打轴 / 压制多个视频（默认关闭，插件页开关开启；性能不高的电脑慎用）\n' +
+      '· 轴机语音停顿对齐：分句微调可拉取该句语音检测说话停顿，一键把换行对齐到实际停顿处\n' +
+      '· Aegisub 同步大修：在 Aegisub 里改的译文现在会自动回读（不再被导出覆盖）；新增手动「从 Aegisub 拉取」按钮；便携版可手动指定目录安装同步宏\n' +
+      '· 导出修复：清理不再删掉 \\N 换行、三行文本正确命中「3行」样式；地点横幅自动套用团队「遮罩 / 地点名称」样式\n' +
+      '· 修复 Windows 打轴时弹出黑色命令行窗口（误关会导致任务失败）的问题',
+  },
   '5.4': {
     body:
       '· 逐行自动保存：每次编辑后自动把译文写到输出目录的 autosave.txt，崩溃断电不再丢稿\n' +
