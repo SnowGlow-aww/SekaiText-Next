@@ -960,7 +960,28 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s = model.DefaultSettings()
 	}
+	// SaveBaseDir must resolve per-user at runtime (DefaultSettings can't hard-
+	// code a machine path). Filled here — not persisted until the user saves
+	// settings — it makes 自动建档/autosave and the layered save default work out
+	// of the box instead of silently doing nothing while the setting is empty.
+	if s.SaveBaseDir == "" {
+		s.SaveBaseDir = defaultSaveBaseDir()
+	}
 	writeJSON(w, http.StatusOK, s)
+}
+
+// defaultSaveBaseDir picks a user-visible home for translation output:
+// ~/Documents/SekaiText when Documents exists (macOS/Windows), else ~/SekaiText.
+func defaultSaveBaseDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	docs := filepath.Join(home, "Documents")
+	if info, err := os.Stat(docs); err == nil && info.IsDir() {
+		return filepath.Join(docs, "SekaiText")
+	}
+	return filepath.Join(home, "SekaiText")
 }
 
 func (h *Handler) PutSettings(w http.ResponseWriter, r *http.Request) {

@@ -217,6 +217,7 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		StyleTemplate        string `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
 		StyleTemplateContent string `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
 		AegisubDir           string `json:"aegisubDir"`           // 用户指定的 Aegisub automation/autoload 目录（便携版）
+		Staff                *service.StaffInfo `json:"staff"`    // staff 制作人员行（可选，见 asspost.StaffInfo）
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
 
@@ -231,9 +232,10 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		SyncTags:             body.SyncTags,
 		StyleTemplate:        strings.TrimSpace(body.StyleTemplate),
 		StyleTemplateContent: body.StyleTemplateContent,
+		Staff:                body.Staff,
 	}
 	var warnings []string
-	if opts.Clean || opts.SyncTags {
+	if opts.Clean || opts.SyncTags || opts.Staff != nil {
 		post, perr := service.PostProcessAss(content, opts)
 		if perr != nil {
 			// 后处理拒绝损坏字幕时宁可导出原始内容，也不让用户拿不到 ass。

@@ -205,3 +205,52 @@ func TestExtractSyncGroupsAndTimes(t *testing.T) {
 		t.Errorf("非法时间应返回 -1")
 	}
 }
+
+func TestPostProcessStaffLine(t *testing.T) {
+	// 时轴与轴校&压制不同人：两行分开
+	post, err := PostProcessAss(sampleAss, AssPostOptions{Clean: true, Staff: &StaffInfo{
+		Group: "PJS字幕组", Episode: "第一话", Title: "三周年",
+		Recorder: "八成是茶币币", Translator: "组员A", Proofread: "组员B",
+		Timer: "组员C", Suppressor: "组员D",
+	}})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	want := `Dialogue: 0,0:00:00.00,0:00:05.00,staff,,0,0,0,,{\fad(300,200)}字幕制作 by PJS字幕组\N第一话：三周年\N录制：八成是茶币币\N翻译：组员A\N校对：组员B\N时轴：组员C\N轴校&压制：组员D`
+	if !strings.Contains(post.Content, want) {
+		t.Fatalf("缺少 staff 行:\n%s", post.Content)
+	}
+	// staff 行必须是 Format 之后的第一条事件
+	lines := strings.Split(post.Content, "\n")
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "Format: Layer") {
+			if !strings.HasPrefix(lines[i+1], "Dialogue: 0,0:00:00.00,0:00:05.00,staff") {
+				t.Fatalf("staff 行不在事件区顶部: %q", lines[i+1])
+			}
+			break
+		}
+	}
+
+	// 时轴 == 轴校&压制：合并为一行
+	post, err = PostProcessAss(sampleAss, AssPostOptions{Staff: &StaffInfo{
+		Group: "PJS字幕组", Timer: "组员C", Suppressor: "组员C",
+	}})
+	if err != nil {
+		t.Fatalf("PostProcessAss(merge): %v", err)
+	}
+	if !strings.Contains(post.Content, `时轴&轴校&压制：组员C`) {
+		t.Fatalf("同一人未合并: %s", post.Content)
+	}
+	if strings.Contains(post.Content, `\N时轴：组员C`) {
+		t.Fatalf("合并后不应再有单独时轴行")
+	}
+
+	// 全空：不生成 staff 行
+	post, err = PostProcessAss(sampleAss, AssPostOptions{Staff: &StaffInfo{}})
+	if err != nil {
+		t.Fatalf("PostProcessAss(empty): %v", err)
+	}
+	if strings.Contains(post.Content, ",staff,") {
+		t.Fatalf("全空不应生成 staff 行")
+	}
+}

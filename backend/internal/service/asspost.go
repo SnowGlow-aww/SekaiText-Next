@@ -25,6 +25,80 @@ type AssPostOptions struct {
 	// StyleTemplateContent 是模板的整段文本（插件内置模板走这里，随插件分发、
 	// 开箱即用不落盘）。StyleTemplate 路径非空时优先，便于用户自定义覆盖。
 	StyleTemplateContent string `json:"styleTemplateContent,omitempty"`
+	// Staff 非空则在 [Events] 顶部注入一条 staff 制作人员行（0:00:00→0:00:05，
+	// 团队成品口径）。样式定义来自团队样式模板（staff 已在模板里）。
+	Staff *StaffInfo `json:"staff,omitempty"`
+}
+
+// StaffInfo 是 staff 行的可自定义字段（职位标签固定，ID 由用户输入）。
+// 全部留空则不生成 staff 行；时轴与轴校&压制相同则合并为「时轴&轴校&压制」。
+type StaffInfo struct {
+	Group      string `json:"group"`      // 字幕组名，如 PJS字幕组
+	Episode    string `json:"episode"`    // 话数，如 第一话
+	Title      string `json:"title"`      // 标题，如 三周年
+	Recorder   string `json:"recorder"`   // 录制
+	Translator string `json:"translator"` // 翻译
+	Proofread  string `json:"proofread"`  // 校对
+	Timer      string `json:"timer"`      // 时轴
+	Suppressor string `json:"suppressor"` // 轴校&压制
+}
+
+// buildStaffText 组装 staff 行文本；无任何内容时返回 ""。
+func buildStaffText(s StaffInfo) string {
+	var parts []string
+	if g := strings.TrimSpace(s.Group); g != "" {
+		parts = append(parts, "字幕制作 by "+g)
+	}
+	ep, ti := strings.TrimSpace(s.Episode), strings.TrimSpace(s.Title)
+	switch {
+	case ep != "" && ti != "":
+		parts = append(parts, ep+"："+ti)
+	case ep != "":
+		parts = append(parts, ep)
+	case ti != "":
+		parts = append(parts, ti)
+	}
+	add := func(label, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			parts = append(parts, label+"："+v)
+		}
+	}
+	add("录制", s.Recorder)
+	add("翻译", s.Translator)
+	add("校对", s.Proofread)
+	timer, sup := strings.TrimSpace(s.Timer), strings.TrimSpace(s.Suppressor)
+	if timer != "" && timer == sup {
+		parts = append(parts, "时轴&轴校&压制："+timer)
+	} else {
+		add("时轴", timer)
+		add("轴校&压制", sup)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return `{\fad(300,200)}` + strings.Join(parts, `\N`)
+}
+
+// staffEventLine 按 [Events] 的 Format 组装 staff Dialogue 行。
+func staffEventLine(format []string, text string) string {
+	fields := make([]string, len(format))
+	for i, f := range format {
+		switch f {
+		case "Start":
+			fields[i] = "0:00:00.00"
+		case "End":
+			fields[i] = "0:00:05.00"
+		case "Style":
+			fields[i] = "staff"
+		case "Name", "Effect":
+			fields[i] = ""
+		case "Text":
+			fields[i] = text
+		default: // Layer / Margin* 等数值字段
+			fields[i] = "0"
+		}
+	}
+	return "Dialogue: " + strings.Join(fields, ",")
 }
 
 type AssPostResult struct {
@@ -164,7 +238,7 @@ func cleanStyleFor(nBreaks, playX, playY int) (string, bool) {
 // PostProcessAss 对引擎导出的 ASS 内容做后处理。见文件头注释。
 func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error) {
 	res := &AssPostResult{Groups: map[string][]string{}}
-	if !opts.Clean && !opts.SyncTags {
+	if !opts.Clean && !opts.SyncTags && opts.Staff == nil {
 		res.Content = content
 		return res, nil
 	}
@@ -273,6 +347,25 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			res.Groups[tag] = append(res.Groups[tag], line)
 		}
 		outLines = append(outLines, line)
+	}
+
+	// staff 制作人员行：注入到 Format 行之后、所有事件之前（成品里 staff 在最前）。
+	if opts.Staff != nil {
+		if text := buildStaffText(*opts.Staff); text != "" {
+			staffLine := staffEventLine(evFormat, text)
+			inserted := false
+			for i, ln := range outLines {
+				if strings.HasPrefix(ln, "Format:") {
+					outLines = append(outLines[:i+1], append([]string{staffLine}, outLines[i+1:]...)...)
+					inserted = true
+					break
+				}
+			}
+			if !inserted {
+				outLines = append([]string{staffLine}, outLines...)
+			}
+			usedStyles["staff"] = true
+		}
 	}
 	sections[eventsIdx].Lines = outLines
 

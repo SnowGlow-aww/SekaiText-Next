@@ -462,6 +462,9 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "写同步文件失败: "+err.Error())
 		return
 	}
+	// 固定名副本：宏在缺 lfs 模块的 Aegisub 环境（个别 3.2.2 安装）无法扫目录
+	// 找最新 *.sekaisync.txt，回落读取这个固定名文件。每次推送覆盖。
+	_ = os.WriteFile(filepath.Join(filepath.Dir(assPath), "_sekaitext.sekaisync.txt"), []byte(payload), 0644)
 
 	job.Mu.Lock()
 	for _, idx := range indices {
