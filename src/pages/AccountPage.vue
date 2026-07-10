@@ -62,7 +62,7 @@ async function changeRole(u: TeamUser, role: string, el?: HTMLSelectElement) {
   if (role === u.role) return
   // Plain admins may only promote (never demote); surface it before the round-trip.
   if (!iAmSuperadmin.value && roleRank(role) <= roleRank(u.role)) {
-    show('管理员只能提升成员等级，不能降级', 'warn')
+    show('管理员只能提升用户等级，不能降级', 'warn')
     if (el) el.value = u.role // native <select> already moved; snap it back
     return
   }
@@ -139,7 +139,7 @@ async function createUser() {
 }
 
 function roleLabel(r: string) {
-  return r === 'superadmin' ? '超级管理员' : r === 'admin' ? '管理员' : r === 'reviewer' ? '校对' : '成员'
+  return r === 'superadmin' ? '超级管理员' : r === 'admin' ? '管理员' : r === 'reviewer' ? '校对' : '翻译'
 }
 function roleBadgeClass(r: string) {
   return r === 'superadmin'
@@ -253,7 +253,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+  <div class="min-h-screen page-bg text-[var(--color-text)]">
     <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-4xl mx-auto px-6 h-14 flex items-center gap-3">
         <button @click="router.back()" class="icon-btn -ml-1"><ArrowLeft :size="18" /></button>
@@ -271,7 +271,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
 
     <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <!-- 团队术语库 -->
-      <section class="app-card p-5">
+      <section class="app-card p-5" data-tour="team-panel">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><Users :size="15" /></span>
           <div class="section-title">团队术语库</div>
@@ -338,11 +338,11 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
         </div>
       </section>
 
-      <!-- 为成员创建账号（仅管理员） -->
-      <section v-if="iAmAdmin" class="app-card p-5">
+      <!-- 创建团队账号（仅管理员） -->
+      <section v-if="iAmAdmin" class="app-card p-5" data-tour="acct-admin">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-success/12 text-success"><UserPlus :size="15" /></span>
-          <div class="section-title">为成员创建账号</div>
+          <div class="section-title">创建团队账号</div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -364,7 +364,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
               :model-value="newUser.role"
               @update:model-value="newUser.role = $event as string"
               :options="[
-                { value: 'member', label: '成员' },
+                { value: 'member', label: '翻译' },
                 { value: 'reviewer', label: '校对' },
                 ...(iAmSuperadmin ? [{ value: 'admin', label: '管理员' }] : []),
               ]"
@@ -381,7 +381,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
             <span class="grid place-items-center w-7 h-7 rounded-lg bg-accent/12 text-accent"><Users :size="15" /></span>
-            <div class="section-title">成员 <span class="text-[var(--color-text-tertiary)] font-normal">· {{ users.length }}</span></div>
+            <div class="section-title">团队用户 <span class="text-[var(--color-text-tertiary)] font-normal">· {{ users.length }}</span></div>
           </div>
           <button @click="refreshUsers" class="icon-btn" :class="{ 'animate-spin': refreshing }" title="刷新"><RefreshCw :size="15" /></button>
         </div>
@@ -411,7 +411,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
               <div class="text-[11px] text-[var(--color-text-tertiary)]">@{{ u.username }}</div>
             </div>
 
-            <!-- 可管理该成员时显示操作（超管可管理任何人；管理员仅能管理成员/校对） -->
+            <!-- 可管理该用户时显示操作（超管可管理任何人；管理员仅能管理翻译/校对） -->
             <template v-if="canManage(u)">
               <!-- Controlled by :model-value="u.role" — on guard/failure u.role is
                    left unchanged so the control reverts on its own (no DOM hack). -->
@@ -420,7 +420,7 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
                 :model-value="u.role"
                 @update:model-value="changeRole(u, $event as string)"
                 :options="[
-                  { value: 'member', label: '成员' },
+                  { value: 'member', label: '翻译' },
                   { value: 'reviewer', label: '校对' },
                   ...(iAmSuperadmin ? [{ value: 'admin', label: '管理员' }] : []),
                   ...(u.role === 'superadmin' ? [{ value: 'superadmin', label: '超级管理员', disabled: true }] : []),

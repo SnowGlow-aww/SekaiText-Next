@@ -136,7 +136,7 @@ function roleLabel(role: string) {
   return role === 'superadmin' ? '超级管理员'
     : role === 'admin' ? '管理员'
     : role === 'reviewer' ? '校对'
-    : '成员'
+    : '翻译'
 }
 </script>
 

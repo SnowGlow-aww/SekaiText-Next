@@ -15,6 +15,9 @@ export interface TourStep {
 export interface TourDef {
   /** 记入 settings.seenTours 的唯一 id，如 "app-welcome"、"plugin:live2d"。 */
   id: string
+  /** 结束时一并记为已看的附加 id。用于把多段导览拼成一次连续播放（如术语库
+   *  按角色分层的 base+翻译+校对+管理员），完成/跳过后各层都不再重复弹出。 */
+  alsoMarks?: string[]
   steps: TourStep[]
 }
 
@@ -47,9 +50,12 @@ export function useTour() {
     active.value = def
   }
 
-  /** 结束当前导览；完成与跳过都记为已看。 */
+  /** 结束当前导览；完成与跳过都记为已看（含 alsoMarks 的各层 id）。 */
   function finish() {
-    if (active.value) markSeen(active.value.id)
+    if (active.value) {
+      markSeen(active.value.id)
+      for (const id of active.value.alsoMarks ?? []) markSeen(id)
+    }
     active.value = null
   }
 

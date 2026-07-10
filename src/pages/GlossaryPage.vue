@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, watch, computed, useTemplateRef } from 'vue'
+import { ref, onMounted, onActivated, onDeactivated, watch, computed, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud } from 'lucide-vue-next'
@@ -12,6 +12,8 @@ import TeamProposalsPanel from '../components/glossary/TeamProposalsPanel.vue'
 import SkSelect from '../components/ui/SkSelect.vue'
 import type { GlossaryEntry } from '../types/glossary'
 import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
+import { useTour } from '../onboarding/useTour'
+import { glossaryTour } from '../onboarding/tours'
 
 const router = useRouter()
 const glossary = useGlossaryStore()
@@ -19,10 +21,33 @@ const team = useTeamStore()
 const toast = useToast()
 const { confirm } = useConfirm()
 const glossaryNotify = useGlossaryNotifyStore()
+const tour = useTour()
 
 // 打开术语库页 = 已读「我的提案已通过」，侧栏呼吸灯熄灭（待审核数不在此清零，
 // 那盏灯审完才灭）。先轮询拿到最新水位再标记，避免把没看到的通过也标掉。
+// 首次打开术语库页的分层功能导览：未登录先引导去账号中心登录；已登录只播
+// 当前角色可见且没看过的层。被 promote（翻译→校对→管理员）后再进本页时，
+// 单独补播新增权限那一层。startOnce 保证有别的导览在放时不插队。
+const pageActive = ref(false)
+function maybeStartGlossaryTour() {
+  const def = glossaryTour({
+    loggedIn: team.loggedIn,
+    isReviewer: team.isReviewer,
+    isAdmin: team.isAdmin,
+    seen: tour.seen,
+  })
+  if (def) tour.startOnce(def)
+}
+// 在本页期间登录 / 被晋升也即时补播（守 pageActive：kept-alive 的 watcher 在
+// 离开页面后仍会跑，不能在别的页面凭空弹导览）。
+watch(() => [team.loggedIn, team.isReviewer, team.isAdmin], () => {
+  if (pageActive.value) maybeStartGlossaryTour()
+})
+onDeactivated(() => { pageActive.value = false })
+
 onActivated(async () => {
+  pageActive.value = true
+  maybeStartGlossaryTour()
   await glossaryNotify.poll()
   glossaryNotify.markApprovedSeen()
 })
@@ -329,7 +354,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+  <div class="min-h-screen page-bg text-[var(--color-text)]">
     <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
       <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-3">
         <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
@@ -337,6 +362,7 @@ onMounted(async () => {
         <div class="ml-auto flex items-center gap-2">
           <button
             v-if="!team.readonly"
+            data-tour="glo-lock"
             @click="toggleEditLock"
             :class="['btn btn-sm gap-1.5', editUnlocked ? 'border border-warning/40 bg-warning/15 text-warning hover:bg-warning/20' : 'btn-ghost border border-[var(--color-border)]']"
             :title="editUnlocked ? '编辑已解锁，点击重新锁定' : '编辑已锁定，点击解锁以修改/删除词条'"
@@ -346,6 +372,7 @@ onMounted(async () => {
           </button>
           <button
             v-if="team.loggedIn && team.isAdmin"
+            data-tour="glo-upload"
             @click="uploadToServer"
             :disabled="uploading"
             class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
@@ -359,7 +386,7 @@ onMounted(async () => {
     </header>
 
     <div class="max-w-6xl mx-auto px-6 pt-4">
-      <div class="flex gap-1 border-b border-[var(--color-border)]">
+      <div class="flex gap-1 border-b border-[var(--color-border)]" data-tour="glo-tabs">
         <button
           @click="tab = 'search'"
           :class="['px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors', tab === 'search' ? 'border-primary text-[var(--color-text)]' : 'border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text)]']"
@@ -375,7 +402,7 @@ onMounted(async () => {
       <!-- search tab -->
       <div v-show="tab === 'search'" class="space-y-4">
         <!-- 团队模式:提案/审核入口 -->
-        <div v-if="team.loggedIn">
+        <div v-if="team.loggedIn" data-tour="glo-proposals">
           <button @click="showProposals = !showProposals"
             class="flex items-center gap-2 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text)]">
             <span class="app-chip bg-primary/15 text-primary">团队模式</span>
@@ -390,7 +417,7 @@ onMounted(async () => {
           <span class="app-chip bg-warning/15 text-warning">只读模式</span>
           正在从服务器同步术语库，登录后才能新增/修改。
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-2" data-tour="glo-search">
           <div class="relative flex-1">
             <Search :size="16" class="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-tertiary)] pointer-events-none" />
             <input
