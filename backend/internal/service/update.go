@@ -6,31 +6,97 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
-const harukiNeoMasterURL = "https://sekai-master-direct.haruki.seiunx.com/haruki-sekai-master/master/%s.json"
+const (
+	harukiNeoMasterURL = "https://sekai-master-direct.haruki.seiunx.com/haruki-sekai-master/master/%s.json"
+	// 元数据加速镜像：accr.cc 侧把整域名 sekai-master-direct.haruki.accr.cc
+	// 反代到上面的源站（路径不变，仅换 host）走 CDN。数据不定时更新，绝不能吃
+	// 到过期副本——fetchCDN 先 HEAD 源站拿当前 ETag（几百字节的探针），镜像响应
+	// 的 ETag 必须与之一致才采用，否则回落直连源站。任何一环失败（域名未生效/
+	// 边缘缓存失误/镜像不可达）都自动退回源站，结果永远与源站最新版一致。
+	harukiMirrorMasterURL = "https://sekai-master-direct.haruki.accr.cc/haruki-sekai-master/master/%s.json"
+)
 
 var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
+	// cards.json 单表 ~34MB，慢链路下 30s 会中途超时，放宽到 180s。
+	Timeout: 180 * time.Second,
 	// Disable compression to get accurate Content-Length for progress
 }
 
-func fetchCDN(table string) ([]byte, error) {
-	url := fmt.Sprintf(harukiNeoMasterURL, table)
+// normalizeETag 抹平强/弱 ETag 与引号差异（边缘压缩可能把强标记降级为 W/）。
+func normalizeETag(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "W/")
+	return strings.Trim(s, `"`)
+}
+
+func fetchURL(url string) ([]byte, string, error) {
 	log.Printf("[update] downloading %s", url)
 	resp, err := httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", table, err)
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download %s: HTTP %d", table, resp.StatusCode)
+		return nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	return data, resp.Header.Get("ETag"), err
+}
+
+func fetchCDN(table string) ([]byte, error) {
+	originURL := fmt.Sprintf(harukiNeoMasterURL, table)
+
+	// 1. 源站 ETag 探针。拿不到就没法验证镜像新鲜度，直接走源站。
+	originETag := ""
+	if req, err := http.NewRequest(http.MethodHead, originURL, nil); err == nil {
+		if resp, err := httpClient.Do(req); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				originETag = normalizeETag(resp.Header.Get("ETag"))
+			}
+		}
+	}
+
+	// 2. 镜像下载 + ETag 校验：一致 = 与源站字节级同版，采用。
+	// ?v=<源站ETag> 进边缘缓存键：同版本全体用户共享边缘副本（TTL 可以放心
+	// 设很长），源站一更新 ETag 变、缓存键随之改变，首个请求自动击穿拉新——
+	// 新鲜度由 URL 构造保证，不依赖 TTL 到期。
+	if originETag != "" {
+		mirrorURL := fmt.Sprintf(harukiMirrorMasterURL, table) + "?v=" + neturl.QueryEscape(originETag)
+		data, etag, err := fetchURL(mirrorURL)
+		switch {
+		case err == nil && normalizeETag(etag) == originETag:
+			return data, nil
+		case err == nil:
+			log.Printf("[update] %s mirror stale (origin etag %s vs mirror %q), falling back to origin", table, originETag, etag)
+		default:
+			log.Printf("[update] %s mirror unavailable (%v), falling back to origin", table, err)
+		}
+	}
+
+	// 3. 探针失败（源站不可达）时没法验证新鲜度，但镜像数据总好过直接报错——
+	// 先试镜像（不带 v，用边缘现存副本），最后才直连源站。
+	if originETag == "" {
+		if data, _, err := fetchURL(fmt.Sprintf(harukiMirrorMasterURL, table)); err == nil {
+			log.Printf("[update] %s origin unreachable, using mirror copy unverified", table)
+			return data, nil
+		}
+	}
+
+	// 4. 兜底：直连源站。
+	data, _, err := fetchURL(originURL)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", table, err)
+	}
+	return data, nil
 }
 
 func fetchCDNJSON(table string, target interface{}) error {
