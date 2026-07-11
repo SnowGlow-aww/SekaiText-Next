@@ -360,7 +360,7 @@ func (h *Handler) EngineSuppressStart(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.engine.StartSuppress(newTaskID(), req.SuppressParams, req.Parallel)
 	if err != nil {
-		if errors.Is(err, service.ErrSuppressBusy) {
+		if errors.Is(err, service.ErrSuppressBusy) || errors.Is(err, service.ErrSuppressOutputConflict) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -416,9 +416,41 @@ func (h *Handler) EngineSuppressProgress(w http.ResponseWriter, r *http.Request)
 		"outputPath": job.OutputPath,
 		"lastLog":    job.LastLog,
 		"error":      job.Error,
+		"logPath":    job.LogPath, // 报错时后端已自动导出的日志文件（空 = 未导出）
 	}
 	job.Mu.Unlock()
 	writeJSON(w, http.StatusOK, snap)
+}
+
+// EngineSuppressLog 返回任务的滚动日志（内存缓冲，进度行已折叠），给插件的
+// 日志面板轮询用；path 为已导出的日志文件路径（报错自动导出后非空）。
+func (h *Handler) EngineSuppressLog(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.engineSuppressJob(r.URL.Query().Get("task"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	job.Mu.Lock()
+	lines := append([]string(nil), job.LogLines...)
+	path := job.LogPath
+	job.Mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"taskId": job.TaskID, "lines": lines, "path": path})
+}
+
+// EngineSuppressLogExport 手动把任务日志落盘（报错时后端已自动导出；此端点给
+// 用户主动留档/补导出用），返回文件路径。
+func (h *Handler) EngineSuppressLogExport(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.engineSuppressJob(r.URL.Query().Get("task"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	path, err := h.engine.ExportSuppressLog(job)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "导出日志失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
 // EngineCancel stops a run in a domain ("timing" | "suppress")。带 task 参数时

@@ -232,6 +232,8 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/suppress/start", h.EngineSuppressStart)
 			r.Get("/suppress/probe", h.EngineSuppressProbe) // 可用编码器（硬件验证）+ 平台推荐默认值
 			r.Get("/suppress/progress", h.EngineSuppressProgress)
+			r.Get("/suppress/log", h.EngineSuppressLog)               // 滚动日志（报错自动导出，logPath 见 progress）
+			r.Post("/suppress/log/export", h.EngineSuppressLogExport) // 手动导出日志文件
 			r.Post("/cancel", h.EngineCancel)
 			r.Get("/tasks", h.EngineTasks)                    // 全部任务快照（并行模式任务列表）
 			r.Post("/timing/close", h.EngineTimingClose)      // 关闭任务并释放其引擎进程

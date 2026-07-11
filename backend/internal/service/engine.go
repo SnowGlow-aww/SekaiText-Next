@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,7 @@ import (
 type EngineManager struct {
 	enginePath string
 	ffmpegPath string
+	logsDir    string // 压制日志自动导出目录（数据目录下 logs/）；空 = 不落盘
 
 	mu            sync.Mutex // guards spare + job maps/orders + probeCache
 	spare         *engineProc
@@ -55,6 +58,11 @@ const (
 	maxRunningPerDomain = 4
 	maxKeptTimingJobs   = 8
 	maxKeptSuppressJobs = 16
+
+	// 每个压制任务保留的日志行数上限。进度行（frame=…）原地替换不占行数，
+	// 溢出时保留头部参数信息 + 最新尾部（诊断需要头尾，中段最不重要）。
+	maxSuppressLogLines  = 600
+	suppressLogHeadLines = 8
 )
 
 type rawResponse struct {
@@ -67,6 +75,8 @@ type rawResponse struct {
 var (
 	ErrTimingBusy   = errors.New("已有打轴任务在进行中（并行模式可同时跑多个）")
 	ErrSuppressBusy = errors.New("已有压制任务在进行中（并行模式可同时跑多个）")
+	// 两个 ffmpeg 同时写一个输出文件不会报错但产物必坏（Windows 共享写入），必须拦。
+	ErrSuppressOutputConflict = errors.New("已有压制任务正在输出到同一个文件，请更换输出路径或等其完成")
 )
 
 // envelope is the union of response + notification fields; "id" presence selects.
@@ -320,15 +330,22 @@ type EngineSuppressJob struct {
 	FinishReason string
 	Error        string
 
+	// 滚动日志（ffmpeg stderr + 引擎 [Sekai]/[VSPipe] 行）。报错时自动导出到
+	// LogPath；也可通过 /engine/suppress/log 随时查看/手动导出。
+	LogLines        []string
+	LogPath         string
+	logLastProgress bool
+
 	proc *engineProc
 }
 
 // NewEngineManager constructs a manager. No engine process is spawned until the
 // first job/ping; callers should gate features on Available().
-func NewEngineManager(enginePath, ffmpegPath string) *EngineManager {
+func NewEngineManager(enginePath, ffmpegPath, logsDir string) *EngineManager {
 	return &EngineManager{
 		enginePath:   enginePath,
 		ffmpegPath:   ffmpegPath,
+		logsDir:      logsDir,
 		timingJobs:   map[string]*EngineTimingJob{},
 		suppressJobs: map[string]*EngineSuppressJob{},
 	}
@@ -699,12 +716,28 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 		p.FfmpegPath = em.ffmpegPath
 	}
 	job := &EngineSuppressJob{TaskID: taskID, Status: "running", OutputPath: p.OutputPath, SourceVideo: p.SourceVideo}
+	job.LogLines = []string{
+		"[SekaiText 压制日志] 任务 " + taskID + " · " + time.Now().Format("2006-01-02 15:04:05"),
+		"源视频: " + p.SourceVideo,
+		"字幕:   " + p.SourceSubtitle,
+		"输出:   " + p.OutputPath,
+		fmt.Sprintf("编码器: %s · CRF %d · 硬解 %v · 并行 %v", p.Encoder, p.Crf,
+			p.UseHwAccelDecode == nil || *p.UseHwAccelDecode, parallel),
+		"----------------------------------------",
+	}
 
 	em.mu.Lock()
 	running := 0
 	for _, j := range em.suppressJobs {
-		if j.statusSnapshot() == "running" {
-			running++
+		if j.statusSnapshot() != "running" {
+			continue
+		}
+		running++
+		// 并行任务各自独占引擎进程，但输出文件仍是共享资源：两个 ffmpeg 写同一个
+		// 文件在 Windows 上不报错、产物直接损坏，启动前必须拦下。
+		if filepath.Clean(j.OutputPath) == filepath.Clean(p.OutputPath) {
+			em.mu.Unlock()
+			return nil, ErrSuppressOutputConflict
 		}
 	}
 	if running > 0 && !parallel {
@@ -756,7 +789,21 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 	}
 	if !proc.bind(
 		func(method string, params json.RawMessage) { em.routeSuppressNotification(job, method, params) },
-		func() { failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason) },
+		func() {
+			failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason)
+			// 引擎进程异常死亡拿不到 suppress.finished——把死亡记录进日志并导出，
+			// 否则最需要日志的崩溃场景反而什么都留不下。
+			if job.statusSnapshot() == "error" {
+				job.Mu.Lock()
+				job.appendLogLocked("[SekaiText] 内核进程异常退出（未收到压制结束通知）", false)
+				job.Mu.Unlock()
+				go func() {
+					if _, err := em.ExportSuppressLog(job); err != nil {
+						log.Printf("[engine] 压制日志自动导出失败: %v", err)
+					}
+				}()
+			}
+		},
 	) {
 		em.failStart(&job.Mu, &job.Status, &job.Error, "内核进程启动后立即退出")
 		return
@@ -888,18 +935,24 @@ func (em *EngineManager) SuppressProbe() (json.RawMessage, error) {
 		return cached, nil
 	}
 
-	proc, err := em.spareProc()
+	// 探测独占一个进程（takeProc 而非 spareProc）：引擎 dispatcher 是串行的，首跑
+	// 试编码要几秒到几十秒，挂在备胎上会把同期领养该备胎的压制任务的 suppress.start
+	// 和 Ping 全排在探测后面——表现为"内核未就绪"闪烁、压制迟迟不动。
+	proc, err := em.takeProc()
 	if err != nil {
 		return nil, err
 	}
 	// 首跑要给每个编进 ffmpeg 的硬件编码器各跑一次试编码（坏驱动挂死的单项在
-	// 引擎侧 20s 超时剔除），给足余量。
+	// 引擎侧 20s 超时剔除；同家族串行、跨家族并发），给足余量。
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	res, err := proc.request(ctx, "suppress.probe", map[string]string{"ffmpegPath": em.ffmpegPath})
 	if err != nil {
+		// 超时/失败的进程内部可能还在试编码，回收当备胎会污染下一个任务——直接杀。
+		proc.kill()
 		return nil, err
 	}
+	em.recycleProc(proc)
 
 	em.mu.Lock()
 	em.probeCache = res
@@ -1117,6 +1170,7 @@ func (em *EngineManager) routeSuppressNotification(j *EngineSuppressJob, method 
 		_ = json.Unmarshal(params, &p)
 		j.Mu.Lock()
 		j.LastLog = p.Line
+		j.appendLogLocked(p.Line, method == "suppress.progressLog")
 		j.Mu.Unlock()
 	case "suppress.finished":
 		var p struct {
@@ -1128,16 +1182,79 @@ func (em *EngineManager) routeSuppressNotification(j *EngineSuppressJob, method 
 		j.FinishReason = p.Reason
 		if p.Reason == "Completed" {
 			j.Status = "done"
+			j.appendLogLocked("[SekaiText] 压制完成", false)
 		} else if p.Reason == "Canceled" {
 			j.Status = "canceled"
+			j.appendLogLocked("[SekaiText] 已取消", false)
 		} else {
 			j.Status = "error"
 			j.Error = p.Error
+			j.appendLogLocked("[SekaiText] 压制失败（"+p.Reason+"）: "+p.Error, false)
 		}
+		failed := j.Status == "error"
 		j.Mu.Unlock()
+		// 报错自动导出日志：用户不用在错误发生后到处找现场，直接把文件发给开发者。
+		if failed {
+			go func() {
+				if _, err := em.ExportSuppressLog(j); err != nil {
+					log.Printf("[engine] 压制日志自动导出失败: %v", err)
+				}
+			}()
+		}
 		// 终态即回收进程；在通知 goroutine 里做，异步避免与读循环互等。
 		go em.releaseSuppressProc(j)
 	}
+}
+
+// appendLogLocked 追加一行滚动日志（调用方必须已持有 j.Mu）。连续的 ffmpeg 进度行
+// （suppress.progressLog）原地替换，不让 frame=… 刷屏占满缓冲。
+func (j *EngineSuppressJob) appendLogLocked(line string, progress bool) {
+	if progress && j.logLastProgress && len(j.LogLines) > 0 {
+		j.LogLines[len(j.LogLines)-1] = line
+	} else {
+		j.LogLines = append(j.LogLines, line)
+		if len(j.LogLines) > maxSuppressLogLines {
+			// 头部是任务参数（诊断必需），保住；砍掉最旧的正文行。
+			head := suppressLogHeadLines
+			if head > len(j.LogLines) {
+				head = len(j.LogLines)
+			}
+			keepTail := maxSuppressLogLines - head
+			trimmed := make([]string, 0, maxSuppressLogLines+1)
+			trimmed = append(trimmed, j.LogLines[:head]...)
+			trimmed = append(trimmed, "…（中段日志已截断）…")
+			trimmed = append(trimmed, j.LogLines[len(j.LogLines)-keepTail:]...)
+			j.LogLines = trimmed
+		}
+	}
+	j.logLastProgress = progress
+}
+
+// ExportSuppressLog 把任务日志写到数据目录 logs/ 下（路径按任务固定，重复导出覆盖
+// 刷新内容）。报错时自动调用；插件的「导出日志」按钮也走这里。
+func (em *EngineManager) ExportSuppressLog(j *EngineSuppressJob) (string, error) {
+	if em.logsDir == "" {
+		return "", errors.New("日志目录未配置")
+	}
+	if err := os.MkdirAll(em.logsDir, 0755); err != nil {
+		return "", err
+	}
+	j.Mu.Lock()
+	path := j.LogPath
+	if path == "" {
+		path = filepath.Join(em.logsDir, "suppress-"+time.Now().Format("20060102-150405")+"-"+j.TaskID+".log")
+		j.LogPath = path
+	}
+	content := strings.Join(j.LogLines, "\n") + "\n"
+	j.Mu.Unlock()
+
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		j.Mu.Lock()
+		j.LogPath = ""
+		j.Mu.Unlock()
+		return "", err
+	}
+	return path, nil
 }
 
 func drainStderr(stderr io.Reader) {

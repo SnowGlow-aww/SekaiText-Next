@@ -66,7 +66,7 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		market:     service.NewMarketService(pluginStore),
 		appUpdate:  service.NewAppUpdateService(),
 		team:       service.NewTeamService(cfg.DataDir),
-		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath),
+		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath, filepath.Join(cfg.DataBaseDir, "logs")),
 		voiceAlign: service.NewVoiceAligner(cfg.DataDir, cfg.FfmpegPath),
 	}
 	h.startDownloadTaskGC()
