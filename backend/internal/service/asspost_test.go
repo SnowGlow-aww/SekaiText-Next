@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-// 迷你版引擎导出：一条不分句对话(2行译文含\N)、一条分句对话(两半)、一条 banner。
+// 迷你版引擎导出：一条不分句对话(2行原文译文含\N)、一条分句对话(3行原文切两半、
+// 半行无\N)、一条 2 行原文配单行译文(无\N)、一条 1 行原文、一条 banner。
 const sampleAss = `[Script Info]
 Title: Test
 PlayResX: 2560
@@ -36,6 +37,14 @@ Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,-----  002  -----  Line 2 ↓
 Dialogue: 0,0:00:11.86,0:00:15.48,Line3,,0,0,0,,长句后半
 Dialogue: 0,0:00:11.86,0:00:15.48,Character,,0,0,0,,穗波
 Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,-----  002  -----  End
+Comment: 0,0:00:16.00,0:00:18.00,Screen,,0,0,0,,-----  003  -----  Start
+Dialogue: 0,0:00:16.00,0:00:18.00,Line2,,0,0,0,,单行译文盖两行原文
+Dialogue: 0,0:00:16.00,0:00:18.00,Character,,0,0,0,,MEIKO
+Comment: 0,0:00:16.00,0:00:18.00,Screen,,0,0,0,,-----  003  -----  End
+Comment: 0,0:00:18.50,0:00:19.50,Screen,,0,0,0,,-----  004  -----  Start
+Dialogue: 0,0:00:18.50,0:00:19.50,Line1,,0,0,0,,普通单行
+Dialogue: 0,0:00:18.50,0:00:19.50,Character,,0,0,0,,咲希
+Comment: 0,0:00:18.50,0:00:19.50,Screen,,0,0,0,,-----  004  -----  End
 Dialogue: 0,0:00:20.00,0:00:22.00,BannerText,,0,0,0,,场景横幅
 `
 
@@ -50,16 +59,34 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 	if strings.Contains(out, "Character,") || strings.Contains(out, ",Screen,") {
 		t.Errorf("Character/Screen 行未删干净:\n%s", out)
 	}
-	// cln：一个\N → 2行；分句半行无\N → 1行；\N 本身保留（分行是译者手动断的句，
-	// 删掉后 2行/3行 样式只剩一行长条——用户反馈后改为保留）
-	if !strings.Contains(out, ",2行,") {
-		t.Errorf("含一个\\N 的行应改为 2行 样式")
-	}
+	// cln：行数以原文（引擎 LineN 样式名）为准，不数译文 \N（用户反馈：译文没断行
+	// 或分句切半时 \N 数偏低，误判成 1行 会把译文压在日文行上）；\N 本身保留
+	// （分行是译者手动断的句，删掉后多行文本只剩一行长条）
 	if !strings.Contains(out, `第一句上\N第一句下`) {
 		t.Errorf("\\N 应保留在文本中:\n%s", out)
 	}
-	if !strings.Contains(out, ",1行,") {
-		t.Errorf("分句半行应为 1行 样式")
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(ln, "Dialogue:") && !strings.HasPrefix(ln, "Comment:") {
+			continue
+		}
+		switch {
+		case strings.Contains(ln, "第一句上"):
+			if !strings.Contains(ln, ",2行,") {
+				t.Errorf("2行原文(Line2)应为 2行 样式: %s", ln)
+			}
+		case strings.Contains(ln, "长句前半") || strings.Contains(ln, "长句后半"):
+			if !strings.Contains(ln, ",3行,") {
+				t.Errorf("3行原文分句切半后两半都应保持 3行 样式: %s", ln)
+			}
+		case strings.Contains(ln, "单行译文盖两行原文"):
+			if !strings.Contains(ln, ",2行,") {
+				t.Errorf("2行原文配单行译文(无\\N)应为 2行 样式: %s", ln)
+			}
+		case strings.Contains(ln, "普通单行"):
+			if !strings.Contains(ln, ",1行,") {
+				t.Errorf("1行原文应为 1行 样式: %s", ln)
+			}
+		}
 	}
 	// banner 按团队成品口径改名：BannerText→地点名称（事件文本原样保留）
 	if !strings.Contains(out, ",地点名称,") || !strings.Contains(out, "场景横幅") {
@@ -75,8 +102,10 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 	if !strings.Contains(out, ",st:2,长句前半，带逗号") || !strings.Contains(out, ",st:2,长句后半") {
 		t.Errorf("分句两半应都带 st:2")
 	}
-	if strings.Contains(out, "场景横幅") && strings.Contains(out, "st:3") {
-		t.Errorf("banner 不应有 st 标识")
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "场景横幅") && strings.Contains(ln, ",st:") {
+			t.Errorf("banner 不应有 st 标识: %s", ln)
+		}
 	}
 	// 样式表：Line*/Character/Screen 定义删除，新样式补上定义（无模板时克隆引擎定义）
 	if strings.Contains(out, "Style: Line2,") || strings.Contains(out, "Style: Character,") {
@@ -188,7 +217,8 @@ func TestExtractSyncGroupsAndTimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractSyncGroups: %v", err)
 	}
-	if len(order) != 2 || order[0] != "st:1" || order[1] != "st:2" {
+	if len(order) != 4 || order[0] != "st:1" || order[1] != "st:2" ||
+		order[2] != "st:3" || order[3] != "st:4" {
 		t.Fatalf("组顺序错误: %v", order)
 	}
 	evs := groups["st:2"]

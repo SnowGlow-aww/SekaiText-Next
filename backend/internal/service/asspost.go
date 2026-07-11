@@ -12,9 +12,12 @@ import (
 // 并可在 Effect 字段埋入 st:N 行标识，作为与 Aegisub 双向同步的键。
 //
 // tools.lua 语义（逐条对齐）：
-//   cln: 对话行按文本中 \N 个数改样式名（0→1行 1→2行 2→3行；1920×1440 视频加
-//        " - 1920*1440" 后缀，2560×1600 无后缀）。与 tools.lua 不同：保留文本里的
-//        \N——分行是译者手动断的句，删掉后 2行/3行 样式只剩一行长条（用户反馈）。
+//   cln: 对话行按引擎样式名改名（Line1→1行 Line2→2行 Line3→3行；1920×1440 视频加
+//        " - 1920*1440" 后缀，2560×1600 无后缀）。与 tools.lua 不同的两点（均为用户反馈）：
+//        ① 行数以原文为准而非数译文 \N——引擎的 LineN 就是剧本原文的换行数，而
+//           译文没手动断行（2行原文配单行中文）或三行长台词被分隔切成两半后，
+//           \N 数会低于原文行数，按 \N 数套样式会把译文压到日文行上；
+//        ② 保留文本里的 \N——分行是译者手动断的句，删掉后多行文本只剩一行长条。
 //        地点横幅同理改名 BannerMask→遮罩、BannerText→地点名称（团队成品口径：
 //        事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
 //   dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
@@ -215,16 +218,17 @@ func fieldIndex(format []string, name string) int {
 	return -1
 }
 
-// cleanStyleFor 按 tools.lua 的映射算清理后的样式名："1行/2行/3行" + 分辨率后缀。
+// cleanStyleFor 算清理后的样式名："1行/2行/3行" + 分辨率后缀。行数直接取引擎
+// 样式名 Line1/2/3（= 剧本原文换行数），不数译文 \N（见文件头注释①）。
 // 未覆盖的分辨率沿用无后缀命名（tools.lua 只处理 2560×1600 / 1920×1440）。
-func cleanStyleFor(nBreaks, playX, playY int) (string, bool) {
+func cleanStyleFor(engineStyle string, playX, playY int) (string, bool) {
 	var base string
-	switch nBreaks {
-	case 0:
+	switch engineStyle {
+	case "Line1":
 		base = "1行"
-	case 1:
+	case "Line2":
 		base = "2行"
-	case 2:
+	case "Line3":
 		base = "3行"
 	default:
 		return "", false
@@ -320,16 +324,10 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			if style == "Character" || style == "Screen" {
 				continue
 			}
-			// cln: Line1/2/3 按 \N 个数改名（\N 本身保留，见文件头注释）
-			if style == "Line1" || style == "Line2" || style == "Line3" {
-				n := strings.Count(text, `\N`)
-				if newName, ok := cleanStyleFor(n, playX, playY); ok {
-					ev.Fields[styleI] = newName
-					newStyles[newName] = true
-				} else {
-					res.Warnings = append(res.Warnings,
-						fmt.Sprintf("某行含 %d 个 \\N，超出 1行/2行/3行 映射，保留原样式 %s", n, style))
-				}
+			// cln: Line1/2/3 按样式名改名，行数以原文为准（\N 本身保留，见文件头注释）
+			if newName, ok := cleanStyleFor(style, playX, playY); ok {
+				ev.Fields[styleI] = newName
+				newStyles[newName] = true
 			}
 			// 地点横幅按团队成品口径改名（事件标签原样保留，只换样式名）
 			if newName, ok := bannerStyleRename[style]; ok {
