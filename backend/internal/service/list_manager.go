@@ -944,16 +944,18 @@ func (lm *ListManager) eventReverseIndex(ev *EventEntry) int {
 
 // ResolveLabel reverse-maps a filename label (the SaveTitle segment, e.g.
 // "3rd-group3-01" or "198-06") back to the story coordinates GetJsonPath needs.
-// Returns storyType, index (event ID as string), chapterIdx (0-based) and ok.
+// Returns storyType, index (event ID as string), indexLabel, chapterIdx (0-based)
+// and ok. indexLabel 是索引下拉框的完整标签（"<ID> <标题>"），文稿目录用它命名——
+// 只回裸 ID 会让同一活动出现「208」和「208 褪せない今を、彩って」两个文件夹。
 // Only event stories are resolved; other label shapes return ok=false so the
 // caller falls back to manual selection.
-func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chapterIdx int, ok bool) {
+func (lm *ListManager) ResolveLabel(label string) (storyType, index, indexLabel string, chapterIdx int, ok bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
 	label = strings.TrimSpace(label)
 	if label == "" {
-		return "", "", 0, false
+		return "", "", "", 0, false
 	}
 
 	events := lm.Events
@@ -972,7 +974,8 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chap
 		for ei := range events {
 			for ci, ch := range events[ei].Chapters {
 				if ch.AssetName == cand {
-					return StoryLabelEvent, strconv.Itoa(events[ei].ID), ci, true
+					ev := &events[ei]
+					return StoryLabelEvent, strconv.Itoa(ev.ID), strconv.Itoa(ev.ID) + " " + ev.Title, ci, true
 				}
 			}
 		}
@@ -987,12 +990,12 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index string, chap
 		if err1 == nil && err2 == nil && rev >= 1 && rev <= len(events) && ep >= 1 {
 			ev := &events[rev-1]
 			if ep <= len(ev.Chapters) {
-				return StoryLabelEvent, strconv.Itoa(ev.ID), ep - 1, true
+				return StoryLabelEvent, strconv.Itoa(ev.ID), strconv.Itoa(ev.ID) + " " + ev.Title, ep - 1, true
 			}
 		}
 	}
 
-	return "", "", 0, false
+	return "", "", "", 0, false
 }
 
 // processChapterID replaces the internal kdyicr_id in chapter asset name parts

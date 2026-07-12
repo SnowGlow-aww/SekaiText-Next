@@ -127,4 +127,25 @@ func TestRenameFileHandler(t *testing.T) {
 	if _, err := os.Stat(dst); err != nil {
 		t.Fatal("source should survive a conflict")
 	}
+
+	// 跨目录归位（索引标签修正 208 → 208 褪せない今を、彩って）：目标目录自动
+	// 创建，空的旧目录顺手删除；非空旧目录必须保留
+	oldDir := filepath.Join(dir, "208")
+	newDir := filepath.Join(dir, "208 褪せない今を、彩って")
+	moved := filepath.Join(oldDir, "【翻译】208-05 x.txt")
+	if err := os.MkdirAll(oldDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(moved, []byte("v"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if code := call(moved, filepath.Join(newDir, "【翻译】208-05 x.txt")); code != 200 {
+		t.Fatalf("cross-dir rename: got %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(newDir, "【翻译】208-05 x.txt")); err != nil {
+		t.Fatal("moved file missing")
+	}
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatal("empty old dir should be removed")
+	}
 }

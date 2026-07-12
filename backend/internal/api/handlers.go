@@ -218,12 +218,13 @@ func (h *Handler) ResolveLabel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	storyType, index, chapter, ok := h.lm.ResolveLabel(req.Label)
+	storyType, index, indexLabel, chapter, ok := h.lm.ResolveLabel(req.Label)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":        ok,
-		"storyType": storyType,
-		"index":     index,
-		"chapter":   chapter,
+		"ok":         ok,
+		"storyType":  storyType,
+		"index":      index,
+		"indexLabel": indexLabel,
+		"chapter":    chapter,
 	})
 }
 
@@ -338,6 +339,11 @@ func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[rename-file] rename error: %v", err)
 		writeError(w, http.StatusInternalServerError, "rename failed: "+err.Error())
 		return
+	}
+	// 跨目录改名（索引标签修正后归位文件夹）会留下空的旧目录——只删空目录，
+	// 非空时 Remove 自身失败，绝不误删内容。
+	if filepath.Dir(req.OldPath) != filepath.Dir(req.NewPath) {
+		_ = os.Remove(filepath.Dir(req.OldPath))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": req.NewPath})
 }

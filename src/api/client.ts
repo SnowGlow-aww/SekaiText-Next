@@ -99,7 +99,7 @@ export const api = {
     ),
 
   resolveLabel: (label: string) =>
-    request<{ ok: boolean; storyType: string; index: string; chapter: number }>(
+    request<{ ok: boolean; storyType: string; index: string; indexLabel: string; chapter: number }>(
       '/story/resolve-label',
       { method: 'POST', body: JSON.stringify({ label }) },
     ),

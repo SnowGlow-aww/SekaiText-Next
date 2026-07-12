@@ -115,7 +115,11 @@ export const useStoryStore = defineStore('story', () => {
       type: selectedType.value,
       sort: selectedSort.value,
       index: selectedIndex.value,
-      indexLabel: selectedIndexLabel.value,
+      // 恢复等路径只回填了 selectedIndex 没回填标签：快照时从索引列表兜底推导，
+      // 空标签会让规范路径算不出来/退化成裸索引目录。
+      indexLabel: selectedIndexLabel.value
+        || indices.value.find(i => i.value === selectedIndex.value)?.label
+        || selectedIndex.value,
       chapter: selectedChapter.value,
       source: selectedSource.value,
       scenarioId: scenarioId.value,

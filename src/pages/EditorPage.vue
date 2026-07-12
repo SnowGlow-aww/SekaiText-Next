@@ -154,9 +154,14 @@ function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
   if (!m) return { path: bound }
   const [, dir, base] = m
   if (!base.startsWith('【')) return { path: bound }
-  const want = canonicalFileName()
-  if (base === want) return { path: bound }
-  return { path: dir + want, renameFrom: bound }
+  // 托管根目录内连“文件夹”一起跟随规范路径：索引标签修正后（208 → 208 褪せない
+  // 今を、彩って）下次保存把文件搬进正确目录，同一活动不再出现两个文件夹；
+  // 根目录外（用户另存到别处）只换 basename，不把文件挪走。
+  const root = settings.settings.saveBaseDir
+  const managed = root && (bound.startsWith(root + '/') || bound.startsWith(root + '\\'))
+  const want = (managed ? canonicalSavePath() : null) || dir + canonicalFileName()
+  if (want === bound) return { path: bound }
+  return { path: want, renameFrom: bound }
 }
 async function writeTxtAutosave() {
   if (editor.talks.length === 0 || !isTauri) return
@@ -446,7 +451,10 @@ async function handleOpen() {
           await story.fetchIndex(r.storyType, '')
           await nextTick()
           story.selectedIndex = r.index
-          story.selectedIndexLabel = story.indices.find(i => i.value === r.index)?.label || r.index
+          // 后端直接给完整标签（"208 褪せない今を、彩って"）；退回列表查找或裸索引
+          // 会让文稿目录出现光秃秃的「208」文件夹，与导航载入建的目录并存。
+          story.selectedIndexLabel = r.indexLabel
+            || story.indices.find(i => i.value === r.index)?.label || r.index
           await story.fetchChapters(r.storyType, '', r.index)
           await nextTick()
           story.selectedChapter = r.chapter

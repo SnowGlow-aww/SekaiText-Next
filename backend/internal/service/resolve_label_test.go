@@ -19,7 +19,7 @@ func TestResolveLabel(t *testing.T) {
 		{"1-01", "1", 0}, // reverseIndex-episode form
 	}
 	for _, c := range cases {
-		st, idx, ch, ok := lm.ResolveLabel(c.label)
+		st, idx, idxLabel, ch, ok := lm.ResolveLabel(c.label)
 		if !ok {
 			t.Errorf("%s: not resolved", c.label)
 			continue
@@ -27,9 +27,13 @@ func TestResolveLabel(t *testing.T) {
 		if st != StoryLabelEvent || idx != c.wantIndex || ch != c.wantCh {
 			t.Errorf("%s -> type=%s index=%s ch=%d, want event/%s/%d", c.label, st, idx, ch, c.wantIndex, c.wantCh)
 		}
+		// indexLabel 是文稿目录名（"<ID> <标题>"）：必须带标题，不能退化成裸 ID
+		if idxLabel == idx || len(idxLabel) <= len(idx)+1 {
+			t.Errorf("%s: indexLabel %q should be \"<ID> <标题>\"", c.label, idxLabel)
+		}
 	}
 	// Unresolvable label must return ok=false (caller keeps manual selection).
-	if _, _, _, ok := lm.ResolveLabel("totally-bogus-xyz"); ok {
+	if _, _, _, _, ok := lm.ResolveLabel("totally-bogus-xyz"); ok {
 		t.Error("bogus label should not resolve")
 	}
 }
