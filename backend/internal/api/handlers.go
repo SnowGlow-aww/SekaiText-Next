@@ -920,6 +920,7 @@ func (h *Handler) OpenURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "open failed: "+err.Error())
 		return
 	}
+	go func() { _ = cmd.Wait() }() // reap the launcher so it doesn't linger as a zombie
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -1046,12 +1047,13 @@ func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	moved, skipped := 0, 0
+	skippedPaths := []string{} // 同名冲突未搬走、仍留旧目录的文件相对路径（前端据此不改绑定）
 	if oldAbs != "" && oldAbs != newAbs {
 		if entries, err := os.ReadDir(oldAbs); err == nil {
 			for _, e := range entries {
 				src := filepath.Join(oldAbs, e.Name())
 				dst := filepath.Join(newAbs, e.Name())
-				if err := moveMerge(src, dst); err != nil {
+				if err := moveMerge(src, dst, e.Name(), &skippedPaths); err != nil {
 					skipped++
 					log.Printf("[migrate-save-dir] skip %s: %v", src, err)
 				} else {
@@ -1072,13 +1074,16 @@ func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[migrate-save-dir] %s -> %s (moved %d, skipped %d)", oldAbs, newAbs, moved, skipped)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"oldDir": oldAbs, "newDir": newAbs, "moved": moved, "skipped": skipped,
+		"oldDir": oldAbs, "newDir": newAbs, "moved": moved, "skipped": skipped, "skippedPaths": skippedPaths,
 	})
 }
 
 // moveMerge 把 src 移动到 dst：dst 不存在时先试 rename（同卷瞬间完成），失败
 // （跨卷等）回落复制+删除；dst 已存在时目录递归合并、文件跳过（绝不覆盖）。
-func moveMerge(src, dst string) error {
+// rel 是 src 相对迁移根的路径（正斜杠，与前端文档路径同形）；每遇到一个被跳过
+// 的同名文件就把它的 rel 记进 *skipped——前端据此保留旧绑定，绝不把绑定改到新
+// 根那个内容不同的同名陌生文件上（否则下次自动保存会覆盖它、丢掉原稿）。
+func moveMerge(src, dst, rel string, skipped *[]string) error {
 	if _, err := os.Lstat(dst); os.IsNotExist(err) {
 		if err := os.Rename(src, dst); err == nil {
 			return nil
@@ -1103,7 +1108,11 @@ func moveMerge(src, dst string) error {
 		}
 		var firstErr error
 		for _, e := range entries {
-			if err := moveMerge(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil && firstErr == nil {
+			childRel := e.Name()
+			if rel != "" {
+				childRel = rel + "/" + e.Name()
+			}
+			if err := moveMerge(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), childRel, skipped); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -1111,6 +1120,9 @@ func moveMerge(src, dst string) error {
 			return firstErr
 		}
 		return os.Remove(src)
+	}
+	if skipped != nil && rel != "" {
+		*skipped = append(*skipped, rel)
 	}
 	return fmt.Errorf("目标已存在，跳过: %s", dst)
 }

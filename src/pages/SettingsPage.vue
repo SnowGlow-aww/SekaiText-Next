@@ -112,9 +112,11 @@ async function changeSaveBaseDir() {
   try {
     const res = await api.migrateSaveDir(dir)
     settings.settings.saveBaseDir = res.newDir
-    editor.rebindPaths(res.oldDir, res.newDir)
+    // 被跳过（同名冲突）的文件仍在旧目录原处——把这些相对路径传给 rebindPaths，
+    // 让对应文档的绑定继续指向旧文件，别改到新根那个同名的陌生文件（数据安全）。
+    editor.rebindPaths(res.oldDir, res.newDir, res.skippedPaths)
     toast.show(res.moved > 0 ? `已迁移 ${res.moved} 项到新位置` : '已切换保存位置', 'success')
-    if (res.skipped > 0) toast.show(`${res.skipped} 项因目标已存在被跳过（保留在原目录）`, 'warn')
+    if (res.skipped > 0) toast.show(`${res.skipped} 项因目标已存在同名文件被跳过，仍保留在原位置`, 'warn')
   } catch (e: any) {
     toast.show('迁移失败: ' + (e.message || '未知错误'), 'error')
   }

@@ -520,6 +520,10 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "尚未导出，请先导出 ass")
 		return
 	}
+	// 读盘前先记 mtime/size，作为"所读内容对应"的同步基线（下方处理完回写）。
+	// 若耗时处理期间 Aegisub 又保存了一次，磁盘会领先 fi0，下次 status 判定不相等
+	// → 前端轮询自动再 pull 补齐；宁可多拉一次，也不能漏掉那次改动。
+	fi0, statErr := os.Stat(assPath)
 	data, err := os.ReadFile(assPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取导出文件失败: "+err.Error())
@@ -647,11 +651,12 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		applied++
 	}
 
-	// 同步完成后以当前磁盘状态为基准，status 不再报"外部已改动"
-	if fi, err := os.Stat(assPath); err == nil {
+	// 基线用"读盘那一刻"的 mtime/size（fi0），而非处理后再 Stat：处理期间若有
+	// 新保存，磁盘已领先 fi0，下次 status 判定不相等→自动再 pull，不丢那次改动。
+	if statErr == nil {
 		job.Mu.Lock()
-		job.ExportMTime = fi.ModTime()
-		job.ExportSize = fi.Size()
+		job.ExportMTime = fi0.ModTime()
+		job.ExportSize = fi0.Size()
 		job.Mu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{

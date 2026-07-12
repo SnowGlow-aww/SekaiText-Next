@@ -143,9 +143,18 @@ export const useEditorStore = defineStore('editor', () => {
   // switching tabs.
   // 保存根目录迁移后，把所有模式里已绑定的文档路径从旧根改写到新根——
   // 否则 autosave 会把译文写回旧位置，把刚迁走的目录又建回来。
-  function rebindPaths(oldRoot: string, newRoot: string) {
+  // skipRel：迁移时因同名冲突未搬走、仍留在旧目录的文件相对路径。这些绑定必须
+  // 继续指向旧目录的原文件，绝不改写到新根那个内容不同的同名陌生文件（否则下次
+  // 自动保存会覆盖它、丢掉原稿）——译文数据安全高于一切。
+  function rebindPaths(oldRoot: string, newRoot: string, skipRel?: string[]) {
     if (!oldRoot || oldRoot === newRoot) return
-    const rewrite = (p: string) => p && p.startsWith(oldRoot) ? newRoot + p.slice(oldRoot.length) : p
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\/+/, '')
+    const skip = new Set((skipRel || []).map(norm))
+    const rewrite = (p: string) => {
+      if (!p || !p.startsWith(oldRoot)) return p
+      if (skip.has(norm(p.slice(oldRoot.length)))) return p // 留在旧目录原文件
+      return newRoot + p.slice(oldRoot.length)
+    }
     currentFilePath.value = rewrite(currentFilePath.value)
     for (const state of modeCache.values()) state.currentFilePath = rewrite(state.currentFilePath)
   }

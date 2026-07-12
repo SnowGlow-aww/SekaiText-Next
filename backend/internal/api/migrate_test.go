@@ -41,8 +41,9 @@ func TestMoveMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved, skipped := 0, 0
+	skippedPaths := []string{}
 	for _, e := range entries {
-		if err := moveMerge(filepath.Join(old, e.Name()), filepath.Join(newd, e.Name())); err != nil {
+		if err := moveMerge(filepath.Join(old, e.Name()), filepath.Join(newd, e.Name()), e.Name(), &skippedPaths); err != nil {
 			skipped++
 		} else {
 			moved++
@@ -68,5 +69,10 @@ func TestMoveMerge(t *testing.T) {
 	// 被跳过的旧文件仍留在原目录（用户可手动处理）
 	if got := read(old, "活动剧情/208/【翻译】a.txt"); got != "old-a" {
 		t.Errorf("skipped file lost from old dir: %q", got)
+	}
+	// 被跳过文件的相对路径要精确回报（相对旧/新根同一形式、正斜杠）——前端据此
+	// 把该文档绑定留在旧目录，绝不改写到新根那个同名的陌生文件（数据安全）。
+	if len(skippedPaths) != 1 || skippedPaths[0] != "活动剧情/208/【翻译】a.txt" {
+		t.Errorf("skippedPaths=%v, want [活动剧情/208/【翻译】a.txt]", skippedPaths)
 	}
 }

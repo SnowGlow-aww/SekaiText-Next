@@ -75,14 +75,23 @@ watch(() => story.selectedIndex, async (idx) => {
   }
 })
 
-async function downloadOne(chapter: number) {
-  const taskId = dlFloat.add(story.selectedIndex + ' ch' + chapter)
+// 剧情坐标快照：批量下载时由 handleDownload 在进入循环前一次性拷好并全程复用，
+// downloadOne 只读传入的这份，绝不读实时 story.selected*——否则下载途中改选会把
+// 新索引配到旧章节号上写错文件。
+interface DownloadCoord {
+  storyType: string
+  sort: string
+  index: string
+}
+
+async function downloadOne(coord: DownloadCoord, chapter: number) {
+  const taskId = dlFloat.add(coord.index + ' ch' + chapter)
   dlFloat.start(taskId)
   try {
     const { taskId: tid } = await api.downloadJson({
-      storyType: story.selectedType,
-      sort: story.selectedSort,
-      index: story.selectedIndex,
+      storyType: coord.storyType,
+      sort: coord.sort,
+      index: coord.index,
       chapter,
       source: 'haruki',
       outputDir: outputDir.value,
@@ -112,19 +121,27 @@ async function handleDownload() {
     toast.show('请填写所有字段', 'warn')
     return
   }
+  // 进入批量前把坐标快照成局部常量，全程（含下载浮窗标签）不再读实时 store。
+  const coord: DownloadCoord = {
+    storyType: story.selectedType,
+    sort: story.selectedSort,
+    index: story.selectedIndex,
+  }
   // 未选章节 = 下载该索引下的全部章节（逐章排队，各自独立进度）
   if (story.selectedChapter < 0) {
-    if (!story.chapters.length) {
+    // 章节数组也一并快照：批量途中改选会替换 story.chapters，遍历旧数组才不会错位。
+    const chapters = story.chapters.slice()
+    if (!chapters.length) {
       toast.show('该索引没有可下载的章节', 'warn')
       return
     }
-    toast.show(`未选择章节，将下载全部 ${story.chapters.length} 章`, 'info')
-    for (const c of story.chapters) {
-      await downloadOne(c.number)
+    toast.show(`未选择章节，将下载全部 ${chapters.length} 章`, 'info')
+    for (const c of chapters) {
+      await downloadOne(coord, c.number)
     }
     return
   }
-  await downloadOne(story.selectedChapter)
+  await downloadOne(coord, story.selectedChapter)
 }
 </script>
 

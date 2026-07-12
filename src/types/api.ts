@@ -50,3 +50,16 @@ export interface SaveMetadata {
   scenarioId: string
   mode?: number
 }
+
+export interface MigrateSaveDirResult {
+  oldDir: string
+  newDir: string
+  moved: number
+  skipped: number
+  /**
+   * 因目标已存在同名文件而未搬走、仍留在旧目录的文件相对路径（相对旧/新根同一
+   * 形式，正斜杠）。前端据此把这些文档的绑定保留在旧目录，绝不改写到新根那个
+   * 内容不同的同名陌生文件（否则下次自动保存会覆盖它、丢掉原稿）。
+   */
+  skippedPaths: string[]
+}

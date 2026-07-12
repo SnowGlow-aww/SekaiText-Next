@@ -307,7 +307,7 @@ export const api = {
   openSaveDir: () =>
     request<{ dir: string }>('/save-dir/open', { method: 'POST' }),
   migrateSaveDir: (newDir: string) =>
-    request<{ oldDir: string; newDir: string; moved: number; skipped: number }>('/save-dir/migrate', {
+    request<import('../types/api').MigrateSaveDirResult>('/save-dir/migrate', {
       method: 'POST',
       body: JSON.stringify({ newDir }),
     }),

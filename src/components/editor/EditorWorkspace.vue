@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onActivated, onDeactivated, onMounted, nextTick } from 'vue'
+import { computed, ref, watch, onActivated, onDeactivated, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -142,7 +142,12 @@ const talkGroups = computed(() => {
 })
 
 // ---- Editing (from DestPanel) ----
-let editTimeout: ReturnType<typeof setTimeout> | null = null
+// 按行防抖：每行独立 timer + 独立待提交文本。旧实现所有行共享一个 editTimeout /
+// pendingEdit，行 B 在 300ms 内开始编辑会 clearTimeout 掉行 A 尚未派发的
+// changeText——行 A 的改动只存在于 DOM（contenteditable 无 v-model），永不进
+// dstTalks，保存即写回旧文本＝丢译文。改为按行各清各的 timer，互不干扰。
+const editTimers = new Map<number, ReturnType<typeof setTimeout>>()
+const pendingEdits = new Map<number, string>()
 
 // Per-row v-for keys use the talk's globalIdx (its index in editor.talks), which
 // is unique across the whole list. The old idx+dstidx key could collide between a
@@ -179,9 +184,16 @@ function getEditBorder(talk: DstTalk): string {
   return ''
 }
 
-// The pending debounced edit, kept alongside the timer so it can be FLUSHED
-// (executed immediately) before a save, not just cancelled.
-let pendingEdit: { row: number; text: string } | null = null
+// changeText 的响应是整表快照（下面 setTalks 全量替换 talks/dstTalks）。两行请求
+// 并发、旧响应后到时会用旧快照盖掉新状态，因此把实际派发串行化：所有提交挂在同一
+// 条 promise 链上，按入队顺序依次 round-trip，后到的旧响应不再倒灌。
+let commitQueue: Promise<void> = Promise.resolve()
+function enqueueCommit(row: number, newText: string): Promise<void> {
+  const next = commitQueue.then(() => commitTextChange(row, newText))
+  // commitTextChange 内部已吞掉异常；这里再兜一层，保证单次失败不断链。
+  commitQueue = next.catch(() => {})
+  return next
+}
 
 async function commitTextChange(row: number, newText: string) {
   // Stale-document guard: onBlur committed newText into talks[row] synchronously.
@@ -207,13 +219,15 @@ async function commitTextChange(row: number, newText: string) {
 }
 
 function handleTextChange(row: number, newText: string) {
-  if (editTimeout) clearTimeout(editTimeout)
-  pendingEdit = { row, text: newText }
-  editTimeout = setTimeout(() => {
-    editTimeout = null
-    pendingEdit = null
-    commitTextChange(row, newText)
-  }, 300)
+  // 只清/排当前行自己的 timer，不影响其它行尚未派发的编辑。
+  const existing = editTimers.get(row)
+  if (existing) clearTimeout(existing)
+  pendingEdits.set(row, newText)
+  editTimers.set(row, setTimeout(() => {
+    editTimers.delete(row)
+    pendingEdits.delete(row)
+    enqueueCommit(row, newText)
+  }, 300))
 }
 
 // blur 包装：清编辑态（恢复外层选中框）再走原提交逻辑。
@@ -239,13 +253,12 @@ function onBlur(e: Event, idx: number) {
   // when a second row is edited within 300ms, which previously dropped the snapshot.
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   // Commit the edit to the talks array SYNCHRONOUSLY before the debounced API
-  // call. Previously the text only reached editor.talks when changeText
-  // returned; but handleTextChange debounces on a single shared timer, so
-  // editing a second row within 300ms cleared the first row's pending save and
-  // its edit (which lived only in the DOM) was lost — and a later setTalks
-  // re-render wiped it from the DOM too. Committing here guarantees every
-  // blurred edit is in the array, so saving and subsequent recomputes always
-  // carry it, regardless of debounce cancellation.
+  // call. Otherwise the text only reaches editor.talks when the debounced
+  // changeText returns, so a save (or cancelPendingEdit from undo / replace-all)
+  // inside that 300ms window would drop an edit that lived only in the DOM — and
+  // a later setTalks re-render would wipe it from the DOM too. Committing here
+  // guarantees every blurred edit is in the array, so saving and subsequent
+  // recomputes always carry it, regardless of debounce timing or cancellation.
   if (editor.talks[idx]) editor.talks[idx].text = newText
   // Commit to dstTalks as well: SAVE serializes editor.dstTalks, not talks, and
   // dstTalks otherwise only picks the edit up when the debounced changeText
@@ -545,20 +558,32 @@ onDeactivated(() => window.removeEventListener('keydown', onNavKey))
 // editor.talks, which would otherwise make the stale timer write to a shifted
 // row. onBlur has already committed the visible text, so cancelling loses nothing.
 function cancelPendingEdit() {
-  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
-  pendingEdit = null
+  for (const t of editTimers.values()) clearTimeout(t)
+  editTimers.clear()
+  pendingEdits.clear()
 }
 
 // Run the pending debounced edit NOW (awaited) instead of dropping it. Used by
 // EditorPage before saving so the file gets the fully processed (normalized +
 // diffed) text rather than relying on the raw onBlur commit alone.
 async function flushPendingEdit() {
-  if (editTimeout) { clearTimeout(editTimeout); editTimeout = null }
-  const p = pendingEdit
-  pendingEdit = null
-  if (p) await commitTextChange(p.row, p.text)
+  // 取出所有待提交编辑，清掉各自 timer，按入队顺序串行提交后等整条链落地——
+  // 保存拿到的才是后端处理过（标准化 + diff）的译文，且各行都不漏。
+  const pending = Array.from(pendingEdits.entries())
+  for (const t of editTimers.values()) clearTimeout(t)
+  editTimers.clear()
+  pendingEdits.clear()
+  for (const [row, text] of pending) enqueueCommit(row, text)
+  await commitQueue
 }
 defineExpose({ cancelPendingEdit, flushPendingEdit })
+
+// 组件真正销毁时清掉所有未触发的防抖 timer，避免回调在卸载后仍打后端 / setTalks。
+onUnmounted(() => {
+  for (const t of editTimers.values()) clearTimeout(t)
+  editTimers.clear()
+  pendingEdits.clear()
+})
 
 function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   const fb = flashbackItem(talk)
