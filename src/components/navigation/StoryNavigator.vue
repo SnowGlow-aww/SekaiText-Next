@@ -185,6 +185,13 @@ async function handleLoad() {
       })
       editor.setTalks(dstTalks, dstTalks, [])
       editor.majorClue = null
+      // 新文档会话：命名/元数据快照跟内容走（此后别处再拉别的剧情不影响本文档），
+      // 并解除上一个文档的路径绑定与标题覆盖——否则新剧情的译文会继续写进上一个
+      // 剧情已绑定的文件（用户反馈：后篇内容被存进前篇的文件，改文件名也拦不住，
+      // 因为下次保存按旧绑定路径重建）。
+      editor.docMeta = story.snapshotDocMeta()
+      editor.currentFilePath = ''
+      editor.titleOverride = ''
       // Fresh template = clean state; keeping the OLD document's dirty flag
       // would let the 30s autosave overwrite the recovery file with this
       // near-empty template.

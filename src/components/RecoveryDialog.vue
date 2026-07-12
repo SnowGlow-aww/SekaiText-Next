@@ -55,6 +55,8 @@ async function handleRestore() {
         story.selectedSource = result.storySource || 'haruki'
         try {
           await story.loadStory()
+          // 恢复的文档同样绑定身份快照，保存命名不再受之后的全局选择影响。
+          editor.docMeta = story.snapshotDocMeta()
           if (story.sourceTalks.length > 0) {
             const aligned = await api.checkLines({
               sourceTalks: story.sourceTalks,

@@ -94,7 +94,19 @@ watch(() => editor.mutationSeq, () => {
   if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
   txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
 })
+// 保存命名/元数据一律以载入时的文档快照（editor.docMeta）为准；快照缺失时
+// （网页端本地打开、标签解析失败等）才回退全局 story 状态。story 是全局单例，
+// 载入后再拉别的剧情就会被改走——按保存时的全局状态命名，会把当前文档存成
+// 别的剧情的文件（用户反馈：编辑前篇存成了后篇的文件名）。
 function buildSaveMeta(): SaveMetadata | undefined {
+  const d = editor.docMeta
+  if (d?.type) {
+    return {
+      type: d.type, sort: d.sort, index: d.index,
+      chapter: d.chapter, source: d.source, scenarioId: d.scenarioId,
+      mode: app.editorMode,
+    }
+  }
   return story.selectedType ? {
     type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex,
     chapter: story.selectedChapter, source: story.selectedSource, scenarioId: story.scenarioId,
@@ -104,8 +116,11 @@ function buildSaveMeta(): SaveMetadata | undefined {
 // 规范文件名：【模式】<剧本标号> <标题>.txt——保存对话框、自动建档共用一套。
 function canonicalFileName(): string {
   const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
-  const title = (editor.titleOverride || story.chapterTitle || '').trim()
-  let fileName = '【' + modeLabel + '】' + (story.saveTitle || 'untitled')
+  const d = editor.docMeta
+  const saveTitle = d ? d.saveTitle : story.saveTitle
+  const chapterTitle = d ? d.chapterTitle : story.chapterTitle
+  const title = (editor.titleOverride || chapterTitle || '').trim()
+  let fileName = '【' + modeLabel + '】' + (saveTitle || 'untitled')
   if (title) fileName += ' ' + title
   return fileName + '.txt'
 }
@@ -113,9 +128,12 @@ function canonicalFileName(): string {
 // 未选剧情（网页端/全新空文档）时返回 null——此时只有恢复文件兜底。
 function canonicalSavePath(): string | null {
   const base = settings.settings.saveBaseDir
-  if (isTauri && base && story.selectedType && story.selectedIndexLabel) {
+  const d = editor.docMeta
+  const type = d ? d.type : story.selectedType
+  const indexLabel = d ? d.indexLabel : story.selectedIndexLabel
+  if (isTauri && base && type && indexLabel) {
     const sep = (s: string) => s.replace(/[/\\]/g, '_')
-    return `${base}/${sep(story.selectedType)}/${sep(story.selectedIndexLabel)}/${canonicalFileName()}`
+    return `${base}/${sep(type)}/${sep(indexLabel)}/${canonicalFileName()}`
   }
   return null
 }
@@ -353,6 +371,9 @@ async function handleOpen() {
     const fileMode = (result.meta?.mode ?? 0) as 0 | 1 | 2
     const deriving = fileMode !== app.editorMode
     editor.currentFilePath = deriving ? '' : (result.filePath || result.fileName || '')
+    // 新文档会话：先清掉上一个文档的身份快照，标签解析成功后再重新绑定。
+    // 留着旧快照会让这个文件保存时套上一个剧情的名字/目录。
+    editor.docMeta = null
     editor.markSaved()
     undo.clear()
 
@@ -380,6 +401,7 @@ async function handleOpen() {
           await nextTick()
           story.selectedChapter = r.chapter
           await story.loadStory()
+          editor.docMeta = story.snapshotDocMeta()
           if (story.sourceTalks.length > 0) {
             const aligned = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
             if (app.editorMode >= 1) {

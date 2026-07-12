@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../api/client'
 import type { SourceTalk } from '../types/translation'
+import type { DocMeta } from './editor'
 
 export const useStoryStore = defineStore('story', () => {
   const storyTypes = ref<string[]>([])
@@ -105,10 +106,26 @@ export const useStoryStore = defineStore('story', () => {
     }
   }
 
+  // 当前选择/载入状态的一次性快照，供编辑器在载入内容时绑定文档身份
+  // （editor.docMeta）。之后这里的全局状态再怎么变都不影响已载入的文档。
+  function snapshotDocMeta(): DocMeta {
+    return {
+      saveTitle: saveTitle.value,
+      chapterTitle: chapterTitle.value,
+      type: selectedType.value,
+      sort: selectedSort.value,
+      index: selectedIndex.value,
+      indexLabel: selectedIndexLabel.value,
+      chapter: selectedChapter.value,
+      source: selectedSource.value,
+      scenarioId: scenarioId.value,
+    }
+  }
+
   return {
     storyTypes, sorts, indices, chapters,
     selectedType, selectedSort, selectedIndex, selectedIndexLabel, selectedChapter, selectedSource,
     scenarioId, sourceTalks, saveTitle, chapterTitle, loading,
-    fetchTypes, fetchSorts, fetchIndex, fetchChapters, loadStory, loadStoryLocal,
+    fetchTypes, fetchSorts, fetchIndex, fetchChapters, loadStory, loadStoryLocal, snapshotDocMeta,
   }
 })

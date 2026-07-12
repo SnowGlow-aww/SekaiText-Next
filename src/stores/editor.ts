@@ -2,6 +2,22 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { DstTalk, SourceTalk, EditorMode } from '../types/translation'
 
+// 文档身份快照：载入内容时从 story store 拷一份，此后保存命名/元数据一律读快照。
+// story 的选择状态是全局的，载入后再去下载页/其它模式拉别的剧情就会被改走——
+// 若保存时才读全局状态，当前文档会被存成别的剧情的文件名（用户反馈：编辑前篇
+// 存成了后篇的文件）。
+export interface DocMeta {
+  saveTitle: string
+  chapterTitle: string
+  type: string
+  sort: string
+  index: string
+  indexLabel: string
+  chapter: number
+  source: string
+  scenarioId: string
+}
+
 interface ModeState {
   talks: DstTalk[]
   dstTalks: DstTalk[]
@@ -9,6 +25,7 @@ interface ModeState {
   currentFilePath: string
   hasUnsavedChanges: boolean
   majorClue: string | null
+  docMeta: DocMeta | null
 }
 
 function emptyModeState(): ModeState {
@@ -19,6 +36,7 @@ function emptyModeState(): ModeState {
     currentFilePath: '',
     hasUnsavedChanges: false,
     majorClue: null,
+    docMeta: null,
   }
 }
 
@@ -42,6 +60,7 @@ export const useEditorStore = defineStore('editor', () => {
   const titleOverride = ref('')
   const hasUnsavedChanges = ref(false)
   const majorClue = ref<string | null>(null)
+  const docMeta = ref<DocMeta | null>(null)
 
   const currentMode = ref<EditorMode>(0)
   const modeCache = new Map<EditorMode, ModeState>()
@@ -90,6 +109,7 @@ export const useEditorStore = defineStore('editor', () => {
     titleOverride.value = ''
     hasUnsavedChanges.value = false
     majorClue.value = null
+    docMeta.value = null
     modeCache.clear()
   }
 
@@ -101,6 +121,7 @@ export const useEditorStore = defineStore('editor', () => {
       currentFilePath: currentFilePath.value,
       hasUnsavedChanges: hasUnsavedChanges.value,
       majorClue: majorClue.value,
+      docMeta: docMeta.value ? { ...docMeta.value } : null,
     })
   }
 
@@ -112,6 +133,7 @@ export const useEditorStore = defineStore('editor', () => {
     currentFilePath.value = state.currentFilePath
     hasUnsavedChanges.value = state.hasUnsavedChanges
     majorClue.value = state.majorClue
+    docMeta.value = state.docMeta ? { ...state.docMeta } : null
   }
 
   // Switch between editor modes. Each mode owns a fully independent, deep-copied
@@ -137,7 +159,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   return {
     talks, dstTalks, referTalks, sourceTalks,
-    currentFilePath, titleOverride, hasUnsavedChanges, majorClue, mutationSeq,
+    currentFilePath, titleOverride, hasUnsavedChanges, majorClue, docMeta, mutationSeq,
     currentMode,
     setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
     saveModeState, loadModeState, switchMode, rebindPaths,
