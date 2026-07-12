@@ -622,7 +622,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
           <input
             v-model="editor.titleOverride"
             type="text"
-            :placeholder="story.chapterTitle || story.saveTitle || '标题...'"
+            :placeholder="editor.docMeta?.chapterTitle || story.chapterTitle || story.saveTitle || '标题...'"
             title="仅替换文件名中的标题部分（【模式】前缀与路径自动保留）"
             class="app-input ml-2 flex-1 py-1"
           />

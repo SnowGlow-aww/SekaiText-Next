@@ -71,6 +71,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/load-content", h.TranslationLoadContent)
 			r.Post("/save", h.TranslationSave)
 			r.Post("/ensure-dir", h.EnsureDir)
+			r.Post("/rename-file", h.RenameFile)
 			r.Post("/serialize", h.TranslationSerialize)
 			r.Post("/check-lines", h.CheckLines)
 		})
@@ -235,8 +236,8 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/suppress/log", h.EngineSuppressLog)               // 滚动日志（报错自动导出，logPath 见 progress）
 			r.Post("/suppress/log/export", h.EngineSuppressLogExport) // 手动导出日志文件
 			r.Post("/cancel", h.EngineCancel)
-			r.Get("/tasks", h.EngineTasks)                    // 全部任务快照（并行模式任务列表）
-			r.Post("/timing/close", h.EngineTimingClose)      // 关闭任务并释放其引擎进程
+			r.Get("/tasks", h.EngineTasks)                     // 全部任务快照（并行模式任务列表）
+			r.Post("/timing/close", h.EngineTimingClose)       // 关闭任务并释放其引擎进程
 			r.Post("/aegisub/install", h.EngineAegisubInstall) // 手动安装 Aegisub 同步宏（可指定目录）
 		})
 

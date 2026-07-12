@@ -153,6 +153,12 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
+  renameFile: (oldPath: string, newPath: string) =>
+    request<{ path: string }>('/translation/rename-file', {
+      method: 'POST',
+      body: JSON.stringify({ oldPath, newPath }),
+    }),
+
   checkLines: (data: {
     sourceTalks: import('../types/translation').SourceTalk[]
     loadedTalks: import('../types/translation').DstTalk[]

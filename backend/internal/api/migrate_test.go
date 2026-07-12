@@ -1,8 +1,11 @@
 package api
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +77,54 @@ func TestMoveMerge(t *testing.T) {
 	// 把该文档绑定留在旧目录，绝不改写到新根那个同名的陌生文件（数据安全）。
 	if len(skippedPaths) != 1 || skippedPaths[0] != "活动剧情/208/【翻译】a.txt" {
 		t.Errorf("skippedPaths=%v, want [活动剧情/208/【翻译】a.txt]", skippedPaths)
+	}
+}
+
+// RenameFile 支撑「标题译文/模式标签变了就地改名」：目标已存在必须 409（前端
+// 收到即回落原路径写入，绝不覆盖别的文稿），成功后旧路径消失新路径接管。
+func TestRenameFileHandler(t *testing.T) {
+	dir := t.TempDir()
+	h := &Handler{}
+	call := func(oldPath, newPath string) int {
+		body := `{"oldPath":` + strconv.Quote(oldPath) + `,"newPath":` + strconv.Quote(newPath) + `}`
+		req := httptest.NewRequest("POST", "/translation/rename-file", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.RenameFile(rec, req)
+		return rec.Code
+	}
+
+	src := filepath.Join(dir, "【翻译】208-05 まさかの到着地.txt")
+	dst := filepath.Join(dir, "【翻译】208-05 意料之外的目的地.txt")
+	if err := os.WriteFile(src, []byte("译文内容"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := call(src, dst); code != 200 {
+		t.Fatalf("rename: got %d", code)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatal("old path should be gone")
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "译文内容" {
+		t.Fatalf("content not carried over: %v %q", err, b)
+	}
+
+	// 同路径 no-op
+	if code := call(dst, dst); code != 200 {
+		t.Fatalf("same-path: got %d", code)
+	}
+	// 目标已存在 → 409，双方文件都原样保留
+	other := filepath.Join(dir, "other.txt")
+	if err := os.WriteFile(other, []byte("别人的"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if code := call(dst, other); code != 409 {
+		t.Fatalf("conflict: got %d, want 409", code)
+	}
+	if b, _ := os.ReadFile(other); string(b) != "别人的" {
+		t.Fatal("conflict target was overwritten")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatal("source should survive a conflict")
 	}
 }

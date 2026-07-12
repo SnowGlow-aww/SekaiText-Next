@@ -90,9 +90,15 @@ const canRedo = undo.canRedo
 // 模式自动创建规范命名的 txt（<保存根目录>/<类型>/<索引>/【模式】….txt）并绑定为
 // 当前文档。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
 let txtAutosaveTimer: ReturnType<typeof setTimeout> | null = null
-watch(() => editor.mutationSeq, () => {
+function scheduleTxtAutosave() {
   if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
   txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
+}
+watch(() => editor.mutationSeq, scheduleTxtAutosave)
+// 标题译文只改文件名、不 bump mutationSeq，单独监听：已绑定的文档走同一条
+// 防抖去就地改名（见 resolveBoundTarget）；未绑定文档不因改标题而建档。
+watch(() => editor.titleOverride, () => {
+  if (editor.currentFilePath) scheduleTxtAutosave()
 })
 // 保存命名/元数据一律以载入时的文档快照（editor.docMeta）为准；快照缺失时
 // （网页端本地打开、标签解析失败等）才回退全局 story 状态。story 是全局单例，
@@ -137,26 +143,57 @@ function canonicalSavePath(): string | null {
   }
   return null
 }
+// 已绑定文档的写入目标：规范文件名（【模式】前缀 + 标题段）变了就就地改名跟上
+// ——标题译文往往在首次自动建档（首编辑后 800ms）之后才填，绑定路径若一直冻结，
+// 标题/模式就永远进不了文件名（用户反馈：改了标题文件名不变）。只接管【开头的
+// 托管命名；用户自定义名/目录不动。改名只换 basename，文件所在目录保持不变。
+function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
+  const bound = editor.currentFilePath
+  if (!bound || !/[/\\]/.test(bound)) return null
+  const m = bound.match(/^(.*[/\\])([^/\\]+)$/)
+  if (!m) return { path: bound }
+  const [, dir, base] = m
+  if (!base.startsWith('【')) return { path: bound }
+  const want = canonicalFileName()
+  if (base === want) return { path: bound }
+  return { path: dir + want, renameFrom: bound }
+}
 async function writeTxtAutosave() {
   if (editor.talks.length === 0 || !isTauri) return
-  let path = editor.currentFilePath
+  // 定时器可能在切模式后才触发：进入 await 前把本槽位的一切快照下来，写完回来
+  // 若槽位已换人（loadModeState 换掉了整套状态），不得把路径/脏标记写进新模式。
+  const mode = editor.currentMode
+  const dstTalks = editor.dstTalks
+  const meta = buildSaveMeta()
+  let target = resolveBoundTarget()
   let binding = false
-  if (!path || !/[/\\]/.test(path)) {
+  if (!target) {
     const canonical = canonicalSavePath()
     if (!canonical) return
-    path = canonical
+    target = { path: canonical }
     binding = true
   }
   // 写盘期间若有新编辑（mutationSeq 变化），写入内容已过期，不清脏标记——
   // 下一轮防抖会再写一次。
   const seq = editor.mutationSeq
   try {
-    if (binding) await api.ensureDir(path)
-    await api.translationSave(path, editor.dstTalks, app.saveN, buildSaveMeta())
-    if (binding) editor.currentFilePath = path
+    if (target.renameFrom) {
+      try {
+        await api.renameFile(target.renameFrom, target.path)
+        if (editor.currentMode === mode) editor.currentFilePath = target.path
+      } catch (e) {
+        // 目标被占用等：保持原名原路径写入，名字不动但内容绝不丢。
+        console.warn('[Autosave] 就地改名失败，保持原名', target, e)
+        target = { path: target.renameFrom }
+      }
+    }
+    if (binding) await api.ensureDir(target.path)
+    await api.translationSave(target.path, dstTalks, app.saveN, meta)
+    if (editor.currentMode !== mode) return
+    if (binding) editor.currentFilePath = target.path
     if (editor.mutationSeq === seq) editor.markSaved()
   } catch (e) {
-    console.warn('[Autosave] 自动保存写入失败', path, e) // 静默失败，不打扰编辑
+    console.warn('[Autosave] 自动保存写入失败', target.path, e) // 静默失败，不打扰编辑
   }
 }
 
@@ -301,6 +338,14 @@ function setMode(key: number) {
   // the new mode's talks would write the old mode's text into an unrelated row.
   // (onBlur already committed the text to both arrays, so nothing is lost.)
   if (changed) workspace.value?.cancelPendingEdit()
+  // 冲洗（不是丢弃）待写的 txt 自动保存：那个定时器属于旧模式的编辑，火在切换
+  // 之后会按新模式的槽位落盘——旧模式的最后一笔就滞留缓存、新模式凭空建档。
+  // writeTxtAutosave 在首个 await 前快照整套槽位状态，此刻同步调用即绑定旧模式。
+  if (changed && txtAutosaveTimer) {
+    clearTimeout(txtAutosaveTimer)
+    txtAutosaveTimer = null
+    void writeTxtAutosave()
+  }
   editor.switchMode(key as 0 | 1 | 2)
   app.setEditorMode(key as 0 | 1 | 2)
   // The undo/redo stacks are a module-level singleton shared across all modes,
@@ -368,7 +413,12 @@ async function handleOpen() {
     // mode is treated as a *baseline to derive from*, not a file to edit in
     // place. Clearing currentFilePath forces "save as" with the current mode's
     // 【…】 name, so the original (e.g. 翻译) file is never overwritten.
-    const fileMode = (result.meta?.mode ?? 0) as 0 | 1 | 2
+    // meta.mode 缺失（老版本/手工文件）时用文件名的【前缀】兜底再默认翻译——
+    // 否则【校对】命名的老文件会被当成翻译稿绑定改写（名实不符的模式错乱）。
+    const prefixMode = ({ 翻译: 0, 校对: 1, 合意: 2 } as Record<string, 0 | 1 | 2>)[
+      rawName.match(/^【([^】]*)】/)?.[1] ?? ''
+    ]
+    const fileMode = (result.meta?.mode ?? prefixMode ?? 0) as 0 | 1 | 2
     const deriving = fileMode !== app.editorMode
     editor.currentFilePath = deriving ? '' : (result.filePath || result.fileName || '')
     // 新文档会话：先清掉上一个文档的身份快照，标签解析成功后再重新绑定。
@@ -430,15 +480,26 @@ async function handleSave(saveAs = false) {
   // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。
   const bound = editor.currentFilePath
   if (!saveAs && isTauri && bound && /[/\\]/.test(bound)) {
+    // 同 autosave：规范名（标题译文/模式标签）变了就先就地改名再写。
+    let target = resolveBoundTarget() || { path: bound }
     try {
-      await api.translationSave(bound, editor.dstTalks, app.saveN, meta)
+      if (target.renameFrom) {
+        try {
+          await api.renameFile(target.renameFrom, target.path)
+          editor.currentFilePath = target.path
+        } catch (e: any) {
+          console.warn('[Save] 就地改名失败，保持原名', { target, error: e?.message || String(e) })
+          target = { path: target.renameFrom }
+        }
+      }
+      await api.translationSave(target.path, editor.dstTalks, app.saveN, meta)
       editor.markSaved()
       await api.recoveryClear().catch(() => {})
-      console.log('[Save] saved in place', { path: bound })
+      console.log('[Save] saved in place', { path: target.path })
       toast.show('已保存', 'success')
       return
     } catch (e: any) {
-      console.warn('[Save] in-place save failed, falling back to dialog', { path: bound, error: e?.message || String(e) })
+      console.warn('[Save] in-place save failed, falling back to dialog', { path: target.path, error: e?.message || String(e) })
     }
   }
   // 首次落盘也不问位置：直接按 <保存根目录>/<类型>/<索引>/ 分级自动建档并绑定。
@@ -470,6 +531,9 @@ async function handleSave(saveAs = false) {
     const path = await fileDialog.saveTranslation(defaultName, editor.dstTalks, app.saveN, meta)
     if (!path) { console.log('[Save] cancelled by user'); return }
     editor.currentFilePath = path
+    // 用户在对话框里改过标题段的话，同步回 titleOverride——否则下一次保存按
+    // 旧标题重算规范名，把文件名又改回去。
+    editor.syncTitleFromPath(path)
     editor.markSaved()
     // Awaited: 保存并退出 destroys the window right after handleSave returns, so a
     // fire-and-forget clear could be cut off — leaving a STALE autosave that the

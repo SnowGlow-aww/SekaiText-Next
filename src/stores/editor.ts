@@ -23,6 +23,7 @@ interface ModeState {
   dstTalks: DstTalk[]
   referTalks: DstTalk[]
   currentFilePath: string
+  titleOverride: string
   hasUnsavedChanges: boolean
   majorClue: string | null
   docMeta: DocMeta | null
@@ -34,6 +35,7 @@ function emptyModeState(): ModeState {
     dstTalks: [],
     referTalks: [],
     currentFilePath: '',
+    titleOverride: '',
     hasUnsavedChanges: false,
     majorClue: null,
     docMeta: null,
@@ -57,7 +59,21 @@ export const useEditorStore = defineStore('editor', () => {
   // User-editable title segment shown in the 译文 header input. Replaces ONLY
   // the chapter-title part of the saved filename (the 【模式】<saveTitle> prefix
   // and .txt suffix stay fixed). Empty = fall back to the story's chapterTitle.
+  // Part of the per-mode document identity (cached in ModeState like docMeta):
+  // each mode slot names its own file.
   const titleOverride = ref('')
+
+  // 从既有规范命名（【模式】<剧本标号> <标题>.txt）回同步标题段。绑定到已存在
+  // 文件（恢复、保存对话框选路径）时调用——否则 titleOverride 空值会让下一次
+  // 保存把文件名改回日文原标题。
+  function syncTitleFromPath(path: string) {
+    const base = path.split(/[/\\]/).pop() || ''
+    if (!base.startsWith('【')) return
+    const stripped = base.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
+    const label = stripped.split(/\s+/)[0] || ''
+    const titlePart = stripped.slice(label.length).trim()
+    if (titlePart) titleOverride.value = titlePart
+  }
   const hasUnsavedChanges = ref(false)
   const majorClue = ref<string | null>(null)
   const docMeta = ref<DocMeta | null>(null)
@@ -119,6 +135,7 @@ export const useEditorStore = defineStore('editor', () => {
       dstTalks: cloneTalks(dstTalks.value),
       referTalks: cloneTalks(referTalks.value),
       currentFilePath: currentFilePath.value,
+      titleOverride: titleOverride.value,
       hasUnsavedChanges: hasUnsavedChanges.value,
       majorClue: majorClue.value,
       docMeta: docMeta.value ? { ...docMeta.value } : null,
@@ -131,6 +148,7 @@ export const useEditorStore = defineStore('editor', () => {
     dstTalks.value = cloneTalks(state.dstTalks)
     referTalks.value = cloneTalks(state.referTalks)
     currentFilePath.value = state.currentFilePath
+    titleOverride.value = state.titleOverride
     hasUnsavedChanges.value = state.hasUnsavedChanges
     majorClue.value = state.majorClue
     docMeta.value = state.docMeta ? { ...state.docMeta } : null
@@ -171,6 +189,6 @@ export const useEditorStore = defineStore('editor', () => {
     currentFilePath, titleOverride, hasUnsavedChanges, majorClue, docMeta, mutationSeq,
     currentMode,
     setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
-    saveModeState, loadModeState, switchMode, rebindPaths,
+    saveModeState, loadModeState, switchMode, rebindPaths, syncTitleFromPath,
   }
 })

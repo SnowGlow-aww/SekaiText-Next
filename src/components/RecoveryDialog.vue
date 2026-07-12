@@ -44,7 +44,12 @@ async function handleRestore() {
       }
       editor.setTalks(talks, talks, [])
       editor.markUnsaved()
-      if (result.filePath) editor.currentFilePath = result.filePath
+      if (result.filePath) {
+        editor.currentFilePath = result.filePath
+        // 回同步文件名里的标题段：titleOverride 留空会让恢复后的首次保存
+        // 按日文原标题重算规范名，把已翻译好的文件名改回去。
+        editor.syncTitleFromPath(result.filePath)
+      }
 
       // Restore story context and re-load source text
       if (result.storyType) {

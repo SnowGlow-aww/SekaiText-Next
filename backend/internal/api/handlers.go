@@ -306,6 +306,42 @@ func (h *Handler) EnsureDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
 }
 
+// RenameFile renames a saved document in place when its canonical name changes
+// (mode label / translated title). Refuses to overwrite a different existing
+// file — the caller falls back to writing the old path, so content is never lost.
+func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OldPath string `json:"oldPath"`
+		NewPath string `json:"newPath"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.OldPath == "" || req.NewPath == "" {
+		writeError(w, http.StatusBadRequest, "oldPath/newPath required")
+		return
+	}
+	if req.OldPath == req.NewPath {
+		writeJSON(w, http.StatusOK, map[string]string{"path": req.NewPath})
+		return
+	}
+	if _, err := os.Stat(req.NewPath); err == nil {
+		writeError(w, http.StatusConflict, "target already exists")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(req.NewPath), 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
+		return
+	}
+	if err := os.Rename(req.OldPath, req.NewPath); err != nil {
+		log.Printf("[rename-file] rename error: %v", err)
+		writeError(w, http.StatusInternalServerError, "rename failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": req.NewPath})
+}
+
 func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 	var req model.TranslationSaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
