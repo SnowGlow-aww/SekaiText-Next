@@ -670,7 +670,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     "event" + padZero3(ev.ID) + "_" + char.Name + "_" + ch + ".json",
-			SaveTitle:    "event" + padZero3(ev.ID) + "-" + char.Name + "-" + ch,
+			SaveTitle:    "event" + padZero3(ev.ID) + "-" + char.Name,
 			ChapterTitle: cardChapterTitle(chapterIdx),
 		}
 
@@ -700,7 +700,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     "festival_" + padZero3(f.ID) + "_" + charName + "_" + ch + ".json",
-			SaveTitle:    fesSaveTitle(f, charName, ch),
+			SaveTitle:    fesSaveTitle(f, charName),
 			ChapterTitle: cardChapterTitle(chapterIdx),
 		}
 
@@ -725,7 +725,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     "release_" + charName + "_" + padZero(rarity) + "_" + ch + ".json",
-			SaveTitle:    "release-" + charName + "-" + padZero(rarity) + "-" + ch,
+			SaveTitle:    "release-" + charName + "-" + padZero(rarity),
 			ChapterTitle: cardChapterTitle(chapterIdx),
 		}
 
@@ -782,7 +782,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     "levelup_" + charName + "_" + ch + ".json",
-			SaveTitle:    "lvelup2023-" + charName + "-" + ch,
+			SaveTitle:    "lvelup2023-" + charName,
 			ChapterTitle: cardChapterTitle(chapterIdx),
 		}
 
@@ -1028,17 +1028,19 @@ func cardChapterTitle(chapterIdx int) string {
 	}
 }
 
-func fesSaveTitle(f FestivalEntry, charName, ch string) string {
+// 卡面类 SaveTitle 不带 -01/-02 章节号：文件名后面拼的 ChapterTitle
+// （前篇/后篇/特殊篇）已足够区分且更可读（用户反馈 01/02 是多余的）。
+func fesSaveTitle(f FestivalEntry, charName string) string {
 	if f.Collaboration != "" {
-		return "collabo" + padZero3(f.ID) + "-" + charName + "-" + ch
+		return "collabo" + padZero3(f.ID) + "-" + charName
 	}
 	if f.IsBirthday {
 		year := 2021 + (f.ID+2)/4
-		return "birth" + strconv.Itoa(year) + "-" + charName + "-" + ch
+		return "birth" + strconv.Itoa(year) + "-" + charName
 	}
 	year := 2021 + f.ID/4
 	month := f.ID%4*3 + 1
-	return "fes" + strconv.Itoa(year) + padZero(month) + "-" + charName + "-" + ch
+	return "fes" + strconv.Itoa(year) + padZero(month) + "-" + charName
 }
 
 
