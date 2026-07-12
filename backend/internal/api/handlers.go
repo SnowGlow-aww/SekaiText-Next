@@ -153,6 +153,7 @@ func (h *Handler) StoryLoad(w http.ResponseWriter, r *http.Request) {
 
 	resp.SaveTitle = path.SaveTitle
 	resp.ChapterTitle = path.ChapterTitle
+	resp.IndexLabel = h.lm.IndexLabel(req.StoryType, req.Sort, req.Index)
 
 	// Card-story scenario JSON often carries a broken / Japanese internal
 	// ScenarioId (e.g. "★4冬弥・泉_前半") that does NOT match the on-CDN voice

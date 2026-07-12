@@ -87,7 +87,7 @@ export const api = {
     chapter: number
     source: string
   }) =>
-    request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string }>(
+    request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string; indexLabel: string }>(
       '/story/load',
       { method: 'POST', body: JSON.stringify(data) },
     ),

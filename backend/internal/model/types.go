@@ -203,6 +203,9 @@ type LoadResponse struct {
 	SourceTalks  []SourceTalk `json:"sourceTalks"`
 	SaveTitle    string       `json:"saveTitle"`
 	ChapterTitle string       `json:"chapterTitle"`
+	// 索引下拉框的完整标签（活动为 "<ID> <标题>"），文稿目录用它命名。前端各
+	// 载入路径（导航/打开txt/恢复）都以这里为准，避免列表未加载时兜底成裸 ID。
+	IndexLabel string `json:"indexLabel"`
 }
 
 // TranslationCreateRequest creates a new translation from source talks.

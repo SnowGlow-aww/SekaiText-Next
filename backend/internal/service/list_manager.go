@@ -998,6 +998,17 @@ func (lm *ListManager) ResolveLabel(label string) (storyType, index, indexLabel 
 	return "", "", "", 0, false
 }
 
+// IndexLabel returns the full index-dropdown label for a selection（活动为
+// "<ID> <标题>"）。文稿目录按它命名；找不到时原样返回 index，调用方自行兜底。
+func (lm *ListManager) IndexLabel(storyType, sort, index string) string {
+	for _, it := range lm.GetStoryIndexList(storyType, sort) {
+		if it.Value == index {
+			return it.Label
+		}
+	}
+	return index
+}
+
 // processChapterID replaces the internal kdyicr_id in chapter asset name parts
 // with the display event index, matching the Python reference logic.
 func (lm *ListManager) processChapterID(eventIndex int, chapterIDs []string) []string {

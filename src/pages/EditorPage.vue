@@ -157,8 +157,11 @@ function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
   // 托管根目录内连“文件夹”一起跟随规范路径：索引标签修正后（208 → 208 褪せない
   // 今を、彩って）下次保存把文件搬进正确目录，同一活动不再出现两个文件夹；
   // 根目录外（用户另存到别处）只换 basename，不把文件挪走。
+  // 只有持有文档身份快照（docMeta）时才跟随文件夹——否则规范路径读的是全局
+  // story 状态（可能是裸标签/别的剧情），按它搬文件等于把文档搬错目录。
   const root = settings.settings.saveBaseDir
-  const managed = root && (bound.startsWith(root + '/') || bound.startsWith(root + '\\'))
+  const managed = root && editor.docMeta
+    && (bound.startsWith(root + '/') || bound.startsWith(root + '\\'))
   const want = (managed ? canonicalSavePath() : null) || dir + canonicalFileName()
   if (want === bound) return { path: bound }
   return { path: want, renameFrom: bound }

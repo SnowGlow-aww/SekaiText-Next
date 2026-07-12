@@ -83,6 +83,11 @@ export const useStoryStore = defineStore('story', () => {
       sourceTalks.value = result.sourceTalks
       saveTitle.value = result.saveTitle || ''
       chapterTitle.value = result.chapterTitle || ''
+      // 后端权威的索引完整标签（"<ID> <标题>"）。恢复对话框等路径会在索引列表
+      // 还没加载时设置 selectedIndex，导航 watcher 兜底写入裸 ID——若不在此收口
+      // 覆写，文档快照会带着裸标签建出「208」式目录（5.7.7 的文件夹跟随甚至会
+      // 把文件搬进去）。
+      if (result.indexLabel) selectedIndexLabel.value = result.indexLabel
     } finally {
       loading.value = false
       loadInFlight = false
