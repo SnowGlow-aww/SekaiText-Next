@@ -122,7 +122,7 @@ npm run build:tauri
 ## 开源协议
 
 本项目采用 [MIT](LICENSE) 协议。
-- 创意来源 [SekaiText](https://github.com/Is14w/SekaiText)
+- 创意来源 [SekaiText by Is14w](https://github.com/Is14w/SekaiText)
 - 本项目由 [雪莹ちゃん](https://github.com/SnowGlow-aww) 重制维护及更新
 
 ## 致谢名单
