@@ -10,8 +10,9 @@ import { useUndo } from '../../composables/useUndo'
 import VoicePlayButton from './VoicePlayButton.vue'
 import Live2DJumpButton from './Live2DJumpButton.vue'
 import { useFlashbackTooltip } from '../../composables/useFlashbackTooltip'
-import { useGlossaryMatcher } from '../../composables/useGlossaryMatcher'
+import { useGlossaryMatcher, type TermMatch } from '../../composables/useGlossaryMatcher'
 import { useGlossaryTooltip } from '../../composables/useGlossaryTooltip'
+import { useDictStore } from '../../stores/dict'
 import { annotateFlashbacks } from '../../utils/flashback'
 import { FileText } from 'lucide-vue-next'
 import type { DstTalk } from '../../types/translation'
@@ -57,9 +58,18 @@ const { visible: fbVisible, tooltipStyle: fbStyle, clueGroups: fbClueGroups, sho
 
 // ---- Glossary term matching + tooltip (opt-in via app.showGlossary) ----
 const matcher = useGlossaryMatcher()
-const { visible: glVisible, tooltipStyle: glStyle, tip: glTip, show: glShow, hide: glHide } = useGlossaryTooltip()
+const { visible: glVisible, tooltipStyle: glStyle, tip: glTip, show: glShow, showDict: glShowDict, hide: glHide, softHide: glSoftHide, cancelScheduledHide: glCancelHide } = useGlossaryTooltip()
 onMounted(() => { if (app.showGlossary) matcher.ensureLoaded() })
 watch(() => app.showGlossary, (on) => { if (on) matcher.ensureLoaded() })
+
+// ---- 字典取词层（叠在术语层之上，术语 + 字典开关都开才加载/渲染）----
+const dict = useDictStore()
+const dictEnabled = computed(() => app.showGlossary && app.dictLookup)
+// 参与渲染的条件：开关开 + surfaces 已就绪 + 确有字典（无字典时 map 为空）。
+const dictActive = computed(() => dictEnabled.value && dict.surfacesLoaded && dict.foldedMap.size > 0)
+// catch：字典端点不可用（如旧后端）时静默停用，不打断编辑器。
+onMounted(() => { if (dictEnabled.value) dict.ensureLoaded().catch(() => {}) })
+watch(dictEnabled, (on) => { if (on) dict.ensureLoaded().catch(() => {}) })
 
 // ---- Flashback (from SourcePanel) ----
 const talksWithFlashback = computed(() => {
@@ -370,9 +380,8 @@ function highlightSpeaker(speaker: string): string {
 // highlight span carrying data-term (the raw source key) for hover lookup.
 // Mirrors markQuery's (?![^<]*>) guard so we never inject inside an existing
 // tag (e.g. a <mark> from search). Only applied to read-only source text.
-function markGlossary(html: string, rawText: string): string {
+function markGlossary(html: string, rawText: string, hits: TermMatch[]): string {
   if (!app.showGlossary || !rawText) return html
-  const hits = matcher.matchTerms(rawText)
   if (hits.length === 0) return html
   // Unique terms, longest first, so a longer term isn't broken by a shorter one.
   const terms = Array.from(new Set(hits.map(h => h.term))).sort((a, b) => b.length - a.length)
@@ -388,21 +397,101 @@ function markGlossary(html: string, rawText: string): string {
   return out
 }
 
-// Render source text with search + glossary highlighting layered on.
+// 字典层：在术语层之后叠加字典命中。matchDict 已跳过与术语命中重叠的区间
+// （术语优先）；此处再按 glossary-hit span 切段，保证不往术语高亮内部注入
+// 嵌套标记（同一 surface 的其它出现可能落在术语 span 里）。
+function markDict(html: string, rawText: string, termHits: TermMatch[]): string {
+  if (!dictActive.value || !rawText) return html
+  const hits = matcher.matchDict(rawText, termHits)
+  if (hits.length === 0) return html
+  // 已转义的屏上文本 → 原样 surface（data-dict-surface 查词键）。同一屏上文本
+  // 折叠后必然映到同一 surface，首个即可。
+  const bySub = new Map<string, string>()
+  for (const h of hits) {
+    const esc = escapeHtml(rawText.slice(h.start, h.end))
+    if (!bySub.has(esc)) bySub.set(esc, h.surface)
+  }
+  // 长的在前的单趟 alternation 替换：replace 不回扫注入的标签，短 surface 不会
+  // 嵌进长 surface 的 span；(?![^<]*>) 与 markQuery/markGlossary 同款守卫，
+  // 不往已有标签（含 data-term 属性值）里注入。
+  const subs = Array.from(bySub.keys()).sort((a, b) => b.length - a.length)
+  const pat = subs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const re = new RegExp(`(${pat})(?![^<]*>)`, 'g')
+  return splitProtectedSpans(html)
+    .map((seg, i) => i % 2 === 1 ? seg : seg.replace(re, (m) => {
+      const surface = escapeHtml(bySub.get(m) ?? m).replace(/"/g, '&quot;')
+      return `<span class="dict-hit" data-dict-surface="${surface}">${m}</span>`
+    }))
+    .join('')
+}
+
+// 按 glossary-hit span 整体切段（奇数段=受保护整体，偶数段=可注入裸文本）。
+// 不能用懒惰正则 [\s\S]*?<\/span>：markGlossary 对短术语是长术语子串时会在
+// 长术语 span 内容里再嵌一层 glossary-hit，懒惰匹配在内层 </span> 提前收束，
+// 外层 span 的尾部文本会被误判为裸文本参与字典注入。这里数 span 深度找配平的
+// 闭合标签，嵌套多少层都切得对。
+function splitProtectedSpans(html: string): string[] {
+  const parts: string[] = []
+  let plain = 0
+  let i = 0
+  const OPEN = '<span class="glossary-hit"'
+  while (true) {
+    const s = html.indexOf(OPEN, i)
+    if (s === -1) break
+    let depth = 0
+    let j = s
+    while (j < html.length) {
+      if (html.startsWith('</span>', j)) {
+        depth--
+        j += 7
+        if (depth === 0) break
+      } else if (html.startsWith('<span', j)) {
+        depth++
+        j = html.indexOf('>', j) + 1
+        if (j === 0) { j = html.length; break } // 残缺标签兜底
+      } else {
+        j++
+      }
+    }
+    parts.push(html.slice(plain, s), html.slice(s, j))
+    plain = j
+    i = j
+  }
+  parts.push(html.slice(plain))
+  return parts
+}
+
+// Render source text with search + glossary + dict highlighting layered on.
 function renderSource(text: string): string {
-  return markGlossary(markQuery(escapeHtml(text)), text)
+  // 每行只跑一次 matchTerms（正则全扫是行渲染的大头），术语层与字典层共享。
+  const termHits = app.showGlossary && text ? matcher.matchTerms(text) : []
+  return markDict(markGlossary(markQuery(escapeHtml(text)), text, termHits), text, termHits)
 }
 
 // Hover handler (event delegation on the source container): show the glossary
 // tooltip for the term under the cursor, with an appellation suggestion based
-// on the line's speaker.
+// on the line's speaker. 术语命中优先；不在术语上时再看字典命中。
 function onGlossaryHover(e: MouseEvent, speaker: string) {
   if (!app.showGlossary) return
   const el = (e.target as HTMLElement)?.closest('[data-term]') as HTMLElement | null
-  if (!el) { glHide(); return }
-  const term = el.getAttribute('data-term') || ''
-  const entry = matcher.lookup(term)
-  if (entry) glShow(el, entry, speaker)
+  if (el) {
+    const term = el.getAttribute('data-term') || ''
+    const entry = matcher.lookup(term)
+    if (entry) glShow(el, entry, speaker)
+    return
+  }
+  const dictEl = dictActive.value
+    ? (e.target as HTMLElement)?.closest('[data-dict-surface]') as HTMLElement | null
+    : null
+  if (!dictEl) { glSoftHide(); return }
+  const surface = dictEl.getAttribute('data-dict-surface') || ''
+  // 宽限期内鼠标回到同一个词上：撤销待执行的隐藏保住卡片（showDict 在可见时
+  // 会早退，不撤销的话卡片会在指针悬停时凭空消失）。
+  if (glVisible.value && glTip.value?.kind === 'dict' && glTip.value.source === surface) {
+    glCancelHide()
+    return
+  }
+  glShowDict(dictEl, surface)
 }
 
 // Match list across source text, dest text and speaker, in group order. Owns
@@ -647,7 +736,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                 @mouseenter="onSourceEnter($event, group.items[0].talk)"
                 @mousemove="onSourceEnter($event, group.items[0].talk)"
                 @mouseover="onGlossaryHover($event, srcTalk(group.items[0].talk)?.speaker ?? group.items[0].talk.speaker)"
-                @mouseleave="fbHide(); glHide()"
+                @mouseleave="fbHide(); glSoftHide()"
               >
                 <div class="flex items-center gap-3">
                   <div
@@ -809,26 +898,45 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
     </div>
   </Teleport>
 
-  <!-- Glossary term tooltip -->
+  <!-- Glossary term / dict tooltip（同一容器，按 tip.kind 分支） -->
   <Teleport to="body">
     <div
       v-if="glVisible && glTip"
       :style="glStyle"
-      class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-xs pointer-events-none"
+      class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-xs"
+      :class="glTip.kind === 'dict' ? 'pointer-events-auto' : 'pointer-events-none'"
+      @mouseenter="glCancelHide()"
+      @mouseleave="glHide()"
     >
-      <div class="flex items-baseline gap-2">
-        <span class="font-semibold">{{ glTip.source }}</span>
-        <span class="text-[var(--color-text-secondary)]">→</span>
-        <span class="text-[var(--color-primary)] font-medium">{{ glTip.translation }}</span>
-      </div>
-      <div v-if="glTip.aliases && glTip.aliases.length" class="text-[var(--color-text-secondary)] mt-1">别称：{{ glTip.aliases.join('、') }}</div>
-      <div v-if="glTip.note" class="text-[var(--color-text-secondary)] mt-1 leading-relaxed">{{ glTip.note }}</div>
-      <div v-if="glTip.appellCn || glTip.appellJp" class="border-t border-[var(--color-border)] mt-1.5 pt-1.5">
-        <span class="text-[var(--color-text-secondary)]">{{ glTip.appellSpeaker }} 称呼：</span>
-        <span class="font-medium">{{ glTip.appellJp }}</span>
-        <span v-if="glTip.appellCn" class="text-[var(--color-primary)]"> / {{ glTip.appellCn }}</span>
-      </div>
-      <div v-if="glTip.category" class="text-[10px] text-[var(--color-text-secondary)] mt-1.5 opacity-70">{{ glTip.category }}</div>
+      <!-- 字典卡片：每个义项一块（key 粗体 + kana/accent 小字 + 释义全文） -->
+      <template v-if="glTip.kind === 'dict'">
+        <template v-for="(h, hi) in glTip.dictHits" :key="h.entry.id + hi">
+          <div v-if="hi > 0" class="border-t border-[var(--color-border)] my-1.5" />
+          <div class="flex items-baseline gap-2 flex-wrap">
+            <span class="font-semibold">{{ h.entry.key }}</span>
+            <span class="text-[var(--color-text-secondary)]">{{ h.entry.kana }}</span>
+            <span v-if="h.entry.accent" class="text-[10px] text-[var(--color-text-secondary)] opacity-80">{{ h.entry.accent }}</span>
+          </div>
+          <div class="text-[var(--color-text-secondary)] mt-1 leading-relaxed whitespace-pre-wrap max-h-[280px] overflow-y-auto">{{ h.entry.text }}</div>
+        </template>
+        <div class="text-[10px] text-[var(--color-text-secondary)] mt-1.5 opacity-70">{{ glTip.dictNames }} · 字典</div>
+      </template>
+      <!-- 术语卡片（原样保留） -->
+      <template v-else>
+        <div class="flex items-baseline gap-2">
+          <span class="font-semibold">{{ glTip.source }}</span>
+          <span class="text-[var(--color-text-secondary)]">→</span>
+          <span class="text-[var(--color-primary)] font-medium">{{ glTip.translation }}</span>
+        </div>
+        <div v-if="glTip.aliases && glTip.aliases.length" class="text-[var(--color-text-secondary)] mt-1">别称：{{ glTip.aliases.join('、') }}</div>
+        <div v-if="glTip.note" class="text-[var(--color-text-secondary)] mt-1 leading-relaxed">{{ glTip.note }}</div>
+        <div v-if="glTip.appellCn || glTip.appellJp" class="border-t border-[var(--color-border)] mt-1.5 pt-1.5">
+          <span class="text-[var(--color-text-secondary)]">{{ glTip.appellSpeaker }} 称呼：</span>
+          <span class="font-medium">{{ glTip.appellJp }}</span>
+          <span v-if="glTip.appellCn" class="text-[var(--color-primary)]"> / {{ glTip.appellCn }}</span>
+        </div>
+        <div v-if="glTip.category" class="text-[10px] text-[var(--color-text-secondary)] mt-1.5 opacity-70">{{ glTip.category }}</div>
+      </template>
     </div>
   </Teleport>
 

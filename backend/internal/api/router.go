@@ -168,6 +168,14 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Put("/appellations", h.GlossaryAppellationUpsert)
 			r.Get("/appellations/speakers", h.GlossaryAppellationSpeakers)
 			r.Get("/appellations/targets", h.GlossaryAppellationTargets)
+			// 字典（只读日语词典）：列表 / 上传导入 / 删除 / 取词表面形 / 取词 / 分页浏览搜索。
+			// 与主术语库物理隔离，只碰 DictStore。
+			r.Get("/dicts", h.DictList)
+			r.Post("/dicts/import", h.DictImport)
+			r.Delete("/dicts/{name}", h.DictDelete)
+			r.Get("/dicts/surfaces", h.DictSurfaces)
+			r.Get("/dicts/lookup", h.DictLookup)
+			r.Get("/dicts/entries", h.DictEntries)
 		})
 
 		// Team mode: proxy to a remote glossary-server (login, sync, proposals,

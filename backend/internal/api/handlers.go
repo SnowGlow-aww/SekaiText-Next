@@ -34,6 +34,7 @@ type Handler struct {
 	progress        *service.ProgressTracker
 	logBuf          *service.LogBuffer
 	glossary        *service.GlossaryStore
+	dict            *service.DictStore
 	plugins         *service.PluginStore
 	market          *service.MarketService
 	appUpdate       *service.AppUpdateService
@@ -62,6 +63,9 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		progress:   service.NewProgressTracker(),
 		logBuf:     logBuf,
 		glossary:   service.NewGlossaryStore(cfg.DataDir),
+		// 字典存在 GlossaryStore 同一目录下的 dicts/ 子目录（GlossaryStore 内部按
+		// {cfg.DataDir}/resources/glossary 落盘，这里复算同一路径传给 DictStore）。
+		dict:       service.NewDictStore(filepath.Join(cfg.DataDir, "resources", "glossary")),
 		plugins:    pluginStore,
 		market:     service.NewMarketService(pluginStore),
 		appUpdate:  service.NewAppUpdateService(),

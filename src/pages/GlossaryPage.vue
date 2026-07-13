@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, onDeactivated, watch, computed, useTemplateRef } from 'vue'
+import { ref, onMounted, onActivated, onDeactivated, watch, watchEffect, computed, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud } from 'lucide-vue-next'
+import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud, BookMarked } from 'lucide-vue-next'
 import { useGlossaryStore } from '../stores/glossary'
+import { useDictStore } from '../stores/dict'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { api } from '../api/client'
 import TeamProposalsPanel from '../components/glossary/TeamProposalsPanel.vue'
 import SkSelect from '../components/ui/SkSelect.vue'
-import type { GlossaryEntry } from '../types/glossary'
+import type { GlossaryEntry, DictEntry } from '../types/glossary'
 import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
 import { useTour } from '../onboarding/useTour'
 import { glossaryTour } from '../onboarding/tours'
 
 const router = useRouter()
 const glossary = useGlossaryStore()
+const dictStore = useDictStore()
 const team = useTeamStore()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -60,9 +62,17 @@ const query = ref('')
 const category = ref('')
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
+// 字典分类：下拉里 value 加 `dict:` 前缀与术语分类区分；选中后浏览/搜索都走
+// dictEntries（只读，不进主库检索）。
+const dictName = computed(() => (category.value.startsWith('dict:') ? category.value.slice(5) : ''))
+const isDictCategory = computed(() => dictName.value !== '')
+
 watch([query, category], () => {
   if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => glossary.search(query.value, category.value), 200)
+  debounceTimer = setTimeout(() => {
+    if (isDictCategory.value) { loadDictEntries(true); return }
+    glossary.search(query.value, category.value)
+  }, 200)
 })
 
 // --- browse all (virtual scroll): when no query but a category is picked,
@@ -75,7 +85,7 @@ const browsing = computed(() => !query.value.trim() && !!category.value)
 // Shared with refreshView() below so the two never clobber each other either.
 let browseSeq = 0
 watch([category, query], async () => {
-  if (!query.value.trim() && category.value) {
+  if (!query.value.trim() && category.value && !isDictCategory.value) {
     const seq = ++browseSeq
     const r = await api.glossaryEntries(category.value, 0, 100000)
     if (seq !== browseSeq) return
@@ -115,6 +125,108 @@ async function refreshView() {
     const r = await api.glossaryEntries(category.value, 0, 100000)
     if (seq !== browseSeq) return
     browseEntries.value = r.items
+  }
+}
+
+// --- 字典分类（只读）：分页浏览 + 搜索 + 导入 + 删除 ---
+// 4 万多条不能像术语那样一次全拉：走 dictEntries 分页（每页 200，后端上限），
+// 滚近尾部自动追加下一页；q 非空时同一接口做子串搜索（后端排序）。
+const DICT_PAGE = 200
+const dictItems = ref<DictEntry[]>([])
+const dictTotal = ref(0)
+const dictLoading = ref(false)
+// 释义默认 line-clamp 3 行，点击行展开/收起全文。
+const expandedDict = ref(new Set<string>())
+
+// Monotonic guard，同 browseSeq：慢响应不许盖掉新分类/新搜索词的结果。
+let dictSeq = 0
+async function loadDictEntries(reset: boolean) {
+  const name = dictName.value
+  if (!name) return
+  const seq = ++dictSeq
+  if (reset) {
+    dictItems.value = []
+    dictTotal.value = 0
+    expandedDict.value = new Set()
+  }
+  dictLoading.value = true
+  try {
+    const r = await api.dictEntries(name, query.value.trim(), reset ? 0 : dictItems.value.length, DICT_PAGE)
+    if (seq !== dictSeq) return
+    dictItems.value = reset ? r.items : [...dictItems.value, ...r.items]
+    dictTotal.value = r.total
+  } finally {
+    if (seq === dictSeq) dictLoading.value = false
+  }
+}
+
+const dictScrollParent = useTemplateRef<HTMLElement>('dictScrollParent')
+const dictVirtualizer = useVirtualizer(computed(() => ({
+  count: dictItems.value.length,
+  getScrollElement: () => dictScrollParent.value,
+  estimateSize: () => 96,
+  overscan: 8,
+  // 词条 id（page.index）在单本字典内唯一；换字典时列表整个重置。
+  getItemKey: (index: number) => dictItems.value[index]?.id ?? index,
+})))
+
+// 同 measureRow：展开/收起释义后动态重测行高（measureElement 挂 ResizeObserver）。
+function measureDictRow(el: any) {
+  dictVirtualizer.value.measureElement(el)
+}
+
+// 滚动接近已加载末尾且还有剩余时自动拉下一页（虚拟滚动天然只渲染视口行）。
+watchEffect(() => {
+  if (!isDictCategory.value || dictLoading.value) return
+  if (dictItems.value.length >= dictTotal.value) return
+  const vis = dictVirtualizer.value.getVirtualItems()
+  const last = vis[vis.length - 1]
+  if (last && last.index >= dictItems.value.length - 10) loadDictEntries(false)
+})
+
+function toggleDictRow(id: string) {
+  const s = new Set(expandedDict.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  expandedDict.value = s
+}
+
+// 导入字典：本地 JSON 文件 → multipart 上传，后端归一化后存 dicts/ 子目录。
+const dictFileInput = useTemplateRef<HTMLInputElement>('dictFileInput')
+const dictImporting = ref(false)
+async function onDictFileChosen(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许再次选择同一文件
+  if (!file || dictImporting.value) return
+  dictImporting.value = true
+  try {
+    const info = await dictStore.importDict(file)
+    toast.show(`已导入字典「${info.name}」（${info.count} 条）`, 'success')
+    if (isDictCategory.value) await loadDictEntries(true) // 正看字典时刷新（覆盖导入）
+  } catch (err: any) {
+    toast.show('导入字典失败: ' + (err?.message || err), 'error')
+  } finally {
+    dictImporting.value = false
+  }
+}
+
+async function removeCurrentDict() {
+  const name = dictName.value
+  if (!name) return
+  if (!(await confirm({
+    title: '删除字典',
+    message: `确定删除字典「${name}」吗？`,
+    detail: '将从本地移除该字典，编辑器取词与此处浏览随之失效。',
+    tone: 'danger',
+    confirmText: '删除',
+  }))) return
+  try {
+    await dictStore.removeDict(name)
+    category.value = ''
+    toast.show('已删除字典', 'success')
+  } catch (err: any) {
+    toast.show(err?.message || '删除失败', 'error')
   }
 }
 
@@ -350,6 +462,8 @@ async function saveAppell() {
 onMounted(async () => {
   await glossary.fetchCategories()
   await glossary.loadSpeakers()
+  // 字典列表（分类下拉合并展示）；后端不支持字典模块时静默忽略。
+  await dictStore.fetchDicts().catch(() => {})
 })
 </script>
 
@@ -371,7 +485,7 @@ onMounted(async () => {
             {{ editUnlocked ? '编辑中' : '锁定' }}
           </button>
           <button
-            v-if="team.loggedIn && team.isAdmin"
+            v-if="team.loggedIn && team.isAdmin && !isDictCategory"
             data-tour="glo-upload"
             @click="uploadToServer"
             :disabled="uploading"
@@ -381,6 +495,16 @@ onMounted(async () => {
             <UploadCloud :size="16" />
             {{ uploading ? '上传中…' : '上传至线上术语库' }}
           </button>
+          <button
+            @click="dictFileInput?.click()"
+            :disabled="dictImporting"
+            class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
+            title="导入 JSON 字典为只读分类（独立于主术语库，不参与团队同步）"
+          >
+            <BookMarked :size="16" />
+            {{ dictImporting ? '导入中…' : '导入字典' }}
+          </button>
+          <input ref="dictFileInput" type="file" accept=".json,application/json" class="hidden" @change="onDictFileChosen" />
         </div>
       </div>
     </header>
@@ -423,7 +547,7 @@ onMounted(async () => {
             <input
               v-model="query"
               type="text"
-              placeholder="输入原文或译文（日⇄中双向）"
+              :placeholder="isDictCategory ? '搜索字典（见出语/假名/释义）' : '输入原文或译文（日⇄中双向）'"
               class="app-input pl-9"
             />
           </div>
@@ -434,10 +558,11 @@ onMounted(async () => {
             :options="[
               { value: '', label: '全部分类' },
               ...glossary.categories.map(c => ({ value: c.category, label: `${c.category} (${c.count})` })),
+              ...dictStore.dicts.map(d => ({ value: 'dict:' + d.name, label: `${d.name}（字典 · 只读）` })),
             ]"
           />
           <button
-            v-if="!team.readonly"
+            v-if="!team.readonly && !isDictCategory"
             @click="showAdd = !showAdd"
             class="btn btn-brand btn-control gap-1 whitespace-nowrap"
           >
@@ -467,8 +592,57 @@ onMounted(async () => {
           </div>
         </div>
 
+        <!-- 字典分类（只读）：分页 + 虚拟滚动浏览；搜索同一接口。行内无任何
+             编辑/删除控件；删除整本字典的入口在表头右侧。 -->
+        <template v-if="isDictCategory">
+          <div class="flex items-center justify-between gap-3">
+            <div class="text-xs text-[var(--color-text-secondary)]">
+              {{ dictName }} · 共 {{ dictTotal }} 条{{ query.trim() ? '（匹配）' : '' }}
+            </div>
+            <button
+              @click="removeCurrentDict"
+              class="btn btn-xs btn-ghost text-error hover:bg-error/10 gap-1"
+              title="从本地删除这本字典（不影响主术语库）"
+            ><Trash2 :size="12" />删除此字典</button>
+          </div>
+          <div ref="dictScrollParent" class="overflow-auto" style="height: calc(100vh - 240px)">
+            <div :style="{ height: dictVirtualizer.getTotalSize() + 'px', position: 'relative', width: '100%' }">
+              <div
+                v-for="vr in dictVirtualizer.getVirtualItems()"
+                :key="dictItems[vr.index]?.id ?? vr.index"
+                :data-index="vr.index"
+                :ref="measureDictRow"
+                :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vr.start}px)` }"
+                class="pb-2"
+              >
+                <div
+                  class="rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 transition-colors hover:border-[var(--color-border-strong)] cursor-pointer"
+                  :title="expandedDict.has(dictItems[vr.index].id) ? '点击收起' : '点击展开全文'"
+                  @click="toggleDictRow(dictItems[vr.index].id)"
+                >
+                  <div class="flex items-baseline gap-2 flex-wrap">
+                    <span class="text-sm font-medium">{{ dictItems[vr.index].key }}</span>
+                    <span class="text-xs text-[var(--color-text-secondary)]">{{ dictItems[vr.index].kana }}</span>
+                    <span v-if="dictItems[vr.index].accent" class="text-[10px] text-[var(--color-text-tertiary)]">{{ dictItems[vr.index].accent }}</span>
+                  </div>
+                  <div
+                    class="text-xs text-[var(--color-text-secondary)] mt-1 whitespace-pre-wrap leading-relaxed"
+                    :class="expandedDict.has(dictItems[vr.index].id) ? '' : 'line-clamp-3'"
+                  >{{ dictItems[vr.index].text }}</div>
+                </div>
+              </div>
+            </div>
+            <div v-if="dictLoading" class="flex items-center justify-center gap-2 text-sm text-[var(--color-text-secondary)] py-3">
+              <span class="loading loading-spinner loading-sm" /> 加载中…
+            </div>
+            <div v-else-if="dictItems.length === 0" class="flex flex-col items-center gap-2 text-sm text-[var(--color-text-secondary)] py-12 text-center">
+              <Search :size="28" class="text-[var(--color-text-tertiary)]" />
+              {{ query.trim() ? '没有匹配的词条' : '字典为空' }}
+            </div>
+          </div>
+        </template>
         <!-- results -->
-        <div v-if="glossary.searching" class="flex items-center justify-center gap-2 text-sm text-[var(--color-text-secondary)] py-8">
+        <div v-else-if="glossary.searching" class="flex items-center justify-center gap-2 text-sm text-[var(--color-text-secondary)] py-8">
           <span class="loading loading-spinner loading-sm" /> 搜索中…
         </div>
         <!-- browse all (virtual scroll) when no query but a category is chosen -->

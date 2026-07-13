@@ -133,6 +133,9 @@ export const useAppStore = defineStore('app', () => {
   // terms and hovering shows the translation + appellation suggestion. Default
   // on, and persisted (user can turn it off via the toolbar checkbox).
   const showGlossary = useLocalStorage('sekaitext-show-glossary', true)
+  // dictLookup: 字典取词开关。与 showGlossary 同开且已导入字典时，原文中的词典
+  // 词条悬停显示释义卡片（术语命中优先）。持久化，工具栏「字典」按钮切换。
+  const dictLookup = useLocalStorage('sekaitext-dict-lookup', true)
   const syncScroll = ref(true)
   // showCompare: when on (校对/合意 only), each edited line shows a baseline row
   // (read-only, original/校对 text, removals in red) above the edit row (green
@@ -261,6 +264,7 @@ export const useAppStore = defineStore('app', () => {
     editorMode,
     showFlashback,
     showGlossary,
+    dictLookup,
     syncScroll,
     showCompare,
     saveN,

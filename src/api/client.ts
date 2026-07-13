@@ -20,10 +20,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`
   const start = Date.now()
 
+  // multipart（FormData）请求不能手动设 Content-Type：boundary 必须由浏览器生成，
+  // 写死 application/json 会让后端解析不了表单。
+  const isForm = options.body instanceof FormData
+
   try {
     const res = await fetch(url, {
       headers: {
-        'Content-Type': 'application/json',
+        ...(isForm ? {} : { 'Content-Type': 'application/json' }),
         ...options.headers,
       },
       ...options,
@@ -473,6 +477,28 @@ export const api = {
     ),
   glossaryExport: () =>
     request<import('../types/glossary').GlossaryData>('/glossary/export'),
+
+  // --- 字典（只读词典分类，物理隔离于 glossary.json 主库）---
+  dictList: () => request<import('../types/glossary').DictInfo[]>('/glossary/dicts'),
+  dictImport: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<import('../types/glossary').DictInfo>('/glossary/dicts/import', {
+      method: 'POST', body: fd,
+    })
+  },
+  dictDelete: (name: string) =>
+    request<{ status: string }>(`/glossary/dicts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  dictSurfaces: () =>
+    request<{ surfaces: string[]; maxLen: number }>('/glossary/dicts/surfaces'),
+  dictLookup: (surface: string) =>
+    request<{ items: import('../types/glossary').DictLookupHit[] }>(
+      `/glossary/dicts/lookup?surface=${encodeURIComponent(surface)}`,
+    ),
+  dictEntries: (name: string, q = '', offset = 0, limit = 50) =>
+    request<{ items: import('../types/glossary').DictEntry[]; total: number }>(
+      `/glossary/dicts/entries?name=${encodeURIComponent(name)}&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
+    ),
 
   // --- Team mode (proxied to remote glossary-server via local backend) ---
   teamStatus: () => request<import('../types/glossary').TeamStatus>('/team/status'),
