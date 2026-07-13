@@ -263,9 +263,6 @@ export function pluginIntroTour(pluginId: string): TourDef | null {
 const WHATS_NEW: Record<string, { title?: string; body: string; link?: TourStep['link'] }> = {
   '5.8': {
     body:
-      '· 字典模块：术语库页「导入字典」装入 JSON 词典（如日汉双解学习词典），成为一个只读分类，可浏览可搜索\n' +
-      '· 编辑器悬浮取词：导入字典后，鼠标悬停原文里的词即可查看读音、声调与完整释义（工具栏「字典」开关可关；未导入字典无任何影响）\n' +
-      '· 字典完全本地只读：不参与团队同步/上传，不影响术语高亮与既有术语库\n' +
       '· 团队术语同步全面提速：版本检查与拉取改走 CDN 加速（服务器升级后自动生效，旧服务器自动回退直连，无需操作）',
   },
   '5.7': {
