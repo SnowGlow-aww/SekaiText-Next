@@ -87,7 +87,7 @@ func (h *Handler) TeamSync(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	raw, err := h.team.FetchExport()
+	raw, err := h.team.FetchExport(remoteVer)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

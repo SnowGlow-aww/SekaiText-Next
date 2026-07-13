@@ -36,6 +36,9 @@ type TeamUser struct {
 type TeamService struct {
 	dataDir string
 	client  *http.Client
+	// cdnClient 走公网 CDN（正经证书），刻意用干净的默认 client，绝不继承 client 对
+	// 自签服务器的 InsecureSkipVerify 宽松逻辑。
+	cdnClient *http.Client
 
 	mu        sync.RWMutex
 	serverURL string
@@ -43,6 +46,12 @@ type TeamService struct {
 	refresh   string
 	user      *TeamUser
 	lastVer   int
+	// snapshotBase 是团队服务器经 GET /api/config 暴露的 CDN 快照基址（形如
+	// https://sakimizuki.accr.cc/sekaitext-glossary）；为空表示老服务器或发现失败，
+	// 读路径回退服务器直连。snapshotBaseFor 记录该值是针对哪个 serverURL 发现的，
+	// 切服务器后据此惰性重新发现（发现只在读路径首次触发，随连接生命周期缓存在内存）。
+	snapshotBase    string
+	snapshotBaseFor string
 }
 
 // LastSyncedVersion returns the glossary version last merged locally.
@@ -67,6 +76,8 @@ func NewTeamService(dataDir string) *TeamService {
 			Timeout:   20 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		},
+		// 默认 Transport：校验 CDN 的真实证书，超时与 client 保持一致。
+		cdnClient: &http.Client{Timeout: 20 * time.Second},
 	}
 	t.restore()
 	return t
