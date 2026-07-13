@@ -105,29 +105,3 @@ export interface GlossaryData {
   appellations: Appellation[]
   grammar?: GrammarUsage[]
 }
-
-// --- 字典（只读词典分类）---
-// 独立于 glossary.json 主库：后端存 dicts/<名称>.json，绝不进入导出/团队同步。
-
-export interface DictInfo {
-  name: string
-  count: number
-}
-
-// 一条词典义项。surfaces 是导入时预计算的匹配表面形（编辑器取词用），
-// 浏览/查词返回里可能省略。
-export interface DictEntry {
-  id: string
-  key: string
-  kana: string
-  accent: string
-  kanji: string
-  text: string
-  surfaces?: string[]
-}
-
-// 取词查询命中：所属字典名 + 义项。
-export interface DictLookupHit {
-  dictName: string
-  entry: DictEntry
-}

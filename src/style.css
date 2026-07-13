@@ -377,14 +377,6 @@ html[data-bg='on'] body::before {
     min-height: 2.25rem;
   }
 
-  /* 编辑器原文里的字典取词命中（v-html 注入）。默认完全无视觉，悬停才给
-     虚线下划线提示可查词（inline 元素的 border 不影响行盒，无跳动）。放全局
-     组件层而非 scoped：scoped 无层级会压过 utilities（项目已踩坑）。 */
-  .dict-hit:hover {
-    border-bottom: 1px dotted var(--color-primary);
-    cursor: help;
-  }
-
   /* Gradient CTA — the playful PJSK 多彩 button */
   .btn-brand {
     background-image: var(--brand-gradient);

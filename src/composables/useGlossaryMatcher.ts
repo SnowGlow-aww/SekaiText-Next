@@ -1,6 +1,5 @@
 import { ref, computed } from 'vue'
 import { useGlossaryStore } from '../stores/glossary'
-import { useDictStore } from '../stores/dict'
 import type { GlossaryEntry } from '../types/glossary'
 
 // Minimum source length (in code points) to include in matching. 1-char terms
@@ -22,14 +21,6 @@ export interface TermMatch {
   end: number
 }
 
-// 字典取词命中：[start,end) 是原始行文本里的偏移（foldForMatch 保长，可直接
-// 切片）；surface 是字典里的原样表面形（用作 data-dict-surface / 查词键）。
-export interface DictHit {
-  start: number
-  end: number
-  surface: string
-}
-
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -41,7 +32,7 @@ function escapeRegExp(s: string): string {
 // that would change length (ligatures like ﬀ→ff, ㍿→株式会社, …) is left as-is.
 // This guarantees foldForMatch(s).length === s.length so regex match offsets map
 // straight back onto the original text and highlight positions stay correct.
-export function foldForMatch(s: string): string {
+function foldForMatch(s: string): string {
   let out = ''
   for (const ch of s) {
     const n = ch.normalize('NFKC').toLowerCase()
@@ -63,7 +54,6 @@ let builtFromEntries: GlossaryEntry[] | null = null
 
 export function useGlossaryMatcher() {
   const glossary = useGlossaryStore()
-  const dict = useDictStore()
 
   async function ensureLoaded() {
     if (entriesLoaded.value) return
@@ -124,44 +114,9 @@ export function useGlossaryMatcher() {
     return out
   }
 
-  // matchDict：字典层取词（术语正则层完全不动）。对折叠后的行文本做最长匹配
-  // 扫描：每个位置从 maxLen 往短探测 foldedMap，命中即记录并跳过该区间。
-  // occupied 传入术语命中的区间，与之重叠的候选直接跳过（术语优先）；重叠时
-  // 继续尝试更短的候选，所以术语右侧紧邻的短词仍能命中。
-  function matchDict(text: string, occupied: { start: number; end: number }[] = []): DictHit[] {
-    if (!text || !dict.surfacesLoaded || dict.foldedMap.size === 0) return []
-    // foldForMatch 保长（同术语层），命中偏移可直接映射回原始文本。
-    const folded = foldForMatch(text)
-    const n = folded.length
-    const out: DictHit[] = []
-    let pos = 0
-    while (pos < n) {
-      // 首码元不在任何 surface 的首码元集合里 → 该位置不可能命中，直接跳过，
-      // 省掉 maxLen 次子串分配+探测（日文行里绝大多数位置走这条快路）。
-      if (!dict.firstChars.has(folded.charCodeAt(pos))) {
-        pos += 1
-        continue
-      }
-      let advanced = 1
-      const limit = Math.min(dict.maxLen, n - pos)
-      for (let L = limit; L >= 1; L--) {
-        const end = pos + L
-        if (occupied.some((r) => pos < r.end && end > r.start)) continue
-        const surface = dict.foldedMap.get(folded.slice(pos, end))
-        if (surface !== undefined) {
-          out.push({ start: pos, end, surface })
-          advanced = L
-          break
-        }
-      }
-      pos += advanced
-    }
-    return out
-  }
-
   const ready = computed(() => entriesLoaded.value && combinedRe !== null)
 
   // lookup is called with the original on-screen term (data-term), so fold it to
   // match the folded keys stored in termToEntry.
-  return { ensureLoaded, matchTerms, matchDict, ready, lookup: (t: string) => termToEntry.get(foldForMatch(t)) }
+  return { ensureLoaded, matchTerms, ready, lookup: (t: string) => termToEntry.get(foldForMatch(t)) }
 }

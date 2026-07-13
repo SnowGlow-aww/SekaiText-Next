@@ -14,7 +14,7 @@ import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import * as LucideIcons from 'lucide-vue-next'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, BookMarked, Store, Users, AlertTriangle, Info,
+import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info,
   FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
@@ -742,7 +742,6 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
             <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
             <button class="tbar-toggle" :aria-pressed="app.showFlashback" @click="app.showFlashback = !app.showFlashback"><Eye :size="15" />闪回</button>
             <button class="tbar-toggle" :aria-pressed="app.showGlossary" @click="app.showGlossary = !app.showGlossary"><Languages :size="15" />术语</button>
-            <button class="tbar-toggle" :aria-pressed="app.dictLookup" @click="app.dictLookup = !app.dictLookup" title="字典取词：悬停原文中的词典词条显示释义（需先在术语库页导入字典，且「术语」开启）"><BookMarked :size="15" />字典</button>
             <button class="tbar-toggle" :aria-pressed="app.syncScroll" @click="app.syncScroll = !app.syncScroll"><Link2 :size="15" />同步</button>
             <button class="tbar-toggle" :aria-pressed="app.searchOpen" @click="app.searchOpen = !app.searchOpen"><Search :size="15" />搜索</button>
             <div ref="toolbarSearchSep" class="w-px h-5 bg-[var(--color-border)] mx-1" />
