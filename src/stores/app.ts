@@ -3,6 +3,7 @@ import { useLocalStorage, usePreferredDark } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
 import { DEFAULT_ACCENT } from '../data/characterColors'
 import { idbGet, idbPut, idbDel } from '../lib/idb'
+import { useSettingsStore } from './settings'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -137,7 +138,11 @@ export const useAppStore = defineStore('app', () => {
   // (read-only, original/校对 text, removals in red) above the edit row (green
   // additions). Diff highlighting itself is always-on; this toggles the baseline row.
   const showCompare = ref(false)
-  const saveN = ref(true)
+  // saveN mirrors the persisted 保存\N toggle held by the settings store, which is
+  // what the 设置 page writes. Every save path reads app.saveN, so proxy the setting
+  // here instead of keeping a separate ref that never got synced. The settings store
+  // is resolved lazily inside the getter to avoid a store init cycle at boot.
+  const saveN = computed(() => useSettingsStore().settings.saveN)
   // Search / replace state (toolbar search bar).
   const searchOpen = ref(false)
   const searchQuery = ref('')

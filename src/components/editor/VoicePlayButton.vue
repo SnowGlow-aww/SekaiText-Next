@@ -4,6 +4,12 @@
 // button is currently sounding so a new play() can silence it first — without this
 // singleton, clicking a second line's button stacked its audio over the first one.
 let stopActive: (() => void) | null = null
+// Monotonic ticket for the most recent play() across all buttons. Each call claims
+// the next value synchronously before its first await, then re-checks after every
+// await that it is still the latest — a call that has been superseded by a later
+// click bails instead of stacking a second voice, since stopActive is registered
+// too late (after the awaits) to pre-empt an in-flight play.
+let playSeq = 0
 </script>
 
 <script setup lang="ts">
@@ -43,14 +49,18 @@ async function play() {
     return
   }
 
-  // Silence any other button that is currently playing so only one voice sounds at
-  // a time (without this, clicking another line stacked its audio over this one).
+  // Silence any button currently playing, then claim this call's ticket — both
+  // synchronously, before any await — so a rapid click on another line pre-empts
+  // us: it bumps playSeq while we await, and the re-checks below make this (now
+  // stale) call bail instead of sounding on top of the newest one.
   stopActive?.()
+  const mySeq = ++playSeq
 
   // Immediate feedback so the click is visibly acknowledged during the async window.
   loading.value = true
   try {
     const result = await api.voiceUrl(props.scenarioId, props.voiceIds[0], props.source || 'sekai.best', props.chara2d)
+    if (mySeq !== playSeq) return
     if (result.url) {
       const audio = new Audio(result.url)
       // talk.volume carries the Unity linear gain multiplier (typically ~1), not a
@@ -67,6 +77,11 @@ async function play() {
       }
       audioRef.value = audio
       await audio.play()
+      if (mySeq !== playSeq) {
+        audio.pause()
+        if (audioRef.value === audio) audioRef.value = null
+        return
+      }
       playing.value = true
       // Claim the singleton so the next play() on any button stops this one first.
       stopActive = stop

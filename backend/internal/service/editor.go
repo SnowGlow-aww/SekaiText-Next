@@ -697,12 +697,14 @@ func (e *EditorService) RemoveLine(row int, talks, dsttalks []model.DstTalk) ([]
 
 	dstidx := talks[row].DstIdx
 
-	// Mark previous row as end
-	if row > 0 {
+	// The preceding row inherits the group tail only when the removed row is
+	// itself the tail; deleting a head/middle sub-line leaves the group's real
+	// End marker further down untouched.
+	if row > 0 && talks[row].End {
 		talks[row-1].End = true
-		if dstidx-1 >= 0 && dstidx-1 < len(dsttalks) {
-			dsttalks[dstidx-1].End = true
-		}
+	}
+	if dstidx > 0 && dstidx < len(dsttalks) && dsttalks[dstidx].End {
+		dsttalks[dstidx-1].End = true
 	}
 
 	talks = append(talks[:row], talks[row+1:]...)

@@ -2,12 +2,16 @@ name: Release Manifest
 
 # Generates app-release.json (consumed by the in-app self-updater) from a GitHub
 # Release's installer assets — version from the tag, download URLs from the
-# release's .dmg/.exe. Reusable: release.yml calls it (workflow_call) right after
-# creating the release, so a tag push is fully automatic; also runnable manually
-# (workflow_dispatch) to backfill the manifest for an existing tag.
+# release's .dmg/.exe.
+#
+# Publishing app-release.json is a MANUAL step — it does NOT happen on tag push.
+# release.yml builds the installers and creates the GitHub Release but never calls
+# this workflow. To publish the manifest, run this by hand (workflow_dispatch with
+# the tag) or commit app-release.json to snowglow-aww/sekaitext-plugins directly.
+# The workflow_call trigger below is kept for a possible future wire-up but is unused.
 # NOTE: deliberately NOT triggered by `on: release` — a release created with
-# GITHUB_TOKEN does not fire release events (GitHub anti-recursion), so the call
-# path from release.yml is explicit instead.
+# GITHUB_TOKEN does not fire release events (GitHub anti-recursion), so there is no
+# automatic trigger here.
 on:
   workflow_call:
     inputs:

@@ -555,6 +555,11 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 			return
 		}
 		em.failStart(&job.Mu, &job.Status, &job.Error, "启动打轴失败: "+err.Error())
+		job.Mu.Lock()
+		pr := job.proc
+		job.proc = nil
+		job.Mu.Unlock()
+		em.recycleProc(pr)
 		return
 	}
 	// A cancel that raced the start send has already marked the job canceled but

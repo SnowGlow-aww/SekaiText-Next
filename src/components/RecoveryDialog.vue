@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { api } from '../api/client'
 import { useEditorStore } from '../stores/editor'
 import { useAppStore } from '../stores/app'
@@ -53,12 +53,27 @@ async function handleRestore() {
 
       // Restore story context and re-load source text
       if (result.storyType) {
-        story.selectedType = result.storyType
-        story.selectedSort = result.storySort || ''
-        story.selectedIndex = result.storyIndex || ''
-        story.selectedChapter = result.storyChapter ?? -1
-        story.selectedSource = result.storySource || 'haruki'
+        const rType = result.storyType
+        const rSort = result.storySort || ''
+        const rIndex = result.storyIndex || ''
+        const rChapter = result.storyChapter ?? -1
         try {
+          story.selectedSource = result.storySource || 'haruki'
+          // StoryNavigator 的 type/sort/index watcher 会把下级选择重置为空，且这个
+          // 重置在 loadStory 的 await 间隙才生效。照 EditorPage.handleOpen 那样逐级
+          // 设置：设上级后 fetch 对应列表并 nextTick 等 watcher 结算，再设下级，最后
+          // 才 loadStory，snapshotDocMeta 读到的才是意图坐标而非被重置的空值。
+          story.selectedType = rType
+          await story.fetchSorts(rType)
+          await nextTick()
+          story.selectedSort = rSort
+          await story.fetchIndex(rType, rSort)
+          await nextTick()
+          story.selectedIndex = rIndex
+          story.selectedIndexLabel = story.indices.find(i => i.value === rIndex)?.label || rIndex
+          await story.fetchChapters(rType, rSort, rIndex)
+          await nextTick()
+          story.selectedChapter = rChapter
           await story.loadStory()
           // 恢复的文档同样绑定身份快照，保存命名不再受之后的全局选择影响。
           editor.docMeta = story.snapshotDocMeta()

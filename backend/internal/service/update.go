@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,8 +60,9 @@ var prefetched sync.Map
 // prefetchTables 已按此值决定探针路径；fetchCDN 遇预取缓存缺失回退到 fetchTable
 // 时必须复用同一结论——否则会无条件借道镜像探针，绕过 probeMirrorTrusted 的判定，
 // 边缘缓存键失配时可能采信过期镜像。UpdateAllFromCDN 起始（预取前）赋值，其后仅在
-// 同一 goroutine 的顺序步骤中被 fetchCDN 读取，无并发访问。
-var probeMirrorTrust bool
+// 同一 goroutine 的顺序步骤中被 fetchCDN 读取；VoiceURL 侧亦会并发触发 fetchCDN，
+// 故以 atomic 同步读写。
+var probeMirrorTrust atomic.Bool
 
 func headETag(url string, timeout time.Duration) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -140,7 +142,7 @@ func fetchCDN(table string) ([]byte, error) {
 	if v, ok := prefetched.LoadAndDelete(table); ok {
 		return v.([]byte), nil
 	}
-	return fetchTable(table, probeMirrorTrust)
+	return fetchTable(table, probeMirrorTrust.Load())
 }
 
 func fetchTable(table string, probeMirror bool) ([]byte, error) {
@@ -757,8 +759,9 @@ func (lm *ListManager) UpdateAllFromCDN(dir string, pt *ProgressTracker) {
 	// 并发预取全部表（探针可信度先做一次锚点交叉校验），后续步骤直接吃缓存。
 	// 校验结论存入 probeMirrorTrust，供 fetchCDN 缓存缺失回退时复用同一判定。
 	pt.Advance("并发下载元数据...")
-	probeMirrorTrust = probeMirrorTrusted()
-	prefetchTables(probeMirrorTrust)
+	trust := probeMirrorTrusted()
+	probeMirrorTrust.Store(trust)
+	prefetchTables(trust)
 
 	for _, step := range steps {
 		pt.Advance("正在更新 " + step.name + "...")

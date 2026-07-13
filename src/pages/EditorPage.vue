@@ -154,6 +154,9 @@ function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
   if (!m) return { path: bound }
   const [, dir, base] = m
   if (!base.startsWith('【')) return { path: bound }
+  // 没有文档身份快照（docMeta）时绝不改名：canonicalFileName 会退回全局 story
+  // 状态，可能算出 untitled 或别的剧情的名字，把文件静默改错——只就地写内容。
+  if (!editor.docMeta) return { path: bound }
   // 托管根目录内连“文件夹”一起跟随规范路径：索引标签修正后（208 → 208 褪せない
   // 今を、彩って）下次保存把文件搬进正确目录，同一活动不再出现两个文件夹；
   // 根目录外（用户另存到别处）只换 basename，不把文件挪走。
@@ -199,7 +202,12 @@ async function writeTxtAutosave() {
     await api.translationSave(target.path, dstTalks, app.saveN, meta)
     if (editor.currentMode !== mode) return
     if (binding) editor.currentFilePath = target.path
-    if (editor.mutationSeq === seq) editor.markSaved()
+    if (editor.mutationSeq === seq) {
+      editor.markSaved()
+      // 正式文件已是最新，作废恢复快照——否则启动时会把这份陈旧快照当作未保存
+      // 更改恢复，盖回真实文件丢译文。只在写成功且内容未过期时清。
+      await api.recoveryClear().catch(() => {})
+    }
   } catch (e) {
     console.warn('[Autosave] 自动保存写入失败', target.path, e) // 静默失败，不打扰编辑
   }
@@ -339,7 +347,7 @@ watch(() => app.searchOpen, (open) => {
   if (open) nextTick(measureSearchAlign)
 })
 
-function setMode(key: number) {
+async function setMode(key: number) {
   const changed = key !== editor.currentMode
   // Drop any pending debounced edit BEFORE swapping mode state: its timer
   // captured a row index for the old mode's arrays, so letting it fire against
@@ -348,11 +356,13 @@ function setMode(key: number) {
   if (changed) workspace.value?.cancelPendingEdit()
   // 冲洗（不是丢弃）待写的 txt 自动保存：那个定时器属于旧模式的编辑，火在切换
   // 之后会按新模式的槽位落盘——旧模式的最后一笔就滞留缓存、新模式凭空建档。
-  // writeTxtAutosave 在首个 await 前快照整套槽位状态，此刻同步调用即绑定旧模式。
+  // 必须 await：writeTxtAutosave 里的就地改名是异步的，改名后才把 currentFilePath
+  // 更新为新路径；不等它就 switchMode，saveModeState 会把已被改走的旧路径快照进
+  // modeCache，切回该模式即 409 回落重建同名孤儿文件。
   if (changed && txtAutosaveTimer) {
     clearTimeout(txtAutosaveTimer)
     txtAutosaveTimer = null
-    void writeTxtAutosave()
+    await writeTxtAutosave().catch(() => {})
   }
   editor.switchMode(key as 0 | 1 | 2)
   app.setEditorMode(key as 0 | 1 | 2)

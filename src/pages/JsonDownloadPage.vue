@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, BookOpen, Download, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
@@ -32,6 +32,14 @@ watch(outputDir, (v) => {
   settings.settings.jsonDownloadDir = v
   if (saveDirTimer) clearTimeout(saveDirTimer)
   saveDirTimer = setTimeout(() => { settings.saveSettings().catch(() => {}) }, 600)
+})
+
+// This page is kept alive, so the ref initializer above only evaluates on first
+// mount. Re-pull the saved directory on each activation so a value that arrived
+// after mount (settings still loading) or changed elsewhere shows up here.
+onActivated(() => {
+  const saved = settings.settings.jsonDownloadDir || ''
+  if (saved !== outputDir.value) outputDir.value = saved
 })
 
 const displayIndices = computed(() => {
