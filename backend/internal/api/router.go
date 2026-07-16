@@ -62,6 +62,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/resolve-label", h.ResolveLabel)
 			r.Post("/download-json", h.DownloadStoryJSON)
 			r.Get("/download-progress", h.DownloadProgress)
+			r.Post("/export-original-txt", h.ExportStoryOriginalTxt)
 		})
 
 		// Translation file operations
@@ -238,6 +239,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Post("/cancel", h.EngineCancel)
 			r.Get("/tasks", h.EngineTasks)                     // 全部任务快照（并行模式任务列表）
 			r.Post("/timing/close", h.EngineTimingClose)       // 关闭任务并释放其引擎进程
+			r.Post("/suppress/close", h.EngineSuppressClose)   // 关闭压制任务并释放其引擎进程（终态卡片移除）
 			r.Post("/aegisub/install", h.EngineAegisubInstall) // 手动安装 Aegisub 同步宏（可指定目录）
 		})
 

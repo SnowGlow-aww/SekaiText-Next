@@ -77,6 +77,8 @@ var (
 	ErrSuppressBusy = errors.New("已有压制任务在进行中（并行模式可同时跑多个）")
 	// 两个 ffmpeg 同时写一个输出文件不会报错但产物必坏（Windows 共享写入），必须拦。
 	ErrSuppressOutputConflict = errors.New("已有压制任务正在输出到同一个文件，请更换输出路径或等其完成")
+
+	ErrSuppressCloseRunning = errors.New("压制任务运行中，请先取消，到达终态后再移除")
 )
 
 // envelope is the union of response + notification fields; "id" presence selects.
@@ -847,6 +849,39 @@ func (em *EngineManager) releaseSuppressProc(job *EngineSuppressJob) {
 	job.proc = nil
 	job.Mu.Unlock()
 	em.recycleProc(pr)
+}
+
+// CloseSuppress 关闭并从列表移除一个「终态」压制任务。此前压制卡片只有「取消」没有「移除」，
+// 已取消/完成/失败的终态卡片只能一直堆着（用户反馈：没有叉掉的键）。
+//
+// running 的任务拒绝移除，不能镜像 CloseTiming 的 kill()：打轴识别是内核进程内的线程，随
+// 进程一起死；压制的 ffmpeg 却是内核的「子进程」，kill()（关 stdin→3s 硬杀）只带走内核——
+// 内核 stdin-EOF 的退出路径不会 Dispose SuppressHandler，ffmpeg 会变孤儿继续满载编码写
+// 输出文件，且任务移出列表后连 StartSuppress 的输出路径冲突检查都拦不住后续任务撞上它。
+// 正确姿势是先「取消」（suppress.stop → 引擎 StopAsync 杀 ffmpeg 进程树），终态后再移除。
+func (em *EngineManager) CloseSuppress(taskID string) error {
+	em.mu.Lock()
+	job, ok := em.suppressJobs[taskID]
+	if !ok {
+		em.mu.Unlock()
+		return fmt.Errorf("task not found")
+	}
+	if job.statusSnapshot() == "running" {
+		em.mu.Unlock()
+		return ErrSuppressCloseRunning
+	}
+	delete(em.suppressJobs, taskID)
+	em.suppressOrder = removeID(em.suppressOrder, taskID)
+	em.mu.Unlock()
+
+	// 终态任务的进程通常早已 releaseSuppressProc 回收(proc=nil)；启动即失败的
+	// 任务可能还挂着活进程，跟修剪路径一样回收当备胎。
+	job.Mu.Lock()
+	pr := job.proc
+	job.proc = nil
+	job.Mu.Unlock()
+	em.recycleProc(pr)
+	return nil
 }
 
 // --- Control ---

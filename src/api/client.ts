@@ -407,6 +407,20 @@ export const api = {
       '/story/download-progress?task=' + encodeURIComponent(taskId),
     ),
 
+  // 导出原文 txt：译文槽位填日语原文，格式与正式翻译档一致（同名 .txt 落输出目录）
+  exportOriginalTxt: (data: {
+    storyType: string
+    sort: string
+    index: string
+    chapter: number
+    source: string
+    outputDir: string
+  }) =>
+    request<{ filePath: string }>('/story/export-original-txt', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   // Assets
   characters: () =>
     request<import('../types/dictionary').CharacterInfo[]>('/assets/characters'),

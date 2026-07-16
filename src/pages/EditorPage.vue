@@ -94,6 +94,15 @@ function scheduleTxtAutosave() {
   if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
   txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
 }
+// 所有 txt 落盘（防抖自动保存/切模式冲写/手动保存前的排空）走同一条串行链：
+// 「就地改名(A→B)+写入」不是原子操作，两路并发时输家的 rename 失败会回落重建
+// 旧名文件——标题改名丢失、还多出一份孤儿档。
+let txtSaveChain: Promise<void> = Promise.resolve()
+function writeTxtAutosave(): Promise<void> {
+  const next = txtSaveChain.then(doWriteTxtAutosave, doWriteTxtAutosave)
+  txtSaveChain = next
+  return next
+}
 watch(() => editor.mutationSeq, scheduleTxtAutosave)
 // 标题译文只改文件名、不 bump mutationSeq，单独监听：已绑定的文档走同一条
 // 防抖去就地改名（见 resolveBoundTarget）；未绑定文档不因改标题而建档。
@@ -169,7 +178,7 @@ function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
   if (want === bound) return { path: bound }
   return { path: want, renameFrom: bound }
 }
-async function writeTxtAutosave() {
+async function doWriteTxtAutosave() {
   if (editor.talks.length === 0 || !isTauri) return
   // 定时器可能在切模式后才触发：进入 await 前把本槽位的一切快照下来，写完回来
   // 若槽位已换人（loadModeState 换掉了整套状态），不得把路径/脏标记写进新模式。
@@ -496,6 +505,11 @@ async function handleSave(saveAs = false) {
   // from a dstTalks that carries the last blurred edit in its fully processed
   // form. Clicking 保存 within 300ms of leaving a field used to race this.
   try { await workspace.value?.flushPendingEdit() } catch { /* raw commit already in arrays */ }
+  // 拆掉在途的自动保存防抖并等已排队的写盘落定：800ms 防抖若在下面的 await 间隙
+  // 触发，会与本次保存并发执行同一个 rename(A→B)——输家回落重建旧名孤儿文件、
+  // 标题改名丢失（setMode 切模式时防的是同一隐患）。
+  if (txtAutosaveTimer) { clearTimeout(txtAutosaveTimer); txtAutosaveTimer = null }
+  await txtSaveChain.catch(() => {})
   const meta = buildSaveMeta()
   // 保存 = 直接写当前文档本体（已打开/已保存过的文件），不再弹对话框重建文件。
   // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。

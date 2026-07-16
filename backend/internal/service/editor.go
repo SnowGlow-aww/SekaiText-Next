@@ -228,6 +228,24 @@ func (e *EditorService) SerializeContent(dsttalks []model.DstTalk, saveN bool) s
 	return result
 }
 
+// SourceTalksAsDst 把解析出的原文行直接当作译文行（「导出原文 txt」用）：对话框
+// 正文按行拆开，首行 Start（序列化出「说话人：」前缀），每行都 End（各占一个物理
+// 行，不做 \N 合并）——与译者既有的 ja-JP 原文稿形状一致，加载器也能按续行对齐。
+func SourceTalksAsDst(src []model.SourceTalk) []model.DstTalk {
+	out := make([]model.DstTalk, 0, len(src))
+	for i, s := range src {
+		switch s.Speaker {
+		case "场景", "左上场景", "选项", "":
+			out = append(out, model.DstTalk{Idx: i + 1, Speaker: s.Speaker, Text: s.Text, Start: true, End: true, Checked: true, Save: true})
+		default:
+			for li, line := range strings.Split(s.Text, "\n") {
+				out = append(out, model.DstTalk{Idx: i + 1, Speaker: s.Speaker, Text: line, Start: li == 0, End: true, Checked: true, Save: true})
+			}
+		}
+	}
+	return out
+}
+
 // CheckLines aligns loaded talks with source talks (handles line mismatches).
 func (e *EditorService) CheckLines(srctalks []model.SourceTalk, loadtalks []model.DstTalk) []model.DstTalk {
 	// Reconcile the LEADING run of scene/option lines with the source.

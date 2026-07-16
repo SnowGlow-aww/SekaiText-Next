@@ -1286,6 +1286,50 @@ func (h *Handler) DownloadStoryJSON(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"taskId": taskID})
 }
 
+// ExportStoryOriginalTxt 一键导出「原文 txt」：把选中章节的剧情 JSON 下到 dataDir 缓存
+// （不占用户输出目录）后解析，译文槽位直接填日文原文，用与正式翻译档同一个序列化器
+// （场景行裸文本+空行分隔、对话行「说话人：」前缀、CRLF）写 <输出目录>/<json同名>.txt。
+// 用一个不带 FlashbackAnalyzer 的裸解析器：闪回注解对纯文本导出无意义，还会级联下载
+// 一堆来源剧本拖慢响应。
+func (h *Handler) ExportStoryOriginalTxt(w http.ResponseWriter, r *http.Request) {
+	var req model.JsonDownloadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.OutputDir == "" {
+		writeError(w, http.StatusBadRequest, "outputDir 必填")
+		return
+	}
+	path := h.lm.GetJsonPath(req.StoryType, req.Sort, req.Index, req.Chapter, req.Source)
+	if path.URL == "" {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("story not found: type=%s index=%s chapter=%d source=%s", req.StoryType, req.Index, req.Chapter, req.Source))
+		return
+	}
+	jsonPath, err := h.dl.DownloadJSON(path.URL, path.FileName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "下载剧情 JSON 失败: "+err.Error())
+		return
+	}
+	resp, err := service.NewJsonLoaderService(nil).ParseFile(jsonPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	content := h.editor.SerializeContent(service.SourceTalksAsDst(resp.SourceTalks), false)
+	name := strings.TrimSuffix(path.FileName, filepath.Ext(path.FileName)) + ".txt"
+	outPath := filepath.Join(req.OutputDir, name)
+	if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
+		return
+	}
+	if err := writeFileAtomic(outPath, []byte(content), 0644); err != nil {
+		writeError(w, http.StatusInternalServerError, "file write failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"filePath": outPath})
+}
+
 func (h *Handler) DownloadProgress(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {

@@ -500,6 +500,28 @@ func (h *Handler) EngineTimingClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
 }
 
+// EngineSuppressClose 关闭并移除一个压制任务（含已取消/完成/失败的终态卡片），释放其内核进程。
+func (h *Handler) EngineSuppressClose(w http.ResponseWriter, r *http.Request) {
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "内核未安装")
+		return
+	}
+	taskID := r.URL.Query().Get("task")
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task 必填")
+		return
+	}
+	if err := h.engine.CloseSuppress(taskID); err != nil {
+		if errors.Is(err, service.ErrSuppressCloseRunning) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
 // EngineAegisubInstall 手动把同步宏装进指定（或自动探测的）Aegisub autoload 目录。
 // 便携版 Aegisub 的配置跟着 exe 走、自动探测不到，用户浏览选一次目录即可。
 func (h *Handler) EngineAegisubInstall(w http.ResponseWriter, r *http.Request) {

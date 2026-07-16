@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, BookOpen, Download, FolderOpen } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, Download, FileText, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
 import { useSettingsStore } from '../stores/settings'
 import { api } from '../api/client'
@@ -151,6 +151,53 @@ async function handleDownload() {
   }
   await downloadOne(coord, story.selectedChapter)
 }
+
+// 一键导出原文 txt：译文槽位填日语原文，格式与正常工作流翻译后的导出一致
+// （场景行+空行、对话行「说话人：」前缀、框内换行为独立续行、CRLF），文件名
+// 与剧情 json 同名（.txt 后缀），落到同一个输出目录。选择语义与下载一致：
+// 未选章节 = 导出该索引下全部章节。
+async function exportTxtOne(coord: DownloadCoord, chapter: number) {
+  const taskId = dlFloat.add(coord.index + ' ch' + chapter + ' 原文txt')
+  dlFloat.start(taskId)
+  try {
+    const { filePath } = await api.exportOriginalTxt({
+      storyType: coord.storyType,
+      sort: coord.sort,
+      index: coord.index,
+      chapter,
+      source: 'haruki',
+      outputDir: outputDir.value,
+    })
+    dlFloat.done(taskId, filePath)
+  } catch (e: any) {
+    dlFloat.fail(taskId, e.message || '导出失败')
+  }
+}
+
+async function handleExportTxt() {
+  if (!story.selectedType || !story.selectedIndex || !outputDir.value) {
+    toast.show('请填写所有字段', 'warn')
+    return
+  }
+  const coord: DownloadCoord = {
+    storyType: story.selectedType,
+    sort: story.selectedSort,
+    index: story.selectedIndex,
+  }
+  if (story.selectedChapter < 0) {
+    const chapters = story.chapters.slice()
+    if (!chapters.length) {
+      toast.show('该索引没有可导出的章节', 'warn')
+      return
+    }
+    toast.show(`未选择章节，将导出全部 ${chapters.length} 章的原文 txt`, 'info')
+    for (const c of chapters) {
+      await exportTxtOne(coord, c.number)
+    }
+    return
+  }
+  await exportTxtOne(coord, story.selectedChapter)
+}
 </script>
 
 <template>
@@ -236,6 +283,9 @@ async function handleDownload() {
             />
             <button v-if="isTauri" @click="browseOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
               <FolderOpen :size="15" /> 浏览
+            </button>
+            <button @click="handleExportTxt" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap" title="译文槽位填日语原文，格式同正式翻译档">
+              <FileText :size="15" /> 导出TXT
             </button>
             <button @click="handleDownload" class="btn btn-sm btn-brand whitespace-nowrap">
               <Download :size="15" /> 下载
