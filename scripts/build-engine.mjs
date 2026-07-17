@@ -42,10 +42,13 @@ if (!ffmpegBin || !existsSync(ffmpegBin)) {
 rmSync(outDir, { recursive: true, force: true })
 mkdirSync(outDir, { recursive: true })
 
-// engine binary + native libs (skip .pdb debug symbols)
+// engine binary + native libs (skip .pdb debug symbols) + font licenses.
+// 字体许可证（OFL 要求随字体分发）在引擎发布根、不在 fonts/ 里——libass 会把
+// fontsdir 目录下每个文件都当字体加载，txt 进 fonts/ 会在每份压制日志里打
+// "Error opening memory font" 噪音。白名单拷贝必须显式带上它（5.8.8 曾漏掉）。
 let copied = 0
 for (const f of readdirSync(engineSrc)) {
-  if (f === engExe || f.endsWith(libExt)) {
+  if (f === engExe || f.endsWith(libExt) || /^LICENSE.*\.txt$/i.test(f)) {
     copyFileSync(join(engineSrc, f), join(outDir, f))
     copied++
   }
