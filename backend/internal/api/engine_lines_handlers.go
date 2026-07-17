@@ -15,6 +15,9 @@ import (
 	"sekaitext/backend/internal/service"
 )
 
+// 干净的 ASCII 资产名（语音文件夹候选的可信判据）：坏日文 ScenarioId 匹配不上。
+var cleanAssetIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
 // 行列表 / 分句编辑 / Aegisub 同步。全部绑定到具体 taskId（同 export 的语义），
 // 每个任务独占一个引擎进程：任务被关闭/替换后这些端点 404，杜绝编辑到别的任务。
 
@@ -299,10 +302,19 @@ func (h *Handler) EngineTimingLineVoicePauses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 语音文件夹名 = 剧本资源文件名（JSON 内的 ScenarioId 可能是坏日文名，
-	// 资源文件名才可靠——卡面语音修复时验证过的口径）
-	scenarioID := strings.TrimSuffix(filepath.Base(scriptPath), filepath.Ext(scriptPath))
-	info, err := h.voiceAlign.Analyze(scenarioID, voice.VoiceID, voice.Character2dId)
+	// 语音文件夹名候选（按可信度排序，Analyze 逐个尝试）：
+	//   1. 剧本 JSON 自带的 ScenarioId——仅当是干净的 ASCII 资产名才可信（老卡面存在
+	//      "★4冬弥・泉_前半" 这类坏日文名）。festival/活动/初始卡面的本地文件名是
+	//      app 合成的展示名（festival_020_nene_01），真实语音文件夹是资源名
+	//      （015054_nene01），只按文件名拼必 404——真机 birth2026-nene 实锤。
+	//   2. 本地文件名兜底：活动/主线的文件名与资源名一致，且坏 ScenarioId 时别无他选。
+	fileBase := strings.TrimSuffix(filepath.Base(scriptPath), filepath.Ext(scriptPath))
+	var scenarioIDs []string
+	if cleanAssetIDRe.MatchString(story.ScenarioID) {
+		scenarioIDs = append(scenarioIDs, story.ScenarioID)
+	}
+	scenarioIDs = append(scenarioIDs, fileBase)
+	info, err := h.voiceAlign.Analyze(scenarioIDs, voice.VoiceID, voice.Character2dId)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "语音获取/分析失败: "+err.Error())
 		return

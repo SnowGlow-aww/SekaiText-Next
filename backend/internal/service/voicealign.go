@@ -65,9 +65,24 @@ func voiceRelPath(scenarioID, voiceID string, chara2d int) string {
 }
 
 // fetch 下载语音到会话缓存（已存在则直接复用），返回本地路径。
-func (va *VoiceAligner) fetch(scenarioID, voiceID string, chara2d int) (string, error) {
-	rel := voiceRelPath(scenarioID, voiceID, chara2d)
-	if rel == "" {
+// scenarioIDs 是语音文件夹名的候选列表（按可信度排序，逐个尝试）：剧本 JSON 自带的
+// ScenarioId 与本地文件名可能不同（festival/活动/初始卡面的本地名是 app 合成的展示名，
+// 如 festival_020_nene_01，真实资源文件夹是 015054_nene01——单用文件名必 404）。
+func (va *VoiceAligner) fetch(scenarioIDs []string, voiceID string, chara2d int) (string, error) {
+	var rels []string
+	seenRel := map[string]bool{}
+	for _, sid := range scenarioIDs {
+		if sid == "" {
+			continue
+		}
+		rel := voiceRelPath(sid, voiceID, chara2d)
+		if rel == "" || seenRel[rel] {
+			continue
+		}
+		seenRel[rel] = true
+		rels = append(rels, rel)
+	}
+	if len(rels) == 0 {
 		return "", errors.New("无法解析该语音的下载路径")
 	}
 	if err := os.MkdirAll(va.cacheDir, 0755); err != nil {
@@ -85,35 +100,37 @@ func (va *VoiceAligner) fetch(scenarioID, voiceID string, chara2d int) (string, 
 	}
 
 	var lastErr error
-	for _, base := range voiceBases {
-		resp, err := va.client.Get(base + rel)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
+	for _, rel := range rels {
+		for _, base := range voiceBases {
+			resp, err := va.client.Get(base + rel)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				lastErr = fmt.Errorf("HTTP %d (%s)", resp.StatusCode, base+rel)
+				continue
+			}
+			tmp := dst + ".part"
+			f, err := os.Create(tmp)
+			if err != nil {
+				resp.Body.Close()
+				return "", err
+			}
+			_, cerr := io.Copy(f, resp.Body)
 			resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d (%s)", resp.StatusCode, base+rel)
-			continue
+			f.Close()
+			if cerr != nil {
+				_ = os.Remove(tmp)
+				lastErr = cerr
+				continue
+			}
+			if err := os.Rename(tmp, dst); err != nil {
+				return "", err
+			}
+			return dst, nil
 		}
-		tmp := dst + ".part"
-		f, err := os.Create(tmp)
-		if err != nil {
-			resp.Body.Close()
-			return "", err
-		}
-		_, cerr := io.Copy(f, resp.Body)
-		resp.Body.Close()
-		f.Close()
-		if cerr != nil {
-			_ = os.Remove(tmp)
-			lastErr = cerr
-			continue
-		}
-		if err := os.Rename(tmp, dst); err != nil {
-			return "", err
-		}
-		return dst, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("语音源均不可达")
@@ -141,14 +158,15 @@ var (
 )
 
 // Analyze 下载并分析一段语音，返回总时长与语句间停顿区间。
-func (va *VoiceAligner) Analyze(scenarioID, voiceID string, chara2d int) (*VoiceAlignInfo, error) {
+// scenarioIDs 语义见 fetch：语音文件夹名候选列表，按序尝试。
+func (va *VoiceAligner) Analyze(scenarioIDs []string, voiceID string, chara2d int) (*VoiceAlignInfo, error) {
 	if va.ffmpegPath == "" {
 		return nil, errors.New("未配置 ffmpeg，无法分析语音")
 	}
 	if _, err := os.Stat(va.ffmpegPath); err != nil {
 		return nil, errors.New("ffmpeg 不存在: " + va.ffmpegPath)
 	}
-	audio, err := va.fetch(scenarioID, voiceID, chara2d)
+	audio, err := va.fetch(scenarioIDs, voiceID, chara2d)
 	if err != nil {
 		return nil, err
 	}
