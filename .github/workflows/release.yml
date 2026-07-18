@@ -50,10 +50,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: SnowGlow-aww/SekaiTools-Avalonia
-          # The engine (NDJSON sidecar + recognition-100% fix) lives on this branch,
-          # NOT main. For a fully reproducible release, pin to a commit SHA instead
-          # (e.g. ref: 116a419) and bump it when the engine is updated.
-          ref: feat/engine-ipc-for-sekaitext
+          # Pin the exact engine revision used by this app release. Moving-branch checkouts
+          # can silently bundle a different sidecar when a rerun happens days later.
+          ref: 6ed8009247814911abbed39a4105241e778a27d6
           path: engine-src
 
       - uses: actions/setup-node@v4
@@ -217,4 +216,3 @@ jobs:
             **/*.dmg
             **/*.exe
             **/*.msi
-
