@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SekaiText Next",
-  "version": "5.8.10",
+  "version": "5.8.11",
   "identifier": "com.snowglow-aww.sekaitext-next",
   "build": {
     "frontendDist": "../dist",
