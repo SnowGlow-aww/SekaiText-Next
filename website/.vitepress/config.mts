@@ -7,14 +7,14 @@ const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8'),
 )
 
-// GH Pages 主站用 '/'；OSS 镜像构建时 SITE_BASE=/site/
+// GH Pages 主站用 '/'；OSS 官网构建时 SITE_BASE=/web/
 const base = process.env.SITE_BASE || '/'
 
 export default defineConfig({
   lang: 'zh-CN',
   title: 'SekaiText Next',
   description:
-    'Project Sekai 剧情翻译一站式工作台 — 翻译 · 校对 · 自动打轴 · 一键压制 · Live2D 剧情播放 · 术语库协作',
+    '为 Project Sekai 剧情翻译打造的桌面工作台：翻译、校对、自动打轴、ASS 导出与成片压制。',
   base,
   head: [
     ['link', { rel: 'icon', type: 'image/png', sizes: '32x32', href: `${base}favicon-32.png` }],

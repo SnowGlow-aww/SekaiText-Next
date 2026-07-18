@@ -6,549 +6,1090 @@ import DemoEditor from './DemoEditor.vue'
 declare const __APP_VERSION__: string
 const version = __APP_VERSION__
 
-// 每张功能卡一个主题色：图标底、悬停描边与阴影都跟着走
-const features: {
-  icon: string; title: string; desc: string; accent: string
-  tag?: string; link?: string; more?: string
-}[] = [
+const workflow = [
   {
-    icon: '📝',
-    title: '剧情翻译编辑器',
-    desc: '原文 / 译文双栏对照，活动·卡面·主线剧情自动载入，支持语音播放、\\N 换行控制与多格式导出。',
+    number: '01',
+    phase: '译准',
+    title: '在语境里完成翻译',
+    desc: '活动、卡面与主线剧情直接载入。逐句听语音、看演出，在翻译、校对与合意模式之间把译稿做准。',
+    points: ['剧情索引', '逐句语音', 'Live2D 对照'],
+    link: '/guide/editor.html',
     accent: '#39c5bb',
   },
   {
-    icon: '⚡',
-    title: '自动打轴',
-    tag: '插件',
-    desc: '内置 SekaiCoreEngine 识别录屏画面，自动对齐每句台词生成字幕时间轴，可逐行微调并与 Aegisub 双向同步。',
+    number: '02',
+    phase: '打稳',
+    title: '让时间轴跟着台词走',
+    desc: '识别录屏中的对话画面，自动生成逐句时间轴；长句可按语气和停顿分轴，并保留 Aegisub 精修空间。',
+    points: ['自动识别', '分句微调', 'Aegisub 双向同步'],
+    link: '/guide/autotiming.html',
     accent: '#6fa8ef',
   },
   {
-    icon: '🎬',
-    title: '一键压制',
-    tag: '插件',
-    desc: '集成 FFmpeg + libass，内置团队字幕样式，从翻译稿到成片视频一条龙。',
-    accent: '#f5a623',
-  },
-  {
-    icon: '📚',
-    title: '术语库与协作',
-    desc: '术语 / 人称表云端同步，支持提案与审核，保障用词一致性。',
-    accent: '#8c79ff',
-  },
-  {
-    icon: '🧩',
-    title: '插件市场',
-    desc: '热加载插件系统，功能按需扩展；插件市场一键安装、自动更新，全程 CDN 加速。',
-    accent: '#4ade80',
-    // 卡片整体可点，跳到全部插件一览（含主页未展示的 Live2D 等）
-    link: '/plugins.html',
-    more: '浏览全部插件 →',
+    number: '03',
+    phase: '交付',
+    title: '从 ASS 一路做到成片',
+    desc: '团队样式、地点横幅与 staff 信息随导出自动应用；需要成片时，直接调用内置 FFmpeg 完成压制。',
+    points: ['团队样式', 'ASS 导出', '一键压制'],
+    link: '/guide/autotiming.html',
+    accent: '#ff69b4',
   },
 ]
 
-const steps = [
-  { n: '01', color: '#39c5bb', title: '下载安装', desc: '支持 macOS (Apple Silicon) 与 Windows (x64)，开箱即用，无需配置环境。' },
-  { n: '02', color: '#6fa8ef', title: '选择剧情', desc: '内置剧情索引，选择活动 / 卡面 / 主线，原文与语音自动拉取。' },
-  { n: '03', color: '#ff69b4', title: '翻译到出片', desc: '翻译 → 校对 → 自动打轴 → 一键压制，一条流水线全部在应用内完成。' },
+const continuities = [
+  {
+    label: 'Aegisub',
+    title: '精修习惯不用丢',
+    desc: '双向同步译文与分句时间；在 Aegisub 里改完，轴机能继续接着做。',
+    link: '/guide/autotiming.html',
+  },
+  {
+    label: '本地文稿',
+    title: '每一次编辑都有落点',
+    desc: '文稿自动建档、自动保存；打轴微调另有 autosave ASS，意外退出也不必从头来。',
+    link: '/guide/editor.html',
+  },
+  {
+    label: '团队协作',
+    title: '用词有依据，也能复核',
+    desc: '术语与人称表集中管理，支持云端提案、审核和本地备份。',
+    link: '/guide/glossary.html',
+  },
+  {
+    label: '插件系统',
+    title: '需要什么，再安装什么',
+    desc: '自动打轴、压制与 Live2D 播放按需启用；插件可在应用内安装和更新。',
+    link: '/plugins.html',
+  },
 ]
 </script>
 
 <template>
   <div class="home">
-    <!-- Hero -->
     <section class="hero">
-      <div class="hero-bg" aria-hidden="true">
-        <div class="blob blob-teal" />
-        <div class="blob blob-pink" />
-        <div class="blob blob-blue" />
-      </div>
-      <div class="container hero-inner">
-        <img class="hero-icon" :src="withBase('/app-icon.png')" alt="SekaiText Next" />
-        <div class="hero-badge-row">
+      <div class="hero-atmosphere" aria-hidden="true" />
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <div class="hero-brand">
+            <img :src="withBase('/app-icon.png')" alt="" />
+            <span>SekaiText Next</span>
+          </div>
+
           <a
-            class="hero-badge"
+            class="release-link"
             href="https://github.com/SnowGlow-aww/SekaiText-Next/releases"
             target="_blank"
             rel="noreferrer"
           >
-            <span class="hero-badge-dot" />v{{ version }} 现已发布<span class="hero-badge-link">更新日志 →</span>
+            <span class="release-dot" />
+            v{{ version }}
+            <span class="release-separator">·</span>
+            查看更新内容
+            <span aria-hidden="true">↗</span>
           </a>
-        </div>
-        <h1 class="hero-title st-gradient-text">SekaiText Next</h1>
-        <p class="hero-tagline">「プロジェクトセカイ」剧情翻译一站式工作台</p>
-        <p class="hero-sub">翻译 · 校对 · 自动打轴 · 一键压制 · 术语库协作</p>
-        <DownloadButtons />
 
-        <!-- 在线体验编辑器 -->
-        <div class="shot-glow">
-          <div class="shot-frame">
-            <div class="shot-chrome">
-              <span class="dot dot-r" /><span class="dot dot-y" /><span class="dot dot-g" />
-              <span class="shot-title">SekaiText Next — 在线体验</span>
-              <span class="shot-live"><span class="shot-live-dot" />可交互</span>
-            </div>
-            <DemoEditor />
+          <h1>
+            从日文原文，<br />
+            <span class="st-gradient-text">到字幕成片</span>
+          </h1>
+          <p class="hero-lede">
+            把剧情载入、翻译校对、自动打轴和压制串成一条工作流。
+            少搬几次文件，把时间留给译文和节奏。
+          </p>
+          <ul class="hero-facts" aria-label="产品信息">
+            <li>活动 / 卡面 / 主线剧情</li>
+            <li>macOS / Windows</li>
+            <li>MIT 开源</li>
+          </ul>
+          <DownloadButtons align="start" />
+        </div>
+
+        <div class="flow-board" aria-label="从剧情原文到成片的工作流程">
+          <div class="flow-board-head">
+            <span>一篇剧情的完整路径</span>
+            <span class="flow-board-status">同一项目内完成</span>
           </div>
+          <ol>
+            <li>
+              <span class="flow-number">01</span>
+              <span>
+                <strong>载入剧情</strong>
+                <small>原文 · 语音 · 演出</small>
+              </span>
+            </li>
+            <li>
+              <span class="flow-number">02</span>
+              <span>
+                <strong>完成译稿</strong>
+                <small>翻译 · 校对 · 合意</small>
+              </span>
+            </li>
+            <li>
+              <span class="flow-number">03</span>
+              <span>
+                <strong>生成时间轴</strong>
+                <small>自动识别 · 分句 · 精修</small>
+              </span>
+            </li>
+            <li>
+              <span class="flow-number">04</span>
+              <span>
+                <strong>导出与压制</strong>
+                <small>ASS · Aegisub · 成片</small>
+              </span>
+            </li>
+          </ol>
+          <p>每一步都保留可编辑文件，不把工作锁在应用里。</p>
         </div>
       </div>
     </section>
 
-    <!-- Features -->
-    <section class="section">
+    <section class="demo-section">
       <div class="container">
-        <h2 class="section-title">全新重构，由 <span class="accent-text">Tauri</span> 驱动</h2>
-        <p class="section-sub">为剧情翻译工作流打造的一站式解决方案</p>
-        <div class="feature-grid">
-          <component
-            :is="f.link ? 'a' : 'div'"
-            v-for="f in features"
-            :key="f.title"
-            :href="f.link ? withBase(f.link) : undefined"
-            class="feature-card"
-            :style="{ '--fc': f.accent }"
-          >
-            <div class="feature-icon">{{ f.icon }}</div>
-            <h3 class="feature-title">
-              {{ f.title }}<span v-if="f.tag" class="feature-tag">{{ f.tag }}</span>
-            </h3>
-            <p class="feature-desc">{{ f.desc }}</p>
-            <span v-if="f.more" class="feature-more">{{ f.more }}</span>
-          </component>
-        </div>
-      </div>
-    </section>
-
-    <!-- Steps -->
-    <section class="section section-alt">
-      <div class="container">
-        <h2 class="section-title">三步上手</h2>
-        <div class="steps">
-          <div v-for="s in steps" :key="s.n" class="step">
-            <div class="step-n" :style="{ color: s.color }">{{ s.n }}</div>
-            <h3 class="step-title">{{ s.title }}</h3>
-            <p class="step-desc">{{ s.desc }}</p>
+        <div class="section-heading demo-heading">
+          <div>
+            <p class="section-kicker">可交互体验</p>
+            <h2>先动手试一行</h2>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- CTA -->
-    <section class="section cta">
-      <div class="container">
-        <div class="cta-card">
-          <h2 class="section-title">现在开始</h2>
-          <p class="section-sub">免费、开源（MIT），内置自动更新，国内下载全程 CDN 加速。</p>
-          <DownloadButtons />
-          <p class="cta-links">
-            <a :href="withBase('/guide/index.html')">📖 阅读使用指南</a>
-            <a href="https://github.com/SnowGlow-aww/SekaiText-Next" target="_blank" rel="noreferrer">⭐ GitHub 仓库</a>
+          <p>
+            下面不是静态截图。切换翻译模式、编辑译文、查看校对差异，
+            直接感受 SekaiText 的工作方式。
           </p>
         </div>
+
+        <div class="shot-frame">
+          <div class="shot-chrome">
+            <span class="window-dots" aria-hidden="true">
+              <i /><i /><i />
+            </span>
+            <span class="shot-title">SekaiText Next · 编辑器体验</span>
+            <span class="shot-live"><span />可以操作</span>
+          </div>
+          <DemoEditor />
+        </div>
       </div>
     </section>
 
-    <!-- Credits -->
-    <section class="credits">
+    <section class="workflow-section">
       <div class="container">
-        <p>
-          创意来源 <a href="https://github.com/Is14w/SekaiText" target="_blank" rel="noreferrer">Is14w/SekaiText</a> ·
-          由 <a href="https://github.com/SnowGlow-aww" target="_blank" rel="noreferrer">雪莹ちゃん</a> 重制维护
-        </p>
-        <p>
-          感谢 <a href="https://github.com/Cinea4678/" target="_blank" rel="noreferrer">Cinea</a> 提供的技术/账户/服务器支持 ·
-          感谢 <a href="https://github.com/MejiroRina" target="_blank" rel="noreferrer">星雲希凪</a> 提供的 UI 优化
-        </p>
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">从原文到成片</p>
+            <h2>一条工作流，接住每一次交接</h2>
+          </div>
+          <p>
+            原文、译稿、时间轴和成片不再散落在不同工具里；
+            需要逐帧精修时，也随时接得上 Aegisub。
+          </p>
+        </div>
+
+        <div class="workflow-grid">
+          <a
+            v-for="item in workflow"
+            :key="item.number"
+            :href="withBase(item.link)"
+            class="workflow-item"
+            :style="{ '--item-accent': item.accent }"
+          >
+            <div class="workflow-meta">
+              <span>{{ item.number }}</span>
+              <span>{{ item.phase }}</span>
+            </div>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.desc }}</p>
+            <ul>
+              <li v-for="point in item.points" :key="point">{{ point }}</li>
+            </ul>
+            <span class="workflow-more">查看使用方式 <span aria-hidden="true">→</span></span>
+          </a>
+        </div>
       </div>
     </section>
+
+    <section class="continuity-section">
+      <div class="container">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">融入现有习惯</p>
+            <h2>保留熟悉的工具，只减少重复劳动</h2>
+          </div>
+          <p>
+            SekaiText 不要求团队换掉所有做法。它负责整理上下游，
+            让已有工具、文件与协作方式更顺畅地接在一起。
+          </p>
+        </div>
+
+        <div class="continuity-list">
+          <a
+            v-for="(item, index) in continuities"
+            :key="item.title"
+            :href="withBase(item.link)"
+            class="continuity-row"
+          >
+            <span class="continuity-index">{{ String(index + 1).padStart(2, '0') }}</span>
+            <span class="continuity-body">
+              <small>{{ item.label }}</small>
+              <strong>{{ item.title }}</strong>
+              <span>{{ item.desc }}</span>
+            </span>
+            <span class="continuity-arrow" aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-section">
+      <div class="container">
+        <div class="cta-card">
+          <p class="section-kicker">准备好了</p>
+          <h2>下一篇剧情，从这里开始</h2>
+          <p class="cta-copy">
+            SekaiText Next 免费开源。安装主程序后，再按项目需要添加自动打轴、压制或 Live2D 插件。
+          </p>
+          <DownloadButtons compact />
+          <div class="cta-links">
+            <a :href="withBase('/guide/getting-started.html')">查看安装说明 <span aria-hidden="true">→</span></a>
+            <a href="https://github.com/SnowGlow-aww/SekaiText-Next" target="_blank" rel="noreferrer">
+              在 GitHub 查看源码 <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="credits">
+      <div class="container">
+        <p>
+          SekaiText Next 延续
+          <a href="https://github.com/Is14w/SekaiText" target="_blank" rel="noreferrer">Is14w/SekaiText</a>
+          的创意，由
+          <a href="https://github.com/SnowGlow-aww" target="_blank" rel="noreferrer">雪莹ちゃん</a>
+          重制并维护。
+        </p>
+        <p>
+          感谢
+          <a href="https://github.com/Cinea4678/" target="_blank" rel="noreferrer">Cinea</a>
+          提供技术与基础设施支持，也感谢
+          <a href="https://github.com/MejiroRina" target="_blank" rel="noreferrer">星雲希凪</a>
+          参与界面优化。
+        </p>
+      </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.container {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 0 24px;
+.home {
+  overflow: clip;
 }
 
-/* ---------- Hero ---------- */
+.container {
+  width: min(1160px, calc(100% - 48px));
+  margin: 0 auto;
+}
+
 .hero {
   position: relative;
-  overflow: hidden;
-  padding: 80px 0 72px;
-  text-align: center;
+  isolation: isolate;
+  padding: 96px 0 104px;
 }
-.hero-bg {
+
+.hero-atmosphere {
   position: absolute;
+  z-index: -1;
   inset: 0;
-  pointer-events: none;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 8% 8%, rgba(57, 197, 187, 0.17), transparent 34%),
+    radial-gradient(circle at 92% 20%, rgba(255, 105, 180, 0.12), transparent 30%);
 }
-.blob {
+
+.hero-atmosphere::after {
+  content: '';
   position: absolute;
+  width: 560px;
+  height: 560px;
+  right: 7%;
+  top: 4%;
+  border: 1px solid color-mix(in srgb, var(--st-teal) 18%, transparent);
   border-radius: 50%;
-  filter: blur(90px);
-  opacity: 0.3;
+  box-shadow:
+    0 0 0 86px color-mix(in srgb, var(--st-teal) 4%, transparent),
+    0 0 0 172px color-mix(in srgb, var(--st-pink) 3%, transparent);
+  opacity: 0.8;
 }
-.dark .blob {
-  opacity: 0.2;
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  align-items: center;
+  gap: clamp(56px, 8vw, 110px);
 }
-.blob-teal {
-  width: 480px;
-  height: 480px;
-  background: #39c5bb;
-  top: -180px;
-  left: -120px;
+
+.hero-copy {
+  min-width: 0;
 }
-.blob-pink {
-  width: 420px;
-  height: 420px;
-  background: #ff69b4;
-  top: -120px;
-  right: -100px;
-}
-.blob-blue {
-  width: 380px;
-  height: 380px;
-  background: #6fa8ef;
-  bottom: -220px;
-  left: 40%;
-}
-.hero-inner {
-  position: relative;
-}
-.hero-icon {
-  width: 108px;
-  height: 108px;
-  border-radius: 25px;
-  box-shadow: 0 16px 40px rgba(57, 197, 187, 0.35);
-  margin: 0 auto 20px;
-  animation: float 5s ease-in-out infinite;
-}
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-/* 版本徽章：独占一行居中（hero-title 是 inline-block，直接相邻会挤到同一行） */
-.hero-badge-row {
-  margin-bottom: 14px;
-}
-.hero-badge {
+
+.hero-brand {
   display: inline-flex;
   align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.hero-brand img {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  box-shadow: 0 10px 26px rgba(57, 197, 187, 0.22);
+}
+
+.release-link {
+  display: flex;
+  width: fit-content;
+  align-items: center;
   gap: 7px;
-  padding: 5px 14px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--st-teal) 35%, var(--vp-c-divider));
-  background: color-mix(in srgb, var(--st-teal) 7%, var(--vp-c-bg));
-  font-size: 12.5px;
-  font-weight: 500;
+  margin-bottom: 18px;
   color: var(--vp-c-text-2);
+  font-size: 13px;
+  font-weight: 550;
   text-decoration: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.hero-badge:hover {
-  border-color: var(--st-teal);
-  box-shadow: 0 4px 16px rgba(57, 197, 187, 0.2);
+
+.release-link:hover {
+  color: var(--vp-c-brand-1);
 }
-.hero-badge-dot {
+
+.release-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--st-teal);
+  box-shadow: 0 0 0 4px rgba(57, 197, 187, 0.13);
+}
+
+.release-separator {
+  color: var(--vp-c-divider);
+}
+
+.hero h1 {
+  max-width: 720px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  font-size: clamp(50px, 6.3vw, 80px);
+  font-weight: 780;
+  letter-spacing: -0.045em;
+  line-height: 1.04;
+  text-wrap: balance;
+}
+
+.hero-lede {
+  max-width: 620px;
+  margin: 28px 0 20px;
+  color: var(--vp-c-text-2);
+  font-size: clamp(17px, 2vw, 20px);
+  line-height: 1.8;
+  text-wrap: pretty;
+}
+
+.hero-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0 0 30px;
+  padding: 0;
+  list-style: none;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+}
+
+.hero-facts li {
+  position: relative;
+}
+
+.hero-facts li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -13px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--vp-c-divider);
+}
+
+.flow-board {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--st-teal) 24%, var(--vp-c-divider));
+  border-radius: 28px;
+  background:
+    linear-gradient(150deg, color-mix(in srgb, var(--st-teal) 8%, var(--vp-c-bg)) 0%, var(--vp-c-bg-soft) 42%),
+    var(--vp-c-bg-soft);
+  box-shadow: 0 28px 80px rgba(11, 18, 29, 0.14);
+}
+
+.dark .flow-board {
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.42);
+}
+
+.flow-board::before {
+  content: '';
+  position: absolute;
+  top: -90px;
+  right: -60px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  border: 42px solid color-mix(in srgb, var(--st-pink) 7%, transparent);
+  pointer-events: none;
+}
+
+.flow-board-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.flow-board-status {
+  color: var(--vp-c-brand-1);
+  font-weight: 550;
+}
+
+.flow-board ol {
+  position: relative;
+  margin: 0;
+  padding: 6px 24px;
+  list-style: none;
+}
+
+.flow-board ol::before {
+  content: '';
+  position: absolute;
+  top: 34px;
+  bottom: 34px;
+  left: 42px;
+  width: 1px;
+  background: var(--st-gradient);
+  opacity: 0.65;
+}
+
+.flow-board li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  align-items: center;
+  gap: 14px;
+  min-height: 76px;
+  border-bottom: 1px solid color-mix(in srgb, var(--vp-c-divider) 72%, transparent);
+}
+
+.flow-board li:last-child {
+  border-bottom: 0;
+}
+
+.flow-number {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--st-teal) 25%, var(--vp-c-divider));
+  border-radius: 50%;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-board strong,
+.flow-board small {
+  display: block;
+}
+
+.flow-board strong {
+  margin-bottom: 4px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.flow-board small {
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+}
+
+.flow-board > p {
+  margin: 0;
+  padding: 18px 24px 20px;
+  border-top: 1px solid var(--vp-c-divider);
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.demo-section {
+  padding: 92px 0 112px;
+  background: var(--vp-c-bg-soft);
+}
+
+.section-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 440px);
+  align-items: end;
+  gap: 48px;
+  margin-bottom: 50px;
+}
+
+.section-kicker {
+  margin: 0 0 12px;
+  color: var(--vp-c-brand-1);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+
+.section-heading h2,
+.cta-card h2 {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  color: var(--vp-c-text-1);
+  font-size: clamp(31px, 4vw, 46px);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+  text-wrap: balance;
+}
+
+.section-heading > p {
+  margin: 0;
+  color: var(--vp-c-text-2);
+  font-size: 15px;
+  line-height: 1.85;
+  text-wrap: pretty;
+}
+
+.shot-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--st-teal) 18%, var(--vp-c-divider));
+  border-radius: 18px;
+  background: var(--vp-c-bg);
+  box-shadow: 0 30px 90px rgba(11, 18, 29, 0.17);
+}
+
+.dark .shot-frame {
+  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.48);
+}
+
+.shot-chrome {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  background: color-mix(in srgb, var(--vp-c-bg-soft) 84%, transparent);
+}
+
+.window-dots {
+  display: flex;
+  gap: 7px;
+}
+
+.window-dots i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vp-c-divider);
+}
+
+.window-dots i:first-child {
+  background: #ff605c;
+}
+
+.window-dots i:nth-child(2) {
+  background: #ffbd44;
+}
+
+.window-dots i:nth-child(3) {
+  background: #00ca4e;
+}
+
+.shot-title {
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+}
+
+.shot-live {
+  display: inline-flex;
+  justify-self: end;
+  align-items: center;
+  gap: 6px;
+  color: var(--vp-c-brand-1);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.shot-live > span {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--st-teal);
-  box-shadow: 0 0 0 3px rgba(57, 197, 187, 0.2);
-}
-.hero-badge-link {
-  color: var(--vp-c-brand-1);
-  font-weight: 600;
-}
-.hero-title {
-  font-size: clamp(40px, 7vw, 64px);
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
-  margin: 0 0 10px;
-}
-.hero-tagline {
-  font-size: clamp(18px, 3vw, 24px);
-  font-weight: 600;
-  color: var(--vp-c-text-1);
-  margin: 0 0 8px;
-}
-.hero-sub {
-  font-size: 15px;
-  color: var(--vp-c-text-2);
-  margin: 0 0 32px;
+  box-shadow: 0 0 0 4px rgba(57, 197, 187, 0.12);
 }
 
-/* 体验窗口：渐变光环 + 窗口框 */
-.shot-glow {
-  position: relative;
-  margin: 56px auto 0;
-  max-width: 980px;
-}
-.shot-glow::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: 15px;
-  background: var(--st-gradient);
-  opacity: 0.35;
-  filter: blur(14px);
-  z-index: 0;
-}
-.dark .shot-glow::before {
-  opacity: 0.3;
-}
-.shot-frame {
-  position: relative;
-  z-index: 1;
-  border-radius: 14px;
-  border: 1px solid var(--vp-c-divider);
-  background: var(--vp-c-bg-soft);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.14);
-  overflow: hidden;
-}
-.dark .shot-frame {
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
-}
-.shot-chrome {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--vp-c-divider);
-}
-.dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-}
-.dot-r { background: #ff5f57; }
-.dot-y { background: #febc2e; }
-.dot-g { background: #28c840; }
-.shot-title {
-  flex: 1;
-  text-align: center;
-  font-size: 12px;
-  color: var(--vp-c-text-3);
-}
-.shot-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  color: #16a34a;
-  background: rgba(40, 200, 64, 0.12);
-}
-.shot-live-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #28c840;
-  animation: live-pulse 1.8s ease-in-out infinite;
-}
-@keyframes live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+.workflow-section,
+.continuity-section {
+  padding: 112px 0;
 }
 
-/* ---------- Sections ---------- */
-.section {
-  padding: 80px 0;
-  text-align: center;
-}
-.section-alt {
-  background: var(--vp-c-bg-soft);
-}
-.section-title {
-  font-size: clamp(26px, 4vw, 34px);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  margin: 0 0 12px;
-  border: none;
-  padding: 0;
-}
-.section-sub {
-  color: var(--vp-c-text-2);
-  font-size: 15px;
-  margin: 0 auto 44px;
-  max-width: 560px;
-}
-.accent-text {
-  color: var(--vp-c-brand-1);
-}
-
-/* Features：每卡自带主题色 --fc */
-/* flex + 居中换行：卡片数不是列数整数倍时，最后一排自动居中（5 张卡 3 列
-   时第二排两张居中），任何断点都成立 */
-.feature-grid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 20px;
-  text-align: left;
-}
-.feature-card { width: calc((100% - 40px) / 3); }
-@media (max-width: 860px) {
-  .feature-card { width: calc((100% - 20px) / 2); }
-}
-@media (max-width: 560px) {
-  .feature-card { width: 100%; }
-}
-.feature-card {
-  background: var(--vp-c-bg-soft);
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 16px;
-  padding: 24px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-}
-.feature-card:hover {
-  transform: translateY(-4px);
-  border-color: color-mix(in srgb, var(--fc) 60%, transparent);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--fc) 18%, transparent);
-}
-.feature-icon {
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--fc) 13%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  margin-bottom: 14px;
-}
-.feature-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-.feature-tag {
-  flex: none;
-  font-size: 10.5px;
-  font-weight: 500;
-  line-height: 1;
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: var(--fc);
-  background: color-mix(in srgb, var(--fc) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--fc) 28%, transparent);
-}
-.feature-desc {
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--vp-c-text-2);
-  margin: 0;
-}
-/* 可点击的功能卡（如插件市场 → 插件一览）：去链接默认样式，加“更多”指引 */
-a.feature-card {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-}
-.feature-more {
-  display: inline-block;
-  margin-top: 12px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fc);
-}
-
-/* Steps：桌面端步骤间加箭头连线 */
-.steps {
+.workflow-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-}
-@media (max-width: 700px) {
-  .steps { grid-template-columns: 1fr; }
-}
-.step {
-  position: relative;
-  padding: 8px 16px;
-}
-@media (min-width: 701px) {
-  .step:not(:last-child)::after {
-    content: '→';
-    position: absolute;
-    right: -18px;
-    top: 16px;
-    font-size: 22px;
-    color: var(--vp-c-text-3);
-    opacity: 0.6;
-  }
-}
-.step-n {
-  font-size: 40px;
-  font-weight: 800;
-  margin-bottom: 6px;
-}
-.step-title {
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-.step-desc {
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--vp-c-text-2);
-  margin: 0;
+  border-top: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
-/* CTA：柔和渐变卡片收束 */
-.cta {
-  padding-top: 40px;
+.workflow-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 34px clamp(24px, 3vw, 38px) 38px;
+  color: inherit;
+  text-decoration: none;
 }
+
+.workflow-item + .workflow-item {
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.workflow-item::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background: var(--item-accent);
+  transition: width 0.3s ease;
+}
+
+.workflow-item:hover {
+  background: color-mix(in srgb, var(--item-accent) 4%, transparent);
+}
+
+.workflow-item:hover::before {
+  width: 100%;
+}
+
+.workflow-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 42px;
+  color: var(--vp-c-text-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.workflow-meta span:last-child {
+  color: var(--item-accent);
+}
+
+.workflow-item h3 {
+  margin: 0 0 16px;
+  color: var(--vp-c-text-1);
+  font-size: 21px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+}
+
+.workflow-item > p {
+  margin: 0 0 24px;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.8;
+  text-wrap: pretty;
+}
+
+.workflow-item ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: auto 0 28px;
+  padding: 0;
+  list-style: none;
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+}
+
+.workflow-item li {
+  position: relative;
+}
+
+.workflow-item li:not(:last-child)::after {
+  content: '·';
+  position: absolute;
+  right: -10px;
+  color: var(--vp-c-divider);
+}
+
+.workflow-more {
+  color: var(--item-accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.continuity-section {
+  background: var(--vp-c-bg-soft);
+}
+
+.continuity-list {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.continuity-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 28px;
+  min-height: 142px;
+  padding: 24px 8px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  color: inherit;
+  text-decoration: none;
+  transition: padding 0.25s ease, background 0.25s ease;
+}
+
+.continuity-row:hover {
+  padding-right: 20px;
+  padding-left: 20px;
+  background: color-mix(in srgb, var(--st-teal) 5%, transparent);
+}
+
+.continuity-index {
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.continuity-body {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.75fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 10px 36px;
+}
+
+.continuity-body small {
+  grid-column: 1;
+  color: var(--vp-c-brand-1);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.continuity-body strong {
+  grid-column: 1;
+  color: var(--vp-c-text-1);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.continuity-body > span {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.8;
+  text-wrap: pretty;
+}
+
+.continuity-arrow {
+  color: var(--vp-c-text-3);
+  font-size: 17px;
+}
+
+.cta-section {
+  padding: 112px 0 60px;
+}
+
 .cta-card {
   position: relative;
   overflow: hidden;
-  border-radius: 24px;
-  border: 1px solid var(--vp-c-divider);
-  padding: 56px 32px 48px;
+  padding: 72px clamp(24px, 7vw, 84px);
+  border: 1px solid color-mix(in srgb, var(--st-teal) 20%, var(--vp-c-divider));
+  border-radius: 28px;
   background:
-    radial-gradient(600px 220px at 12% 0%, rgba(57, 197, 187, 0.1), transparent 70%),
-    radial-gradient(600px 220px at 88% 100%, rgba(255, 105, 180, 0.1), transparent 70%),
+    radial-gradient(circle at 0% 0%, rgba(57, 197, 187, 0.11), transparent 36%),
+    radial-gradient(circle at 100% 100%, rgba(255, 105, 180, 0.09), transparent 34%),
     var(--vp-c-bg-soft);
+  text-align: center;
 }
+
+.cta-copy {
+  max-width: 640px;
+  margin: 18px auto 32px;
+  color: var(--vp-c-text-2);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
 .cta-links {
-  margin-top: 26px;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 26px;
-  font-size: 14px;
-}
-.cta-links a {
-  color: var(--vp-c-brand-1);
-  text-decoration: none;
-  font-weight: 500;
-}
-.cta-links a:hover {
-  text-decoration: underline;
+  gap: 16px 28px;
+  margin-top: 26px;
+  font-size: 13px;
 }
 
-/* Credits */
+.cta-links a {
+  color: var(--vp-c-text-2);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.cta-links a:hover {
+  color: var(--vp-c-brand-1);
+}
+
 .credits {
+  padding: 32px 0 24px;
   border-top: 1px solid var(--vp-c-divider);
-  padding: 28px 0 12px;
-  text-align: center;
-  font-size: 12.5px;
   color: var(--vp-c-text-3);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
 }
+
 .credits p {
-  margin: 4px 0;
+  margin: 3px 0;
 }
+
 .credits a {
   color: var(--vp-c-text-2);
 }
+
 .credits a:hover {
   color: var(--vp-c-brand-1);
+}
+
+@media (max-width: 900px) {
+  .hero {
+    padding: 72px 0 88px;
+  }
+
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 56px;
+  }
+
+  .hero-copy {
+    text-align: center;
+  }
+
+  .hero-brand,
+  .release-link {
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  .hero-lede {
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  .hero-facts {
+    justify-content: center;
+  }
+
+  .flow-board {
+    width: min(100%, 560px);
+    margin: 0 auto;
+    text-align: left;
+  }
+
+  .section-heading {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 20px;
+  }
+
+  .section-heading > p {
+    max-width: 660px;
+  }
+
+  .workflow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-item + .workflow-item {
+    border-top: 1px solid var(--vp-c-divider);
+    border-left: 0;
+  }
+
+  .workflow-meta {
+    margin-bottom: 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  .container {
+    width: min(100% - 32px, 1160px);
+  }
+
+  .hero {
+    padding: 48px 0 64px;
+  }
+
+  .hero-atmosphere::after {
+    width: 360px;
+    height: 360px;
+    right: -150px;
+    top: 60px;
+  }
+
+  .hero-brand {
+    margin-bottom: 20px;
+  }
+
+  .hero h1 {
+    font-size: clamp(43px, 13vw, 58px);
+  }
+
+  .hero-lede {
+    margin-top: 22px;
+    font-size: 16px;
+    line-height: 1.75;
+  }
+
+  .hero-facts {
+    gap: 6px 18px;
+    margin-bottom: 26px;
+    font-size: 12px;
+  }
+
+  .hero-facts li:not(:last-child)::after {
+    right: -10px;
+  }
+
+  .flow-board {
+    border-radius: 20px;
+  }
+
+  .flow-board-head {
+    padding: 16px 18px;
+  }
+
+  .flow-board ol {
+    padding: 4px 18px;
+  }
+
+  .flow-board ol::before {
+    left: 36px;
+  }
+
+  .flow-board > p {
+    padding: 16px 18px 18px;
+  }
+
+  .demo-section,
+  .workflow-section,
+  .continuity-section,
+  .cta-section {
+    padding: 72px 0;
+  }
+
+  .section-heading {
+    margin-bottom: 34px;
+  }
+
+  .section-heading h2,
+  .cta-card h2 {
+    font-size: 31px;
+  }
+
+  .shot-frame {
+    border-radius: 14px;
+  }
+
+  .shot-chrome {
+    grid-template-columns: auto 1fr;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  .shot-title {
+    padding-left: 10px;
+    text-align: right;
+  }
+
+  .shot-live {
+    display: none;
+  }
+
+  .workflow-item {
+    padding: 28px 20px 32px;
+  }
+
+  .continuity-row {
+    grid-template-columns: 36px minmax(0, 1fr) 20px;
+    gap: 14px;
+    min-height: 0;
+    padding: 24px 0;
+  }
+
+  .continuity-row:hover {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .continuity-body {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .continuity-body small,
+  .continuity-body strong,
+  .continuity-body > span {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .continuity-body > span {
+    margin-top: 6px;
+    font-size: 13px;
+  }
+
+  .cta-card {
+    padding: 48px 20px;
+    border-radius: 20px;
+  }
+
+  .credits {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-item::before,
+  .continuity-row {
+    transition: none;
+  }
 }
 </style>
