@@ -225,6 +225,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/timing/lines", h.EngineTimingLines)
 			r.Post("/timing/line/separator", h.EngineTimingLineSeparator)
 			r.Post("/timing/line/translation", h.EngineTimingLineTranslation)
+			r.Post("/timing/line/banner-translation", h.EngineTimingBannerTranslation)
 			r.Post("/timing/line/estimate", h.EngineTimingLineEstimate)
 			r.Post("/timing/line/voicepauses", h.EngineTimingLineVoicePauses) // 语音停顿候选（分句对齐）
 			r.Get("/timing/frame", h.EngineTimingFrame)

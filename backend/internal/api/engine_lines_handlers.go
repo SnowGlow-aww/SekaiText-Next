@@ -125,6 +125,33 @@ func (h *Handler) EngineTimingLineTranslation(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, json.RawMessage(raw))
 }
 
+// EngineTimingBannerTranslation 修改地点横幅文本。banner 与 dialog 各自独立编号，
+// 使用单独端点/IPC 方法，避免相同 index 误改到一条对话；横幅不参与 st:N 双向同步，
+// 保存后由 autosave/重新导出写入 ass。
+func (h *Handler) EngineTimingBannerTranslation(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.requireDoneTimingJob(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Index *int    `json:"index"`
+		Text  *string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Index == nil || body.Text == nil {
+		writeError(w, http.StatusBadRequest, "index 和 text 必填")
+		return
+	}
+	raw, err := h.engine.TimingLineCall(job, "subtitle.setBannerTranslation", map[string]interface{}{
+		"index": *body.Index,
+		"text":  *body.Text,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "修改地点横幅失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(raw))
+}
+
 // EngineTimingAutosave 把当前引擎字幕（同导出口径后处理）写到 <outputDir>/autosave.ass。
 // 与正式导出的区别：不更新导出/同步基线（ExportAssPath/MTime/DirtyLines 全不动），
 // 纯粹是逐行微调后的落盘保险——崩溃/误退后打开 autosave.ass 即可拿回全部微调。

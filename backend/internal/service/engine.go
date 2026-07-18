@@ -289,24 +289,24 @@ func (p *engineProc) request(ctx context.Context, method string, params interfac
 // mutable fields, written by the notification-router goroutine and read by the
 // progress HTTP handler.
 type EngineTimingJob struct {
-	Mu           sync.Mutex
-	TaskID       string
-	ScriptPath   string // scenario JSON path; used to name the exported .ass
-	VideoPath    string
-	Status       string // running, done, error, canceled
-	Percent      float64
-	Fps          int
-	Eta          string
-	DialogTotal  int
-	BannerTotal  int
-	MarkerTotal  int
+	Mu            sync.Mutex
+	TaskID        string
+	ScriptPath    string // scenario JSON path; used to name the exported .ass
+	VideoPath     string
+	Status        string // running, done, error, canceled
+	Percent       float64
+	Fps           int
+	Eta           string
+	DialogTotal   int
+	BannerTotal   int
+	MarkerTotal   int
 	Matched       int    // dialogs+banners+markers finalized so far (合计, 向后兼容)
 	MatchedDialog int    // 已匹配对话数
 	MatchedBanner int    // 已匹配 banner 数
 	MatchedMarker int    // 已匹配 marker 数
 	PreviewB64    string // latest preview jpeg (served on a separate endpoint)
-	FinishReason string
-	Error        string
+	FinishReason  string
+	Error         string
 
 	// --- 导出与 Aegisub 同步状态（由 HTTP 层维护，同样由 Mu 保护） ---
 	ExportAssPath string         // 最近一次导出的 .ass 绝对路径（空=未导出）
@@ -635,7 +635,7 @@ func (em *EngineManager) TimingLines(job *EngineTimingJob) (json.RawMessage, err
 }
 
 // TimingLineCall 代理单行编辑类方法（subtitle.setSeparator / subtitle.setTranslation /
-// subtitle.estimateSeparator），params 原样透传。
+// subtitle.setBannerTranslation / subtitle.estimateSeparator），params 原样透传。
 func (em *EngineManager) TimingLineCall(job *EngineTimingJob, method string, params interface{}) (json.RawMessage, error) {
 	proc, err := timingProc(job)
 	if err != nil {
