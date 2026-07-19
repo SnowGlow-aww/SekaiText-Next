@@ -18,12 +18,19 @@ function cdnUrl(v: string, suffix: string) {
   return CDN + '/sekaitext-releases/v' + v + '/SekaiText.Next_' + v + '_' + suffix
 }
 
+function githubUrl(v: string, suffix: string) {
+  return RELEASES + '/download/v' + v + '/SekaiText.Next_' + v + '_' + suffix
+}
+
 const version = ref(__APP_VERSION__)
 const downloads = ref({
-  mac: cdnUrl(__APP_VERSION__, 'aarch64.dmg'),
-  win: cdnUrl(__APP_VERSION__, 'x64-setup.exe'),
+  // GitHub is the durable fallback. Hydration switches to CDN only after both
+  // mirrored installers have been probed successfully.
+  mac: githubUrl(__APP_VERSION__, 'aarch64.dmg'),
+  win: githubUrl(__APP_VERSION__, 'x64-setup.exe'),
 })
 const os = ref<'mac' | 'win' | 'other'>('other')
+const usingCdn = computed(() => downloads.value.mac.startsWith(CDN))
 
 function newer(a: string, b: string) {
   const pa = a.split('.').map(Number)
@@ -43,10 +50,16 @@ onMounted(async () => {
     if (r.ok) {
       const j = await r.json()
       if (j?.version && !newer(version.value, j.version)) {
-        version.value = j.version
-        downloads.value = {
+        const next = {
           mac: j.downloads?.['darwin-aarch64'] || cdnUrl(j.version, 'aarch64.dmg'),
           win: j.downloads?.['windows-amd64'] || cdnUrl(j.version, 'x64-setup.exe'),
+        }
+        const available = await Promise.all(
+          Object.values(next).map(async (url) => (await fetch(url, { method: 'HEAD', cache: 'no-store' })).ok),
+        )
+        if (available.every(Boolean)) {
+          version.value = j.version
+          downloads.value = next
         }
       }
     }
@@ -102,7 +115,7 @@ const buttons = computed(() => {
     <p class="dl-meta">
       最新版 <code class="dl-ver">v{{ version }}</code>
       <span class="dl-dot">·</span>
-      国内 CDN 直连
+      {{ usingCdn ? '国内 CDN 直连' : 'GitHub 直连' }}
       <span class="dl-dot">·</span>
       <a :href="RELEASES" target="_blank" rel="noreferrer">更新日志与历史版本 ↗</a>
     </p>
