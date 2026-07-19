@@ -16,6 +16,10 @@ const rect = ref<{ x: number; y: number; w: number; h: number } | null>(null)
 const cardEl = ref<HTMLElement | null>(null)
 const cardPos = ref<{ top: number; left: number } | null>(null)
 let targetEl: HTMLElement | null = null
+// Every activation captures a generation. Route changes, rapid next/previous
+// clicks and closing/restarting a tour can leave older waitFor/router promises
+// in flight; only the newest generation may commit spotlight state.
+let activationGeneration = 0
 
 const steps = computed(() => tour.active.value?.steps ?? [])
 const step = computed(() => steps.value[stepIndex.value] ?? null)
@@ -35,6 +39,7 @@ async function waitFor(selector: string, timeout = 2000): Promise<HTMLElement | 
 }
 
 function measure() {
+  if (targetEl && !targetEl.isConnected) targetEl = null
   if (!targetEl) {
     rect.value = null
   } else {
@@ -73,14 +78,29 @@ function placeCard() {
 }
 
 async function activateStep() {
+  const generation = ++activationGeneration
+  const activeTour = tour.active.value
+  const index = stepIndex.value
   const st = step.value
-  if (!st) return
+  if (!st || !activeTour) return
+  const isCurrent = () =>
+    generation === activationGeneration &&
+    tour.active.value === activeTour &&
+    stepIndex.value === index &&
+    step.value === st
+
   targetEl = null
+  rect.value = null
+  cardPos.value = null
+  let changedRoute = false
   if (st.route && route.path !== st.route) {
     await router.push(st.route).catch(() => {})
+    if (!isCurrent()) return
+    changedRoute = true
   }
   if (st.selector) {
     const el = await waitFor(st.selector)
+    if (!isCurrent()) return
     if (!el) {
       // 目标不存在：无声跳过（最后一步找不到就直接结束）。
       if (isLast.value) tour.finish()
@@ -90,26 +110,47 @@ async function activateStep() {
     el.scrollIntoView({ block: el.getBoundingClientRect().height > window.innerHeight * 0.75 ? 'start' : 'nearest' })
     targetEl = el
   }
+  // router.push resolves before the 220ms out-in page transition has settled.
+  // Measuring during that transform leaves the spotlight offset from its target.
+  if (changedRoute) await new Promise((resolve) => setTimeout(resolve, 240))
   await nextTick()
+  if (!isCurrent()) return
   measure()
   // 卡片内容变化后尺寸才稳定，再排一次版。
   await nextTick()
+  if (!isCurrent()) return
   placeCard()
 }
 
 watch(
   () => tour.active.value,
   (v) => {
+    // Invalidate pending work synchronously. When resetting a non-zero index,
+    // the stepIndex watcher performs the single activation for the first step.
+    activationGeneration++
     if (v) {
+      const indexWillChange = stepIndex.value !== 0
       stepIndex.value = 0
-      activateStep()
+      if (!indexWillChange) void activateStep()
     } else {
       targetEl = null
       rect.value = null
     }
   },
+  { flush: 'sync' },
 )
-watch(stepIndex, () => activateStep())
+watch(stepIndex, () => { void activateStep() }, { flush: 'sync' })
+watch(
+  () => route.path,
+  (path) => {
+    // A highlighted tour deliberately leaves the page interactive so a long
+    // settings/plugin section can scroll. If the user navigates elsewhere,
+    // close the old tour instead of leaving a detached spotlight as a dark,
+    // card-less mask over the new page.
+    const expected = step.value?.route
+    if (tour.active.value && expected && path !== expected) tour.cancel()
+  },
+)
 
 function next() {
   if (isLast.value) tour.finish()
@@ -138,9 +179,19 @@ onUnmounted(() => {
 
 <template>
   <teleport to="body">
-    <div v-if="tour.active.value && step" class="fixed inset-0 z-[10000]" @wheel.prevent @touchmove.prevent>
-      <!-- 点击护罩：无高亮时兼作暗幕 -->
-      <div class="absolute inset-0" :class="rect ? '' : 'bg-black/55'" @click.stop />
+    <div
+      v-if="tour.active.value && step"
+      class="fixed inset-0 z-[10000]"
+      :class="rect ? 'pointer-events-none' : ''"
+    >
+      <!-- 无高亮时的点击护罩；有高亮时四块透明护罩只放行目标区域。 -->
+      <div class="absolute inset-0" :class="rect ? 'pointer-events-none' : 'bg-black/55'" @click.stop />
+      <template v-if="rect">
+        <div class="absolute pointer-events-auto" :style="{ inset: `0 0 auto 0`, height: rect.y + 'px' }" @click.stop.prevent />
+        <div class="absolute pointer-events-auto" :style="{ top: rect.y + 'px', left: '0', width: Math.max(rect.x, 0) + 'px', height: rect.h + 'px' }" @click.stop.prevent />
+        <div class="absolute pointer-events-auto" :style="{ top: rect.y + 'px', left: (rect.x + rect.w) + 'px', right: '0', height: rect.h + 'px' }" @click.stop.prevent />
+        <div class="absolute pointer-events-auto" :style="{ top: (rect.y + rect.h) + 'px', right: '0', bottom: '0', left: '0' }" @click.stop.prevent />
+      </template>
       <!-- 聚光灯：透明中心 + 超大 box-shadow 压暗四周 -->
       <div
         v-if="rect"
@@ -156,7 +207,7 @@ onUnmounted(() => {
       <!-- 提示卡片 -->
       <div
         ref="cardEl"
-        class="absolute w-[340px] max-w-[92vw] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl p-4"
+        class="tour-card pointer-events-auto absolute w-[340px] max-w-[92vw] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl p-4"
         :style="cardPos
           ? { top: cardPos.top + 'px', left: cardPos.left + 'px' }
           : { top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }"
@@ -191,3 +242,14 @@ onUnmounted(() => {
     </div>
   </teleport>
 </template>
+
+<style scoped>
+.tour-card { animation: tour-card-in 220ms var(--ease-out) both; }
+@keyframes tour-card-in {
+  from { opacity: 0; scale: 0.975; translate: 0 0.35rem; }
+  to { opacity: 1; scale: 1; translate: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-card { animation: none; }
+}
+</style>

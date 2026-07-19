@@ -59,5 +59,10 @@ export function useTour() {
     active.value = null
   }
 
-  return { active, seen, markSeen, start, startOnce, finish }
+  /** Close without recording completion (for an interrupted route change). */
+  function cancel() {
+    active.value = null
+  }
+
+  return { active, seen, markSeen, start, startOnce, finish, cancel }
 }

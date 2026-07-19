@@ -50,7 +50,7 @@ const { confirm } = useConfirm()
 // tick then overwrites the recovery file with the empty template as well), so
 // it must never happen on a stray click without confirmation.
 async function confirmDiscardUnsaved(): Promise<boolean> {
-  if (!editor.hasUnsavedChanges) return true
+  if (!editor.hasAnyUnsaved()) return true
   return confirm({
     title: '载入故事',
     message: '有未保存的更改，载入将用新模板覆盖当前译文。确定继续吗？',
@@ -171,18 +171,30 @@ async function openSaveDir() {
 
 async function handleLoad() {
   debug.log(`载入按钮点击 loading=${story.loading} selectedType="${story.selectedType}"`)
+  if (editor.documentBusy) return
   if (!(await confirmDiscardUnsaved())) return
+  const operation = editor.beginDocumentOperation()
+  if (operation === null) return
   const taskId = dlFloat.add('载入故事')
   dlFloat.start(taskId)
+  story.loading = true
   try {
-    await story.loadStory()
-    if (story.sourceTalks.length > 0) {
-      debug.log(`故事载入成功 ${story.sourceTalks.length}行`)
-      editor.setSourceTalks(story.sourceTalks)
-      const dstTalks = await api.translationCreate({
-        sourceTalks: story.sourceTalks,
+    // Fetch both halves before committing either. If template creation fails,
+    // the previous source, translation, file binding and metadata stay intact.
+    const loadedStory = await story.fetchStory()
+    const dstTalks = loadedStory.sourceTalks.length > 0
+      ? await api.translationCreate({
+        sourceTalks: loadedStory.sourceTalks,
         jp: false,
       })
+      : []
+    if (!editor.isCurrentDocumentOperation(operation)) return
+
+    if (loadedStory.sourceTalks.length > 0) {
+      debug.log(`故事载入成功 ${loadedStory.sourceTalks.length}行`)
+      story.applyStory(loadedStory)
+      editor.clearAll()
+      editor.setSourceTalks(loadedStory.sourceTalks)
       editor.setTalks(dstTalks, dstTalks, [])
       editor.majorClue = null
       // 新文档会话：命名/元数据快照跟内容走（此后别处再拉别的剧情不影响本文档），
@@ -196,7 +208,7 @@ async function handleLoad() {
       // would let the 30s autosave overwrite the recovery file with this
       // near-empty template.
       editor.markSaved()
-      dlFloat.done(taskId, `已载入 ${story.sourceTalks.length} 行`)
+      dlFloat.done(taskId, `已载入 ${loadedStory.sourceTalks.length} 行`)
     } else {
       debug.log('故事载入返回0行', 'warn')
       dlFloat.done(taskId, '载入完成（0行）')
@@ -204,6 +216,9 @@ async function handleLoad() {
   } catch (e: any) {
     debug.log('载入失败: ' + e.message, 'error')
     dlFloat.fail(taskId, e.message || '载入失败')
+  } finally {
+    story.loading = false
+    editor.finishDocumentOperation(operation)
   }
 }
 </script>
@@ -212,6 +227,7 @@ async function handleLoad() {
   <div class="flex items-center gap-2 flex-wrap">
     <SkSelect
       size="sm"
+      :disabled="editor.documentBusy"
       :model-value="story.selectedType"
       @update:model-value="story.selectedType = $event as string"
       :options="story.storyTypes.map(t => ({ value: t, label: unitName(t) }))"
@@ -221,6 +237,7 @@ async function handleLoad() {
     <SkSelect
       v-if="story.sorts?.length"
       size="sm"
+      :disabled="editor.documentBusy"
       :model-value="story.selectedSort"
       @update:model-value="story.selectedSort = $event as string"
       :options="story.sorts.map(s => ({ value: s.value, label: s.label }))"
@@ -229,6 +246,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
+      :disabled="editor.documentBusy"
       :model-value="story.selectedIndex"
       @update:model-value="story.selectedIndex = $event as string"
       :options="displayIndices.map(i => ({ value: i.value, label: i.label }))"
@@ -237,6 +255,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
+      :disabled="editor.documentBusy"
       :model-value="story.selectedChapter"
       @update:model-value="story.selectedChapter = $event as number"
       :options="story.chapters.map(c => ({ value: c.number, label: c.label }))"
@@ -245,6 +264,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
+      :disabled="editor.documentBusy"
       :model-value="story.selectedSource"
       @update:model-value="story.selectedSource = $event as string"
       :options="sourceOptions"
@@ -253,7 +273,7 @@ async function handleLoad() {
     <button
       @click="handleRefresh"
       class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
-      :disabled="refreshing"
+      :disabled="refreshing || editor.documentBusy"
     >
       <RefreshCw :size="15" :class="{ 'animate-spin': refreshing }" />
       {{ refreshing ? '拉取中…' : '拉取' }}
@@ -262,7 +282,7 @@ async function handleLoad() {
     <button
       @click="handleLoad"
       class="btn btn-sm btn-brand gap-1.5"
-      :disabled="story.loading || !story.selectedType || story.selectedChapter < 0"
+      :disabled="story.loading || editor.documentBusy || !story.selectedType || story.selectedChapter < 0"
     >
       <span v-if="story.loading" class="loading loading-spinner loading-sm" />
       <Download v-else :size="15" />
@@ -274,6 +294,7 @@ async function handleLoad() {
       @click="openSaveDir"
       class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
       title="在文件管理器中打开译文保存目录"
+      :disabled="editor.documentBusy"
     >
       <FolderOpen :size="15" />
       文稿目录

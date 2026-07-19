@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { ArrowLeft, BookOpen, Download, FileText, FolderOpen } from 'lucide-vue-next'
+import { BookOpen, Download, FileText, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
 import { useSettingsStore } from '../stores/settings'
 import { api } from '../api/client'
@@ -9,8 +8,8 @@ import { useToast } from '../composables/useToast'
 import { useDownloadFloat } from '../composables/useDownloadFloat'
 import { useFileDialog } from '../composables/useFileDialog'
 import SkSelect from '../components/ui/SkSelect.vue'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
-const router = useRouter()
 const story = useStoryStore()
 const settings = useSettingsStore()
 const toast = useToast()
@@ -201,13 +200,8 @@ async function handleExportTxt() {
 </script>
 
 <template>
-  <div class="min-h-screen page-bg text-[var(--color-text)]">
-    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
-      <div class="max-w-3xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-bold tracking-tight">JSON 下载</h1>
-      </div>
-    </header>
+  <div class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
+    <AppPageHeader title="剧情下载" subtitle="按故事范围下载原始 JSON 与翻译模板" width="3xl" />
 
     <main class="max-w-3xl mx-auto px-6 py-8 space-y-6">
       <!-- 选择故事 -->

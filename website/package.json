@@ -2,9 +2,14 @@
   "name": "sekaitext-website",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "dev": "vitepress dev",
-    "build": "vitepress build",
+    "build": "vitepress build && node verify-build.mjs",
+    "deploy:oss": "npm run build && node deploy-oss.mjs",
+    "verify:remote": "npm run build && node deploy-oss.mjs --verify-only",
     "preview": "vitepress preview"
   },
   "devDependencies": {

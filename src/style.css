@@ -16,6 +16,9 @@
 @source inline("grid-cols-[1fr_7rem]");
 @source inline("max-h-[calc(100vh-16rem)]");
 @source inline("max-w-[1500px]");
+/* Runtime plugin page roots. These classes are present only in downloaded
+   entry.js files, so a clean host build cannot discover them automatically. */
+@source inline("h-screen min-h-screen");
 @source inline("bg-[color-mix(in_oklch,var(--color-surface)_90%,transparent)]");
 @source inline("bg-[var(--color-base-100)]");
 @source inline("bg-[var(--color-bg)]");
@@ -167,16 +170,16 @@
   --space-8: 3rem;
 
   /* Radius bridges */
-  --radius-card: 1rem;
-  --radius-control: 0.625rem;
+  --radius-card: 0.625rem;
+  --radius-control: 0.45rem;
   --radius-pill: 999px;
 
   /* Elevation — soft, layered, theme-tinted shadows */
   --shadow-rgb: 60 50 110;
   --shadow-sm: 0 1px 2px rgb(var(--shadow-rgb) / 0.05), 0 1px 3px rgb(var(--shadow-rgb) / 0.04);
-  --shadow-md: 0 2px 6px rgb(var(--shadow-rgb) / 0.06), 0 6px 18px rgb(var(--shadow-rgb) / 0.08);
-  --shadow-lg: 0 4px 12px rgb(var(--shadow-rgb) / 0.08), 0 16px 40px rgb(var(--shadow-rgb) / 0.12);
-  --shadow-accent: 0 6px 20px color-mix(in oklch, var(--accent, #6c4cff) 35%, transparent);
+  --shadow-md: 0 0.5rem 1.5rem rgb(var(--shadow-rgb) / 0.08);
+  --shadow-lg: 0 1rem 2.8rem rgb(var(--shadow-rgb) / 0.13);
+  --shadow-accent: 0 0.35rem 1rem color-mix(in oklch, var(--accent, #6c4cff) 20%, transparent);
 
   /* Z-index scale */
   --z-base: 0;
@@ -293,12 +296,99 @@ html[data-bg='on'] body::before {
     background-color: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-card);
-    box-shadow: var(--shadow-sm);
+    box-shadow: none;
     transition: box-shadow var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
   }
   .app-card-hover:hover {
     box-shadow: var(--shadow-md);
     border-color: var(--color-border-strong);
+  }
+
+  /* Shared page chrome — every secondary screen now keeps the same position,
+     title hierarchy and glass treatment instead of reimplementing a bare bar. */
+  .app-page-header {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    background: color-mix(in oklch, var(--color-surface) 96%, var(--color-bg));
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .workspace-sidebar {
+    background: color-mix(in oklch, var(--color-surface) 94%, var(--color-bg));
+    box-shadow: inset -1px 0 color-mix(in oklch, var(--color-base-content) 3%, transparent);
+  }
+
+  .workspace-nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: 100%;
+    height: 2.25rem;
+    padding: 0 0.5rem;
+    border-radius: var(--radius-control);
+    color: var(--color-text-secondary);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+  .workspace-nav-item:hover {
+    color: var(--color-text);
+    background: color-mix(in oklch, var(--color-base-content) 6%, transparent);
+  }
+  .workspace-nav-item[aria-current='page'],
+  .workspace-nav-item.is-active {
+    color: var(--accent, var(--color-primary));
+    background: color-mix(in oklch, var(--accent, var(--color-primary)) 13%, transparent);
+    font-weight: 650;
+  }
+  .workspace-nav-item.is-active::before {
+    content: '';
+    position: absolute;
+    left: -0.375rem;
+    top: 0.55rem;
+    bottom: 0.55rem;
+    width: 2px;
+    border-radius: var(--radius-pill);
+    background: var(--accent, var(--color-primary));
+  }
+
+  .workspace-commandbar {
+    background: color-mix(in oklch, var(--color-surface) 96%, var(--color-bg));
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .settings-nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: 100%;
+    min-height: 2.25rem;
+    padding: 0.45rem 0.625rem;
+    border-radius: var(--radius-control);
+    color: var(--color-text-secondary);
+    font-size: 0.78rem;
+    text-align: left;
+  }
+  .settings-nav-link:hover {
+    color: var(--color-text);
+    background: color-mix(in oklch, var(--color-base-content) 6%, transparent);
+  }
+  .settings-nav-link.is-active {
+    color: var(--accent, var(--color-primary));
+    background: color-mix(in oklch, var(--accent, var(--color-primary)) 12%, transparent);
+    font-weight: 650;
+  }
+
+  .app-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 13rem;
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    color: var(--color-text-tertiary);
   }
 
   /* Frosted glass — for floating panels (modals/dialogs). Composes on top of
@@ -377,19 +467,17 @@ html[data-bg='on'] body::before {
     min-height: 2.25rem;
   }
 
-  /* Gradient CTA — the playful PJSK 多彩 button */
+  /* Primary action: one solid oshi colour, without decorative rainbow/glow. */
   .btn-brand {
-    background-image: var(--brand-gradient);
-    background-size: 140% 140%;
+    background: var(--accent, var(--color-primary));
     color: var(--accent-content, #fff);
-    border: none;
-    box-shadow: var(--shadow-sm);
-    transition: filter var(--dur-fast) var(--ease-out), box-shadow var(--dur) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
+    border: 1px solid var(--accent, var(--color-primary));
+    box-shadow: none;
+    transition: filter var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
   }
   .btn-brand:hover {
-    filter: brightness(1.05) saturate(1.06);
-    box-shadow: var(--shadow-accent);
+    filter: brightness(1.06);
+    box-shadow: none;
   }
 
   /* Icon button — square, subtle hover wash */
@@ -469,49 +557,22 @@ html[data-bg='on'] body::before {
   background-clip: padding-box;
 }
 
-/* ══ 全局按压立体感（覆盖所有按钮/链接）════════════════════════════════════
-   按下下沉缩小，松手沿 linear() 弹簧回弹（@supports 回落 ease）。下沉用独立
-   的 translate/scale 通道而非 transform——与任何现有 transform 定位/动画自动
-   叠加、互不覆盖。刻意不放 @layer：需要压过 utilities 层的 transition-colors
-   等声明才能带上弹簧通道，故写成未分层样式，并把常用过渡属性一并列入以免
-   丢失元素原有的颜色/阴影过渡。 */
+/* Short, quiet press feedback. The previous spring/bounce language made dense
+   desktop controls feel toy-like and kept moving after the user's action. */
 button,
 [role='button'],
 a {
   transition:
-    translate 320ms var(--ease-out),
-    scale 320ms var(--ease-out),
-    background-color 140ms var(--ease-out),
-    color 140ms var(--ease-out),
-    border-color 140ms var(--ease-out),
-    box-shadow 140ms var(--ease-out),
-    opacity 140ms var(--ease-out),
-    filter 140ms var(--ease-out),
-    transform 140ms var(--ease-out);
-}
-@supports (transition-timing-function: linear(0, 1)) {
-  button,
-  [role='button'],
-  a {
-    transition-timing-function:
-      linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
-      linear(0, 0.2375, 0.5904, 0.8358, 0.9599, 1.0061, 1.0152, 1.0116, 1.0062, 1.0025, 1.0006, 0.9999, 1),
-      ease-out, ease-out, ease-out, ease-out, ease-out, ease-out, ease-out;
-  }
+    scale 100ms ease-out,
+    background-color 140ms var(--ease-out), color 140ms var(--ease-out),
+    border-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out),
+    opacity 140ms var(--ease-out), filter 140ms var(--ease-out), transform 140ms var(--ease-out);
 }
 button:not(:disabled):active,
 [role='button']:active,
 a:active {
-  transition-duration: 70ms;
-  transition-timing-function: ease-out;
-  translate: 0 1px;
-  scale: 0.96;
-}
-/* 实底类按钮按下时追加内阴影，凹陷感更实 */
-.btn:active:not(:disabled),
-.icon-btn:active:not(:disabled) {
-  box-shadow: inset 0 1.5px 3px rgb(0 0 0 / 0.25);
+  scale: 0.985;
 }
 @media (prefers-reduced-motion: reduce) {
-  button:active, [role='button']:active, a:active { translate: none; scale: none; }
+  button:active, [role='button']:active, a:active { scale: none; }
 }

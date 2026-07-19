@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { ArrowLeft, RefreshCw, UserPlus, Users, IdCard, Crown, ShieldCheck, Trash2, KeyRound, Ban, CircleCheck, Palette } from 'lucide-vue-next'
+import { RefreshCw, UserPlus, Users, IdCard, Crown, ShieldCheck, Trash2, KeyRound, Ban, CircleCheck, Palette } from 'lucide-vue-next'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -10,8 +9,8 @@ import TeamModePanel from '../components/settings/TeamModePanel.vue'
 import SkSelect from '../components/ui/SkSelect.vue'
 import { ACCENT_GROUPS } from '../data/characterColors'
 import type { TeamUser } from '../types/glossary'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
-const router = useRouter()
 const team = useTeamStore()
 const { show } = useToast()
 const { confirm, prompt } = useConfirm()
@@ -253,21 +252,17 @@ watch(() => team.loggedIn, (v) => { if (v) { loadUsers() } else { users.value = 
 </script>
 
 <template>
-  <div class="min-h-screen page-bg text-[var(--color-text)]">
-    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
-      <div class="max-w-4xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.back()" class="icon-btn -ml-1"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-bold tracking-tight">账号中心</h1>
-        <div v-if="team.user" class="ml-auto flex items-center gap-2">
-          <span class="text-sm text-[var(--color-text-secondary)]">{{ team.user.displayName }}</span>
-          <span class="app-chip" :class="roleBadgeClass(myDisplayRole)">
-            <Crown v-if="myDisplayRole === 'superadmin'" :size="12" />
-            <ShieldCheck v-else-if="myDisplayRole === 'admin'" :size="12" />
-            {{ roleLabel(myDisplayRole) }}
-          </span>
-        </div>
-      </div>
-    </header>
+  <div class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
+    <AppPageHeader title="账号中心" subtitle="团队身份、个人资料与成员管理" width="4xl">
+      <template v-if="team.user">
+        <span class="text-sm text-[var(--color-text-secondary)]">{{ team.user.displayName }}</span>
+        <span class="app-chip" :class="roleBadgeClass(myDisplayRole)">
+          <Crown v-if="myDisplayRole === 'superadmin'" :size="12" />
+          <ShieldCheck v-else-if="myDisplayRole === 'admin'" :size="12" />
+          {{ roleLabel(myDisplayRole) }}
+        </span>
+      </template>
+    </AppPageHeader>
 
     <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <!-- 团队术语库 -->

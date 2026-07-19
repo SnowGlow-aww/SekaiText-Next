@@ -1,9 +1,13 @@
 <template>
-  <router-view v-slot="{ Component }">
-    <keep-alive>
-      <component :is="Component" />
-    </keep-alive>
-  </router-view>
+  <AppShell>
+    <router-view v-slot="{ Component }">
+      <transition name="page-shift" mode="out-in">
+        <keep-alive>
+          <component :is="Component" />
+        </keep-alive>
+      </transition>
+    </router-view>
+  </AppShell>
   <Toast />
   <UpdateBanner />
   <DownloadFloat />
@@ -31,6 +35,7 @@ import DownloadFloat from './components/DownloadFloat.vue'
 import ConfirmHost from './components/ui/ConfirmHost.vue'
 import RecoveryDialog from './components/RecoveryDialog.vue'
 import TourOverlay from './onboarding/TourOverlay.vue'
+import AppShell from './components/ui/AppShell.vue'
 import { useTour } from './onboarding/useTour'
 import { appWelcomeTour, pluginIntroTour, whatsNewTour } from './onboarding/tours'
 import { usePluginRegistry } from './plugin-host/registry'
@@ -168,3 +173,22 @@ onMounted(async () => {
   maybeStartBootTour()
 })
 </script>
+
+<style>
+.page-shift-enter-active,
+.page-shift-leave-active {
+  transition: opacity 150ms ease, transform 220ms var(--ease-out);
+}
+.page-shift-enter-from {
+  opacity: 0;
+  transform: translateY(0.35rem) scale(0.997);
+}
+.page-shift-leave-to {
+  opacity: 0;
+  transform: translateY(-0.15rem) scale(0.999);
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-shift-enter-active,
+  .page-shift-leave-active { transition: none; }
+}
+</style>

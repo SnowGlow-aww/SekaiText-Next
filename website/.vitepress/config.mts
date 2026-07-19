@@ -7,8 +7,9 @@ const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8'),
 )
 
-// GH Pages 主站用 '/'；OSS 官网构建时 SITE_BASE=/web/
-const base = process.env.SITE_BASE || '/'
+// The public site lives under /web/. Root deployments must opt in explicitly
+// with SITE_BASE=/; a missing env var must never produce broken /assets links.
+const base = process.env.SITE_BASE || '/web/'
 
 export default defineConfig({
   lang: 'zh-CN',

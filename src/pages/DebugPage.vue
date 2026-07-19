@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
-import { ArrowLeft, Terminal, Save, Trash2, Pause, Play } from 'lucide-vue-next'
+import { Save, Trash2, Pause, Play } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
 import { BASE_URL } from '../api/client'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
-const router = useRouter()
 const { logs, clear: clearFrontend } = useDebugLog()
 
 interface ServerLog {
@@ -130,15 +129,8 @@ function clearAll() {
 </script>
 
 <template>
-  <div class="h-screen page-bg text-[var(--color-text)] flex flex-col">
-    <!-- Header -->
-    <header class="flex items-center justify-between px-4 py-2.5 bg-[var(--color-surface)] border-b border-[var(--color-border)] flex-shrink-0 select-none">
-      <div class="flex items-center gap-3">
-        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回"><ArrowLeft :size="16" /></button>
-        <span class="grid place-items-center w-6 h-6 rounded-md bg-primary/12 text-primary"><Terminal :size="13" /></span>
-        <span class="text-sm font-bold tracking-tight">调试日志</span>
-        <span class="font-mono text-[11px] text-[var(--color-text-tertiary)]">debug.log</span>
-      </div>
+  <div class="h-full min-h-0 page-bg text-[var(--color-text)] flex flex-col">
+    <AppPageHeader title="调试日志" subtitle="前端与后端运行记录 · debug.log" width="6xl">
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--color-text-tertiary)]">{{ mergedLogs.length }} lines</span>
         <button
@@ -156,7 +148,7 @@ function clearAll() {
           <Trash2 :size="13" /> 清空
         </button>
       </div>
-    </header>
+    </AppPageHeader>
 
     <!-- Terminal Output -->
     <main

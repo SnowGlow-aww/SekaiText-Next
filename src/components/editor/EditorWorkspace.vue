@@ -147,7 +147,7 @@ const talkGroups = computed(() => {
 // changeText——行 A 的改动只存在于 DOM（contenteditable 无 v-model），永不进
 // dstTalks，保存即写回旧文本＝丢译文。改为按行各清各的 timer，互不干扰。
 const editTimers = new Map<number, ReturnType<typeof setTimeout>>()
-const pendingEdits = new Map<number, string>()
+const pendingEdits = new Map<number, { text: string; revision: number }>()
 
 // Per-row v-for keys use the talk's globalIdx (its index in editor.talks), which
 // is unique across the whole list. The old idx+dstidx key could collide between a
@@ -188,19 +188,19 @@ function getEditBorder(talk: DstTalk): string {
 // 并发、旧响应后到时会用旧快照盖掉新状态，因此把实际派发串行化：所有提交挂在同一
 // 条 promise 链上，按入队顺序依次 round-trip，后到的旧响应不再倒灌。
 let commitQueue: Promise<void> = Promise.resolve()
-function enqueueCommit(row: number, newText: string): Promise<void> {
-  const next = commitQueue.then(() => commitTextChange(row, newText))
+function enqueueCommit(row: number, newText: string, revision: number): Promise<void> {
+  const next = commitQueue.then(() => commitTextChange(row, newText, revision))
   // commitTextChange 内部已吞掉异常；这里再兜一层，保证单次失败不断链。
   commitQueue = next.catch(() => {})
   return next
 }
 
-async function commitTextChange(row: number, newText: string) {
+async function commitTextChange(row: number, newText: string, revision: number) {
   // Stale-document guard: onBlur committed newText into talks[row] synchronously.
   // If it no longer matches, the arrays were swapped out from under this call
   // (mode switch, open/载入, replace-all, undo) — applying the edit now would
   // write the old document's text into an unrelated row of the NEW document.
-  if (editor.talks[row]?.text !== newText) return
+  if (editor.documentRevision !== revision || editor.talks[row]?.text !== newText) return
   try {
     const result = await api.changeText({
       row,
@@ -210,6 +210,7 @@ async function commitTextChange(row: number, newText: string) {
       dstTalks: editor.dstTalks,
       referTalks: editor.referTalks,
     })
+    if (editor.documentRevision !== revision) return
     editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
     editor.markUnsaved()
   } catch (e: any) {
@@ -222,11 +223,12 @@ function handleTextChange(row: number, newText: string) {
   // 只清/排当前行自己的 timer，不影响其它行尚未派发的编辑。
   const existing = editTimers.get(row)
   if (existing) clearTimeout(existing)
-  pendingEdits.set(row, newText)
+  const revision = editor.documentRevision
+  pendingEdits.set(row, { text: newText, revision })
   editTimers.set(row, setTimeout(() => {
     editTimers.delete(row)
     pendingEdits.delete(row)
-    enqueueCommit(row, newText)
+    enqueueCommit(row, newText, revision)
   }, 300))
 }
 
@@ -268,6 +270,7 @@ function onBlur(e: Event, idx: number) {
   // round-trip still refines this raw commit (punctuation normalization, diff).
   const di = editor.talks[idx]?.dstidx ?? -1
   if (di >= 0 && di < editor.dstTalks.length) editor.dstTalks[di].text = newText
+  editor.markUnsaved()
   handleTextChange(idx, newText)
 }
 
@@ -573,7 +576,7 @@ async function flushPendingEdit() {
   for (const t of editTimers.values()) clearTimeout(t)
   editTimers.clear()
   pendingEdits.clear()
-  for (const [row, text] of pending) enqueueCommit(row, text)
+  for (const [row, edit] of pending) enqueueCommit(row, edit.text, edit.revision)
   await commitQueue
 }
 defineExpose({ cancelPendingEdit, flushPendingEdit })
@@ -602,17 +605,17 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 </script>
 
 <template>
-  <div class="flex h-full">
+  <div class="flex h-full editor-workspace-shell">
     <div
       ref="workspaceRef"
       @scroll="onWorkspaceScroll"
-      class="flex-1 overflow-y-auto border border-[var(--color-border)] rounded-[var(--radius-card)] bg-[var(--color-surface)]"
+      class="editor-workspace-panel flex-1 overflow-y-auto"
     >
       <!-- Column headers. rounded-t matches the panel: a position:sticky child
            gets its own compositing layer in WKWebView and escapes the parent's
            border-radius clip, so without its own rounding its square top corners
            poke past the rounded panel. -->
-      <div class="grid grid-cols-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] rounded-t-[var(--radius-card)] sticky top-0 z-10">
+      <div class="editor-workspace-head grid grid-cols-2 sticky top-0 z-10">
         <div class="flex items-center justify-between px-3 py-2">
           <span class="font-semibold text-sm text-[var(--color-text-secondary)]">原文</span>
           <span v-if="story.scenarioId" class="text-xs text-[var(--color-text-secondary)]">{{ story.scenarioId }}</span>
@@ -624,25 +627,32 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
             type="text"
             :placeholder="editor.docMeta?.chapterTitle || story.chapterTitle || story.saveTitle || '标题...'"
             title="仅替换文件名中的标题部分（【模式】前缀与路径自动保留）"
-            class="app-input ml-2 flex-1 py-1"
+            class="editor-title-input app-input ml-2 flex-1 py-1"
           />
         </div>
       </div>
 
-      <template v-if="story.sourceTalks.length === 0">
-        <div class="flex flex-col items-center justify-center gap-3 py-16 text-center text-[var(--color-text-tertiary)]">
-          <FileText :size="32" class="opacity-60" />
-          <span class="text-sm">选择故事并载入以查看原文</span>
+      <Transition name="workspace-swap" mode="out-in">
+        <div v-if="story.loading" key="loading" class="app-empty-state">
+          <span class="loading loading-spinner loading-sm text-primary mb-3" />
+          <strong class="text-sm font-semibold text-[var(--color-text)]">正在载入剧情</strong>
+          <span class="text-xs mt-1.5">正在准备原文与译文模板…</span>
         </div>
-      </template>
-
-      <template v-else>
-        <div class="flex flex-col gap-1.5 px-2 py-1">
+        <div v-else-if="story.sourceTalks.length === 0 || editor.talks.length === 0" key="empty" class="app-empty-state">
+          <FileText :size="20" class="text-primary mb-3" />
+          <strong class="text-sm font-semibold text-[var(--color-text)]">开始处理剧情</strong>
+          <span class="text-xs mt-1.5 max-w-xs leading-relaxed">从顶部选择故事并载入，或打开已有的本地文稿。</span>
+        </div>
+        <div
+          v-else
+          :key="editor.documentRevision"
+          class="editor-workspace-rows flex flex-col"
+        >
           <template v-for="(group, gi) in talkGroups" :key="gi">
-            <div class="grid grid-cols-2 gap-2" :data-group="gi">
+            <div class="editor-row-group grid grid-cols-2" :data-group="gi">
               <!-- ===== Source Side (merged for group) ===== -->
               <div
-                class="flex flex-col justify-center p-3 rounded-lg border border-[var(--color-border)] transition-colors"
+                class="editor-source-cell flex flex-col justify-center p-3 transition-colors"
                 :class="{ 'bg-[var(--color-flashback)]': flashbackItem(group.items[0].talk)?.isFlashback }"
                 @mouseenter="onSourceEnter($event, group.items[0].talk)"
                 @mousemove="onSourceEnter($event, group.items[0].talk)"
@@ -651,7 +661,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
               >
                 <div class="flex items-center gap-3">
                   <div
-                    class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-[var(--color-surface)] border border-[var(--color-border)]"
+                    class="editor-character w-7 h-7 rounded-full flex-shrink-0 overflow-hidden"
                   >
                     <img
                       v-if="srcTalkCharIndex(group.items[0].talk) >= 0 && !iconErrors.has(srcTalkCharIndex(group.items[0].talk)) && !['场景', '左上场景', '选项', ''].includes(srcTalk(group.items[0].talk)?.speaker)"
@@ -706,12 +716,12 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
               </div>
 
               <!-- ===== Dest Side (stacked per sub-line) ===== -->
-              <div class="flex flex-col gap-1 h-full">
+              <div class="editor-dest-cell flex flex-col h-full">
                 <template v-for="item in group.items" :key="item.globalIdx">
                   <!-- Baseline row (read-only): shown under compare when baseline differs -->
                   <div
                     v-if="showBaselineRow(item.talk)"
-                    class="p-2 rounded-lg border border-[var(--color-border)] border-l-4 border-l-yellow-400 bg-yellow-400/8 select-none"
+                    class="editor-baseline-row p-3 border-l-2 border-l-yellow-400 bg-yellow-400/8 select-none"
                   >
                     <div class="flex items-start gap-2">
                       <div class="w-8 flex-shrink-0" />
@@ -726,7 +736,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 
                   <!-- Edit row -->
                   <div
-                    :class="['p-2 rounded-lg border border-[var(--color-border)] transition-colors hover:bg-[var(--color-primary)]/[0.04]', group.items.length === 1 && !showBaselineRow(item.talk) ? 'flex-1 flex flex-col justify-center' : '', getEditBorder(item.talk) ? `border-l-4 ${getEditBorder(item.talk)}` : '', getEditBg(item.talk), selectedRow === item.globalIdx && editingRow !== item.globalIdx ? 'row-selected' : '']"
+                    :class="['editor-translation-row p-3 transition-colors', group.items.length === 1 && !showBaselineRow(item.talk) ? 'flex-1 flex flex-col justify-center' : '', getEditBorder(item.talk) ? `border-l-2 ${getEditBorder(item.talk)}` : '', getEditBg(item.talk), selectedRow === item.globalIdx && editingRow !== item.globalIdx ? 'row-selected' : '']"
                   >
                     <div class="flex items-start gap-2">
                       <div class="w-8 flex-shrink-0 text-xs text-[var(--color-text-secondary)] pt-1">
@@ -763,13 +773,13 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                         <span v-if="!item.talk.end && item.talk.save" class="text-xs text-[var(--color-text-secondary)] font-mono">\N</span>
                         <button
                           v-if="item.talk.end && ![''].includes(item.talk.speaker) && item.talk.save"
-                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:text-[var(--color-primary)]"
+                          class="row-action"
                           title="添加行"
                           @click="handleAddLine(item.globalIdx)"
                         >+</button>
                         <button
                           v-if="!item.talk.start"
-                          class="w-6 h-6 rounded border border-[var(--color-border)] text-xs hover:bg-error/10 hover:text-error"
+                          class="row-action hover:bg-error/10 hover:text-error"
                           title="删除行"
                           @click="handleRemoveLine(item.globalIdx)"
                         >−</button>
@@ -781,7 +791,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
             </div>
           </template>
         </div>
-      </template>
+      </Transition>
     </div>
   </div>
 
@@ -857,9 +867,80 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 </template>
 
 <style scoped>
+.editor-workspace-shell { min-height: 0; }
+.editor-workspace-panel {
+  min-height: 0;
+  overflow: hidden auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.625rem;
+  background: color-mix(in oklch, var(--color-surface) 88%, var(--color-bg));
+  box-shadow: 0 1rem 2.8rem rgb(0 0 0 / 0.13);
+}
+.editor-workspace-head {
+  min-height: 2.65rem;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in oklch, var(--color-surface) 95%, var(--color-bg));
+}
+.editor-title-input {
+  height: 1.75rem;
+  border-color: transparent;
+  background: transparent;
+  text-align: right;
+  font-size: 0.72rem;
+}
+.editor-title-input:hover,
+.editor-title-input:focus {
+  border-color: var(--color-border-strong);
+  background: color-mix(in oklch, var(--color-base-content) 2.5%, transparent);
+}
+.editor-row-group {
+  min-height: 6.4rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.editor-row-group:last-child { border-bottom: 0; }
+.workspace-swap-enter-active {
+  transition: opacity 140ms var(--ease-out);
+}
+.workspace-swap-leave-active {
+  transition: opacity 60ms ease-out;
+}
+.workspace-swap-enter-from,
+.workspace-swap-leave-to {
+  opacity: 0;
+}
+.editor-source-cell { min-width: 0; background: transparent; }
+.editor-row-group:hover .editor-source-cell { background: color-mix(in oklch, var(--color-base-content) 1.8%, transparent); }
+.editor-character {
+  border: 1px solid var(--color-border);
+  background: color-mix(in oklch, var(--color-surface) 86%, var(--color-bg));
+}
+.editor-dest-cell {
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+}
+.editor-baseline-row,
+.editor-translation-row { min-width: 0; }
+.editor-baseline-row { border-bottom: 1px solid var(--color-border); }
+.editor-translation-row { position: relative; }
+.editor-translation-row + .editor-translation-row { border-top: 1px solid var(--color-border); }
+.editor-translation-row:hover { background: color-mix(in oklch, var(--accent, var(--color-primary)) 3.5%, transparent); }
+.row-action {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  color: var(--color-text-secondary);
+  background: color-mix(in oklch, var(--color-base-content) 3%, transparent);
+  font-size: 0.75rem;
+  transition: color var(--dur-fast), background-color var(--dur-fast), border-color var(--dur-fast);
+}
+.row-action:hover { color: var(--accent, var(--color-primary)); border-color: var(--color-border); }
+
 /* 键盘导航选中行：内描边高亮，不与左侧 border-l 编辑指示条冲突。 */
 .row-selected {
-  box-shadow: inset 0 0 0 1.5px var(--color-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-primary) 48%, transparent);
 }
 
 /* 编辑态内框：全局 :focus-visible 只在键盘聚焦时画框，鼠标点进编辑没有指示——
@@ -877,5 +958,9 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
 :deep(.glossary-hit:hover) {
   background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
   border-radius: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-swap-enter-active,
+  .workspace-swap-leave-active { transition: none; }
 }
 </style>

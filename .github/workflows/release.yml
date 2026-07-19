@@ -191,7 +191,63 @@ jobs:
 
       - name: Build Tauri app (macOS, unsigned/ad-hoc)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERT != 'true'
-        run: npx tauri build --target ${{ matrix.target }}
+        run: npx tauri build --target ${{ matrix.target }} --bundles app --no-sign
+
+      # `tauri build` without a Developer ID may leave only linker signatures on
+      # the app/sidecar. That looks signed in Finder but has no valid resource
+      # seal and fails `codesign --deep --strict` after download. Sign nested code
+      # first, seal the app, then create the DMG from that verified app.
+      - name: Ad-hoc sign and bundle macOS app
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/SekaiText Next.app"
+          BACKEND="$APP/Contents/MacOS/sekaitext-backend"
+          test -d "$APP"
+          test -x "$BACKEND"
+          codesign --force --sign - "$BACKEND"
+          codesign --force --options runtime --entitlements src-tauri/engine.entitlements --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          VERSION=$(node -p "require('./package.json').version")
+          DMG_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/dmg"
+          STAGE=$(mktemp -d)
+          trap 'rm -rf "$STAGE"' EXIT
+          mkdir -p "$DMG_DIR"
+          ditto "$APP" "$STAGE/SekaiText Next.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "SekaiText Next" \
+            -srcfolder "$STAGE" \
+            -fs HFS+ \
+            -format UDZO \
+            -ov "$DMG_DIR/SekaiText Next_${VERSION}_aarch64.dmg"
+
+      # Verify the artifacts users actually download, not just the loose .app.
+      # This gates both the Developer-ID path and the ad-hoc fallback path.
+      - name: Verify macOS app and DMG code signatures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/SekaiText Next.app"
+          DMG=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$DMG"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          MOUNT=$(mktemp -d)
+          ATTACHED=0
+          cleanup() {
+            if [ "$ATTACHED" = 1 ]; then hdiutil detach "$MOUNT" -quiet || true; fi
+            rmdir "$MOUNT" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT" -quiet
+          ATTACHED=1
+          BUNDLED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$BUNDLED_APP"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLED_APP"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -216,3 +272,11 @@ jobs:
             **/*.dmg
             **/*.exe
             **/*.msi
+
+  manifest:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/release-manifest.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

@@ -152,7 +152,7 @@ const continuities = [
             <h2>先动手试一行</h2>
           </div>
           <p>
-            下面不是静态截图。切换翻译模式、编辑译文、查看校对差异，
+            切换翻译模式、编辑译文、查看校对差异，
             直接感受 SekaiText 的工作方式。
           </p>
         </div>
@@ -163,7 +163,7 @@ const continuities = [
               <i /><i /><i />
             </span>
             <span class="shot-title">SekaiText Next · 编辑器体验</span>
-            <span class="shot-live"><span />可以操作</span>
+            <span class="shot-live"><span />可操作</span>
           </div>
           <DemoEditor />
         </div>

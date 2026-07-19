@@ -13,8 +13,7 @@ import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
-import * as LucideIcons from 'lucide-vue-next'
-import { Pencil, Check, CircleDot, ChevronLeft, ChevronRight, Cog, Download, Bug, Library, BookOpen, Store, Users, AlertTriangle, Info,
+import { Users, AlertTriangle, Info,
   FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
@@ -24,8 +23,6 @@ import { useLive2dDockStore } from '../stores/live2dDock'
 import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
-import { useTeamStore } from '../stores/team'
-import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -37,8 +34,6 @@ const fileDialog = useFileDialog()
 const autoSave = useAutoSave()
 const undo = useUndo()
 const pluginRegistry = usePluginRegistry()
-const team = useTeamStore()
-const glossaryNotify = useGlossaryNotifyStore()
 const live2dDock = useLive2dDockStore()
 
 // Which edge (if any) the Live2D dock occupies around the workspace. Shown only
@@ -55,12 +50,6 @@ const dockSide = computed<'top' | 'right' | 'bottom' | null>(() => {
   if (p === 'window') return live2dDock.forcedDock ?? null
   return p
 })
-
-// Resolve a lucide icon by name for plugin-contributed sidebar items; fall back
-// to a generic puzzle icon if the name is unknown.
-function pluginIcon(name: string) {
-  return (LucideIcons as any)[name] || (LucideIcons as any).Puzzle
-}
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
@@ -277,8 +266,6 @@ function deactivate() {
 onMounted(async () => {
   // One-time setup only (registering onCloseRequested on every activation would
   // stack duplicate handlers); the listeners/autosave live in activate().
-  team.refreshStatus().catch(() => {})
-  glossaryNotify.start() // 术语库侧栏呼吸灯：轮询待审提案/我的提案过审
   if (!isTauri) return
   try {
     const win = getCurrentWindow()
@@ -332,7 +319,6 @@ const tauriErr = ref('')
 const showSpeakerCheck = ref(false)
 const showCloseConfirm = ref(false)
 const forceClose = ref(false)
-const sidebarOpen = ref(true)
 
 // Align the search bar's divider directly under the toolbar's "搜索"-right
 // divider. Measured at runtime (not a hardcoded px) so it stays correct across
@@ -358,6 +344,11 @@ watch(() => app.searchOpen, (open) => {
 
 async function setMode(key: number) {
   const changed = key !== editor.currentMode
+  if (changed && editor.documentBusy) return
+  const operation = changed ? editor.beginDocumentOperation() : null
+  if (changed && operation === null) return
+  if (changed) story.loading = true
+  try {
   // Drop any pending debounced edit BEFORE swapping mode state: its timer
   // captured a row index for the old mode's arrays, so letting it fire against
   // the new mode's talks would write the old mode's text into an unrelated row.
@@ -387,6 +378,10 @@ async function setMode(key: number) {
     agreementHintDontShow.value = false
     showAgreementHint.value = true
   }
+  } finally {
+    if (changed) story.loading = false
+    if (operation !== null) editor.finishDocumentOperation(operation)
+  }
 }
 
 const showAgreementHint = ref(false)
@@ -400,18 +395,22 @@ function confirmAgreementHint() {
 }
 
 const modes = [ { key: 0, label: '翻译' }, { key: 1, label: '校对' }, { key: 2, label: '合意' } ]
-const modeIcons: Record<number, typeof Pencil> = { 0: Pencil, 1: Check, 2: CircleDot }
 
 async function handleOpen() {
   // Opening a file replaces the current document and clears the undo stack, so
   // unsaved work would be gone with no way back (and the next autosave tick
   // would overwrite the recovery file with the new document too). Confirm first.
-  if (editor.hasUnsavedChanges) {
+  if (editor.documentBusy) return
+  if (editor.hasAnyUnsaved()) {
     if (!(await confirm({ title: '打开文件', message: '有未保存的更改，打开新文件将丢弃它们。确定继续吗？', tone: 'danger', confirmText: '不保存并打开' }))) return
   }
+  const operation = editor.beginDocumentOperation()
+  if (operation === null) return
+  story.loading = true
   try {
     const result = await fileDialog.openTranslation()
     if (!result) return
+    if (!editor.isCurrentDocumentOperation(operation)) return
     workspace.value?.cancelPendingEdit()
     console.log('[Open] loaded file', { path: result.filePath || result.fileName, talkCount: result.talks.length, hasMeta: !!result.meta, mode: app.editorMode, fileMode: result.meta?.mode })
     // Baseline fallback: in 校对/合意 modes, seed every row's baseline to its
@@ -480,10 +479,12 @@ async function handleOpen() {
           await story.fetchChapters(r.storyType, '', r.index)
           await nextTick()
           story.selectedChapter = r.chapter
-          await story.loadStory()
-          editor.docMeta = story.snapshotDocMeta()
-          if (story.sourceTalks.length > 0) {
-            const aligned = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
+          // Keep the outer document operation in charge of loading state. The
+          // store's loadStory() releases story.loading after only the source
+          // request, which used to expose editable rows before alignment landed.
+          const loadedStory = await story.fetchStory()
+          if (loadedStory.sourceTalks.length > 0) {
+            const aligned = await api.checkLines({ sourceTalks: loadedStory.sourceTalks, loadedTalks: result.talks })
             if (app.editorMode >= 1) {
               // Derive baseline rows for compare (校对/合意).
               const compared = await api.compareText({ referTalks: aligned, checkTalks: aligned, editorMode: app.editorMode })
@@ -492,14 +493,21 @@ async function handleOpen() {
               editor.setTalks(aligned, aligned, [])
             }
           }
+          story.applyStory(loadedStory)
+          editor.docMeta = story.snapshotDocMeta()
         }
       } catch { /* keep manual selection */ }
     }
     toast.show('已打开: ' + (label || rawName), 'success')
   } catch (e: any) { toast.show('Open failed: ' + (e.message || String(e)), 'error') }
+  finally {
+    story.loading = false
+    editor.finishDocumentOperation(operation)
+  }
 }
 
 async function handleSave(saveAs = false) {
+  if (editor.documentBusy) return
   if (editor.talks.length === 0) return
   // Flush (not cancel) the pending debounced edit so the file is serialized
   // from a dstTalks that carries the last blurred edit in its fully processed
@@ -584,13 +592,21 @@ async function handleSave(saveAs = false) {
 }
 
 async function handleClear() {
+  if (editor.documentBusy) return
   // Always confirm — 清空 wipes the document AND the undo stack, so a stray
   // click is unrecoverable even with no unsaved changes.
   const detail = editor.hasUnsavedChanges ? '有未保存的更改，清空后无法找回。' : '清空后无法撤销。'
   if (!(await confirm({ title: '清空内容', message: '确定清空当前全部内容吗？', detail, tone: 'danger', confirmText: '清空' }))) return
-  editor.clearAll()
-  undo.clear()
-  toast.show('已清空', 'info')
+  const operation = editor.beginDocumentOperation()
+  if (operation === null) return
+  try {
+    editor.clearAll()
+    story.clearLoadedStory()
+    undo.clear()
+    toast.show('已清空', 'info')
+  } finally {
+    editor.finishDocumentOperation(operation)
+  }
 }
 
 // 合意: import a 校对稿 as the editable text, comparing it against the already
@@ -598,6 +614,7 @@ async function handleClear() {
 // the baseline row (yellow) shows the 翻译稿, the editable row (green) shows the
 // 校对稿 — so the agreed edits are made on top of the proofread draft.
 async function handleImportBaseline() {
+  if (editor.documentBusy) return
   if (editor.talks.length === 0) { toast.show('请先载入翻译稿', 'warn'); return }
   try {
     const result = await fileDialog.openTranslation()
@@ -713,46 +730,32 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
 </script>
 
 <template>
-  <div class="h-screen page-bg flex flex-col">
-    <div class="flex flex-1 min-h-0">
-      <aside class="flex flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] flex-shrink-0 transition-all duration-200 overflow-hidden" :class="sidebarOpen ? 'w-36' : 'w-12'">
-        <button @click="sidebarOpen = !sidebarOpen" class="flex items-center gap-2 h-10 px-3 text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors flex-shrink-0">
-          <ChevronLeft v-if="sidebarOpen" :size="18"/><ChevronRight v-else :size="18"/>
-          <span v-if="sidebarOpen" class="text-xs font-medium">模式</span>
-        </button>
-        <div class="border-b border-[var(--color-border)]" />
-        <div class="flex flex-col gap-0.5 p-1.5" data-tour="modes">
-          <button v-for="m in modes" :key="m.key" @click="setMode(m.key)" class="flex items-center gap-2.5 h-9 px-2 rounded-lg transition-colors text-sm flex-shrink-0" :class="app.editorMode === m.key ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-medium' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]'">
-            <component :is="modeIcons[m.key]" :size="18" /><span v-if="sidebarOpen" class="whitespace-nowrap">{{ m.label }}</span>
-          </button>
+  <div class="h-full min-h-0 page-bg flex flex-col">
+    <header class="workspace-contextbar px-4 py-2 flex items-center gap-2 flex-wrap" data-tour="story-nav">
+      <StoryNavigator :auto-pull="true"/>
+      <div class="w-px h-5 bg-[var(--color-border)]" />
+      <button @click="handleClear" :disabled="editor.documentBusy" class="btn btn-sm btn-ghost text-[var(--color-text-secondary)] hover:text-error hover:bg-error/10 gap-1.5 whitespace-nowrap"><Eraser :size="15" />清空</button>
+    </header>
+    <div class="workspace-commandbar editor-commandbar px-4 py-1.5">
+      <div class="editor-toolbar-row flex items-center min-w-max" data-tour="toolbar">
+        <div class="editor-mode-tabs" data-tour="modes">
+          <button
+            v-for="m in modes"
+            :key="m.key"
+            class="editor-mode-tab"
+            :class="{ 'is-active': app.editorMode === m.key }"
+            :disabled="editor.documentBusy"
+            @click="setMode(m.key)"
+          >{{ m.label }}</button>
         </div>
-        <div class="flex-1" />
-        <div class="border-t border-[var(--color-border)] p-1.5 space-y-0.5">
-          <router-link to="/download" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Download :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">下载</span></router-link>
-          <router-link to="/glossary" data-tour="nav-glossary" :class="{ 'notify-breathe': glossaryNotify.active }" :title="glossaryNotify.tooltip || undefined" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Library :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">术语库</span></router-link>
-          <router-link to="/grammar" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><BookOpen :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">语法用例</span></router-link>
-          <!-- Plugin-contributed sidebar items (Live2D, etc.) -->
-          <router-link v-for="item in pluginRegistry.sidebarItems" :key="`${item.pluginId}:${item.id}`" :to="item.to" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><component :is="pluginIcon(item.icon)" :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">{{ item.label }}</span></router-link>
-          <router-link to="/market" data-tour="nav-market" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Store :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">插件市场</span></router-link>
-          <router-link v-if="settings.settings.debugEnabled" to="/debug" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Bug :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">调试</span></router-link>
-          <router-link to="/account" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Users :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">账号中心</span></router-link>
-          <router-link to="/settings" data-tour="nav-settings" class="flex items-center gap-2.5 h-9 w-full px-2 rounded-lg transition-colors text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]"><Cog :size="18"/><span v-if="sidebarOpen" class="whitespace-nowrap">设置</span></router-link>
-        </div>
-      </aside>
-      <div class="flex-1 flex flex-col min-w-0">
-        <header class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 flex items-center gap-2 flex-wrap" data-tour="story-nav">
-          <StoryNavigator :auto-pull="true"/>
-          <div class="w-px h-5 bg-[var(--color-border)]" />
-          <button @click="handleClear" class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5 whitespace-nowrap"><Eraser :size="15" />清空</button>
-        </header>
-        <div class="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5">
-          <div class="flex items-center gap-1 flex-wrap" data-tour="toolbar">
-            <button @click="handleOpen" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
-            <button v-if="app.editorMode === 2" @click="handleImportBaseline" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><FileInput :size="15" />导入校对稿</button>
+        <div class="w-px h-5 bg-[var(--color-border)] mx-3" />
+        <div class="flex items-center gap-1 flex-wrap">
+            <button @click="handleOpen" :disabled="editor.documentBusy" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
+            <button v-if="app.editorMode === 2" @click="handleImportBaseline" :disabled="editor.documentBusy" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><FileInput :size="15" />导入校对稿</button>
             <!-- @click 必须写 handleSave()：裸引用会把 MouseEvent 当 saveAs 传入 -->
-            <button @click="handleSave()" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
-            <button @click="doUndo" :disabled="!canUndo" :title="'撤销最近一次修改 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'undo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Undo2 :size="15" />撤销</button>
-            <button @click="doRedo" :disabled="!canRedo" :title="'重做 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'redo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Redo2 :size="15" />重做</button>
+            <button @click="handleSave()" :disabled="editor.documentBusy" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
+            <button @click="doUndo" :disabled="editor.documentBusy || !canUndo" :title="'撤销最近一次修改 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'undo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Undo2 :size="15" />撤销</button>
+            <button @click="doRedo" :disabled="editor.documentBusy || !canRedo" :title="'重做 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'redo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Redo2 :size="15" />重做</button>
             <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
             <button class="tbar-toggle" :aria-pressed="app.showFlashback" @click="app.showFlashback = !app.showFlashback"><Eye :size="15" />闪回</button>
             <button class="tbar-toggle" :aria-pressed="app.showGlossary" @click="app.showGlossary = !app.showGlossary"><Languages :size="15" />术语</button>
@@ -767,6 +770,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
               <button class="tbar-toggle" :aria-pressed="app.showCompare" @click="app.showCompare = !app.showCompare"><Columns2 :size="15" />对比</button>
             </template>
           </div>
+      </div>
           <!-- Search / replace bar. The left group is width-matched to the
                toolbar so the divider sits directly under the toolbar's
                "搜索"-right divider. -->
@@ -781,22 +785,16 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
             <input v-model="app.searchReplace" type="text" placeholder="替换为(仅译文)" class="app-input w-56" />
             <button @click="handleReplaceAll" class="btn btn-sm btn-ghost border border-[var(--color-border)]">全部替换</button>
           </div>
-        </div>
-        <!-- With a wallpaper on, let the editor card float on a thin gutter of
-             wallpaper instead of butting a bordered rounded card straight into
-             the square toolbar/sidebar (which left a hard full-width seam + cut
-             corner notches). Off → unchanged full-bleed layout. -->
-        <main
-          class="flex-1 min-h-0 flex"
-          :class="[{ 'p-2.5': app.bgEnabled }, dockSide === 'top' || dockSide === 'bottom' ? 'flex-col' : 'flex-row']"
-        >
-          <Live2DDock v-if="dockSide === 'top'" placement="top" />
-          <div class="flex-1 min-w-0 min-h-0" data-tour="workspace"><EditorWorkspace ref="workspace"/></div>
-          <Live2DDock v-if="dockSide === 'right'" placement="right" />
-          <Live2DDock v-if="dockSide === 'bottom'" placement="bottom" />
-        </main>
-      </div>
     </div>
+    <main
+      class="editor-stage flex-1 min-h-0 flex"
+      :class="[dockSide === 'top' || dockSide === 'bottom' ? 'flex-col' : 'flex-row']"
+    >
+      <Live2DDock v-if="dockSide === 'top'" placement="top" />
+      <div class="flex-1 min-w-0 min-h-0" data-tour="workspace"><EditorWorkspace ref="workspace"/></div>
+      <Live2DDock v-if="dockSide === 'right'" placement="right" />
+      <Live2DDock v-if="dockSide === 'bottom'" placement="bottom" />
+    </main>
     <SpeakerCountDialog v-if="showSpeakerCount" @close="showSpeakerCount = false"/>
     <SpeakerCheckDialog v-if="showSpeakerCheck" @close="showSpeakerCheck = false" @save="handleSpeakerBatchSave" />
     <Transition name="confirm-fade">
@@ -844,18 +842,45 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
 </template>
 
 <style scoped>
-/* 术语库呼吸灯：有提案待审核 / 自己的提案新通过时，侧栏「术语库」按主题色
-   呼吸发光（动画期间 animation 的 color 优先级高于普通声明，会盖过 hover）。 */
-@keyframes notify-breathe {
-  0%, 100% { color: var(--color-text-secondary); filter: none; }
-  50% {
-    color: var(--color-primary);
-    filter: drop-shadow(0 0 6px color-mix(in oklch, var(--color-primary) 55%, transparent));
-  }
+.workspace-contextbar {
+  min-height: 3.75rem;
+  background: color-mix(in oklch, var(--color-surface) 96%, var(--color-bg));
+  border-bottom: 1px solid var(--color-border);
 }
-.notify-breathe { animation: notify-breathe 2.2s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) {
-  .notify-breathe { animation: none; color: var(--color-primary); }
+.editor-commandbar { overflow-x: auto; }
+.editor-toolbar-row { min-height: 2rem; }
+.editor-mode-tabs {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+.editor-mode-tab {
+  position: relative;
+  align-self: stretch;
+  padding: 0 0.05rem;
+  border: 0;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: 0.78rem;
+  transition: color var(--dur-fast);
+}
+.editor-mode-tab:hover { color: var(--color-text); }
+.editor-mode-tab.is-active { color: var(--color-text); font-weight: 750; }
+.editor-mode-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.42rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent, var(--color-primary));
+}
+.editor-stage {
+  padding: 0.75rem 0.9rem 0.9rem;
+  background-image: linear-gradient(135deg, color-mix(in oklch, var(--color-base-content) 1.2%, transparent) 0 1px, transparent 1px 100%);
+  background-size: 2.9rem 2.9rem;
 }
 
 /* Toolbar toggle chip — on/off view options (闪回/术语/同步/搜索/对比) */

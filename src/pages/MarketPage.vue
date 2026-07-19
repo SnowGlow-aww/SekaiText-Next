@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { onMounted, computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { ArrowLeft, RefreshCw, Search, Package, Download, CircleCheck, ExternalLink } from 'lucide-vue-next'
+import { RefreshCw, Search, Package, Download, CircleCheck, ExternalLink } from 'lucide-vue-next'
 import { useMarketStore } from '../stores/market'
 import { useToast } from '../composables/useToast'
 import { openExternal } from '../utils/openExternal'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
-const router = useRouter()
 const market = useMarketStore()
 const toast = useToast()
 const query = ref('')
@@ -20,6 +19,7 @@ const filtered = computed(() => {
     (p) =>
       p.name.toLowerCase().includes(q) ||
       p.id.toLowerCase().includes(q) ||
+      (p.author || '').toLowerCase().includes(q) ||
       (p.description || '').toLowerCase().includes(q),
   )
 })
@@ -35,30 +35,35 @@ async function install(id: string, name: string) {
 </script>
 
 <template>
-  <div class="min-h-screen page-bg text-[var(--color-text)]">
-    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
-      <div class="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.push('/')" class="icon-btn -ml-1"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-bold tracking-tight">插件市场</h1>
-        <button
-          @click="market.refresh()"
-          :disabled="market.loading"
-          class="ml-auto btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
-        >
-          <RefreshCw :size="15" :class="{ 'animate-spin': market.loading }" /> 刷新
-        </button>
-      </div>
-    </header>
+  <div class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
+    <AppPageHeader title="插件市场" subtitle="发现并管理 SekaiText 扩展" width="5xl">
+      <button
+        @click="market.refresh()"
+        :disabled="market.loading"
+        class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
+      >
+        <RefreshCw :size="15" :class="{ 'animate-spin': market.loading }" /> 刷新
+      </button>
+    </AppPageHeader>
 
-    <main class="max-w-5xl mx-auto px-6 py-8 space-y-6">
-      <div class="relative max-w-md">
-        <Search :size="16" class="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-tertiary)] pointer-events-none" />
-        <input
-          v-model="query"
-          type="text"
-          placeholder="搜索插件…"
-          class="app-input pl-9"
-        />
+    <main class="max-w-5xl mx-auto px-6 py-7 space-y-5">
+      <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <h2 class="section-title">
+            可用扩展
+            <span v-if="!market.loading && !market.error" class="font-normal text-[var(--color-text-tertiary)]">· {{ filtered.length }}</span>
+          </h2>
+          <p class="app-help mt-1">安装后即可在侧栏或设置页使用；更新会保留现有配置。</p>
+        </div>
+        <div class="relative w-full sm:w-80">
+          <Search :size="16" class="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-tertiary)] pointer-events-none" />
+          <input
+            v-model="query"
+            type="text"
+            placeholder="按名称、作者或功能搜索"
+            class="app-input pl-9"
+          />
+        </div>
       </div>
 
       <div v-if="market.loading" class="flex items-center justify-center gap-2 py-16 text-sm text-[var(--color-text-secondary)]">
@@ -68,9 +73,10 @@ async function install(id: string, name: string) {
         <span class="flex-1">{{ market.error }}</span>
         <button @click="market.refresh()" class="btn btn-sm btn-ghost border border-[var(--color-border)] shrink-0">重试</button>
       </div>
-      <div v-else-if="filtered.length === 0" class="flex flex-col items-center justify-center py-20 text-[var(--color-text-tertiary)]">
-        <Package :size="40" class="mb-3 opacity-50" />
-        <p class="text-sm">{{ query ? '没有匹配的插件' : '插件市场暂无内容' }}</p>
+      <div v-else-if="filtered.length === 0" class="app-empty-state">
+        <span class="grid place-items-center w-12 h-12 rounded-2xl bg-primary/10 text-primary mb-3"><Package :size="24" /></span>
+        <strong class="text-sm font-semibold text-[var(--color-text)]">{{ query ? '没有找到匹配项' : '暂时没有可用扩展' }}</strong>
+        <p class="app-help mt-1.5">{{ query ? '试试更短的关键词，或清空搜索条件。' : '稍后刷新页面即可查看新插件。' }}</p>
       </div>
       <div v-else class="grid gap-3 sm:grid-cols-2">
         <div
@@ -78,7 +84,8 @@ async function install(id: string, name: string) {
           :key="p.id"
           class="app-card app-card-hover p-4 flex flex-col"
         >
-          <div class="flex items-start justify-between gap-2 mb-1">
+          <div class="flex items-start gap-3 mb-2.5">
+            <span class="grid place-items-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0"><Package :size="18" /></span>
             <div class="min-w-0">
               <h3 class="text-sm font-semibold truncate">{{ p.name }}</h3>
               <p class="text-xs text-[var(--color-text-secondary)] mt-0.5">
@@ -87,7 +94,7 @@ async function install(id: string, name: string) {
               </p>
             </div>
           </div>
-          <p class="text-xs text-[var(--color-text-secondary)] flex-1 line-clamp-3 mb-3">{{ p.description }}</p>
+          <p class="text-xs leading-relaxed text-[var(--color-text-secondary)] flex-1 line-clamp-3 mb-3">{{ p.description || '暂无插件说明' }}</p>
           <div class="flex items-center justify-between gap-2">
             <!-- Tauri webview 不处理 target=_blank，必须经 openExternal 调系统浏览器 -->
             <button

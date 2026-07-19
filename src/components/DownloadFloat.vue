@@ -17,11 +17,15 @@ const { tasks } = useDownloadFloat()
 </script>
 
 <template>
-  <div class="fixed top-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none">
+  <TransitionGroup
+    tag="div"
+    name="download-float"
+    class="fixed top-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none"
+  >
     <div
       v-for="t in tasks"
       :key="t.id"
-      class="app-card shadow-[var(--shadow-lg)] pointer-events-auto px-4 py-3 text-sm min-w-64 animate-in"
+      class="app-card shadow-[var(--shadow-lg)] pointer-events-auto px-4 py-3 text-sm min-w-64"
     >
       <div class="flex items-center gap-2.5">
         <span
@@ -55,15 +59,18 @@ const { tasks } = useDownloadFloat()
         </div>
       </div>
     </div>
-  </div>
+  </TransitionGroup>
 </template>
 
 <style scoped>
-@keyframes float-in {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-.animate-in {
-  animation: float-in 0.2s ease-out;
+.download-float-enter-active,
+.download-float-leave-active { transition: opacity 180ms ease, transform 240ms var(--ease-out); }
+.download-float-enter-from,
+.download-float-leave-to { opacity: 0; transform: translateX(1rem) scale(0.98); }
+.download-float-move { transition: transform 220ms var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .download-float-enter-active,
+  .download-float-leave-active,
+  .download-float-move { transition: none; }
 }
 </style>

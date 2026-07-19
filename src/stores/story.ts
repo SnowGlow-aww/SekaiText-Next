@@ -67,27 +67,45 @@ export const useStoryStore = defineStore('story', () => {
   // finally flip `loading` back off while another load is still running.
   let loadInFlight = false
 
+  function selectedRequest() {
+    return {
+      storyType: selectedType.value,
+      sort: selectedSort.value,
+      index: selectedIndex.value,
+      chapter: selectedChapter.value,
+      source: selectedSource.value,
+    }
+  }
+
+  async function fetchStory() {
+    return api.storyLoad(selectedRequest())
+  }
+
+  function applyStory(result: Awaited<ReturnType<typeof api.storyLoad>>) {
+    scenarioId.value = result.scenarioId
+    sourceTalks.value = result.sourceTalks
+    saveTitle.value = result.saveTitle || ''
+    chapterTitle.value = result.chapterTitle || ''
+    // 后端权威的索引完整标签（"<ID> <标题>"）。恢复对话框等路径会在索引列表
+    // 还没加载时设置 selectedIndex，导航 watcher 兜底写入裸 ID——若不在此收口
+    // 覆写，文档快照会带着裸标签建出「208」式目录（5.7.7 的文件夹跟随甚至会
+    // 把文件搬进去）。
+    if (result.indexLabel) selectedIndexLabel.value = result.indexLabel
+  }
+
+  function clearLoadedStory() {
+    scenarioId.value = ''
+    sourceTalks.value = []
+    saveTitle.value = ''
+    chapterTitle.value = ''
+  }
+
   async function loadStory() {
     if (loadInFlight) return
     loadInFlight = true
     loading.value = true
     try {
-      const result = await api.storyLoad({
-        storyType: selectedType.value,
-        sort: selectedSort.value,
-        index: selectedIndex.value,
-        chapter: selectedChapter.value,
-        source: selectedSource.value,
-      })
-      scenarioId.value = result.scenarioId
-      sourceTalks.value = result.sourceTalks
-      saveTitle.value = result.saveTitle || ''
-      chapterTitle.value = result.chapterTitle || ''
-      // 后端权威的索引完整标签（"<ID> <标题>"）。恢复对话框等路径会在索引列表
-      // 还没加载时设置 selectedIndex，导航 watcher 兜底写入裸 ID——若不在此收口
-      // 覆写，文档快照会带着裸标签建出「208」式目录（5.7.7 的文件夹跟随甚至会
-      // 把文件搬进去）。
-      if (result.indexLabel) selectedIndexLabel.value = result.indexLabel
+      applyStory(await fetchStory())
     } finally {
       loading.value = false
       loadInFlight = false
@@ -135,6 +153,7 @@ export const useStoryStore = defineStore('story', () => {
     storyTypes, sorts, indices, chapters,
     selectedType, selectedSort, selectedIndex, selectedIndexLabel, selectedChapter, selectedSource,
     scenarioId, sourceTalks, saveTitle, chapterTitle, loading,
-    fetchTypes, fetchSorts, fetchIndex, fetchChapters, loadStory, loadStoryLocal, snapshotDocMeta,
+    fetchTypes, fetchSorts, fetchIndex, fetchChapters, fetchStory, applyStory, clearLoadedStory,
+    loadStory, loadStoryLocal, snapshotDocMeta,
   }
 })

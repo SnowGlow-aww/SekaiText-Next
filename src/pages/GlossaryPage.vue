@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onActivated, onDeactivated, watch, computed, useTemplateRef } from 'vue'
-import { useRouter } from 'vue-router'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ArrowLeft, Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud } from 'lucide-vue-next'
+import { Search, Plus, Trash2, Pencil, Check, X, Lock, Unlock, UploadCloud } from 'lucide-vue-next'
 import { useGlossaryStore } from '../stores/glossary'
 import { useTeamStore } from '../stores/team'
 import { useToast } from '../composables/useToast'
@@ -14,8 +13,8 @@ import type { GlossaryEntry } from '../types/glossary'
 import { useGlossaryNotifyStore } from '../stores/glossaryNotify'
 import { useTour } from '../onboarding/useTour'
 import { glossaryTour } from '../onboarding/tours'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
-const router = useRouter()
 const glossary = useGlossaryStore()
 const team = useTeamStore()
 const toast = useToast()
@@ -354,12 +353,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen page-bg text-[var(--color-text)]">
-    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
-      <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-bold tracking-tight">术语库</h1>
-        <div class="ml-auto flex items-center gap-2">
+  <div class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
+    <AppPageHeader title="术语库" subtitle="统一译名、称呼与团队用语" width="6xl">
           <button
             v-if="!team.readonly"
             data-tour="glo-lock"
@@ -381,9 +376,7 @@ onMounted(async () => {
             <UploadCloud :size="16" />
             {{ uploading ? '上传中…' : '上传至线上术语库' }}
           </button>
-        </div>
-      </div>
-    </header>
+    </AppPageHeader>
 
     <div class="max-w-6xl mx-auto px-6 pt-4">
       <div class="flex gap-1 border-b border-[var(--color-border)]" data-tour="glo-tabs">

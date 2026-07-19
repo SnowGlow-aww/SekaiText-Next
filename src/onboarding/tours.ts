@@ -45,13 +45,13 @@ export function appWelcomeTour(): TourDef {
         route: '/',
         selector: '[data-tour="nav-market"]',
         title: '插件市场',
-        body: 'Live2D 剧情播放器、自动轴机 / 压制等扩展功能都在这里安装，装完即用、独立更新。',
+        body: '你所需的扩展功能都在这里安装，装完即用、独立更新。',
       },
       {
         route: '/',
         selector: '[data-tour="nav-settings"]',
         title: '设置',
-        body: '所有偏好都集中在设置页——下一步带你进去逛一圈。',
+        body: '所有偏好都集中在设置页——下一步让我带你进去逛一圈。',
       },
       {
         route: '/settings',
@@ -63,7 +63,7 @@ export function appWelcomeTour(): TourDef {
         route: '/settings',
         selector: '[data-tour="set-editor"]',
         title: '编辑器偏好',
-        body: '字号、撤销深度、索引排序、切换模式时是否保留剧情……按个人习惯调整。',
+        body: '字号、撤销深度、索引排序、切换模式时是否保留剧情……按你的习惯调整。',
       },
       {
         route: '/settings',
@@ -81,7 +81,7 @@ export function appWelcomeTour(): TourDef {
         route: '/settings',
         selector: '[data-tour="set-about"]',
         title: '关于',
-        body: '检查更新、官网与 GitHub 入口都在这里；想重看本导览，随时点「新手导览」。',
+        body: '检查更新、官网与 GitHub 入口都在这里；如果想重看本导览，随时点「新手导览」。',
       },
       {
         title: '导览结束！',

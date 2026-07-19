@@ -77,6 +77,28 @@ export const useEditorStore = defineStore('editor', () => {
   const hasUnsavedChanges = ref(false)
   const majorClue = ref<string | null>(null)
   const docMeta = ref<DocMeta | null>(null)
+  // Document replacement (story load / file open / mode swap) is a single
+  // guarded operation. Async responses must only commit while their token is
+  // current; the revision changes solely after a complete document swap and is
+  // safe to use as the workspace transition key.
+  const documentBusy = ref(false)
+  const documentRevision = ref(0)
+  let documentOperationSeq = 0
+
+  function beginDocumentOperation(): number | null {
+    if (documentBusy.value) return null
+    documentBusy.value = true
+    documentRevision.value++
+    return ++documentOperationSeq
+  }
+
+  function isCurrentDocumentOperation(token: number): boolean {
+    return documentBusy.value && token === documentOperationSeq
+  }
+
+  function finishDocumentOperation(token: number) {
+    if (token === documentOperationSeq) documentBusy.value = false
+  }
 
   const currentMode = ref<EditorMode>(0)
   const modeCache = new Map<EditorMode, ModeState>()
@@ -187,8 +209,9 @@ export const useEditorStore = defineStore('editor', () => {
   return {
     talks, dstTalks, referTalks, sourceTalks,
     currentFilePath, titleOverride, hasUnsavedChanges, majorClue, docMeta, mutationSeq,
-    currentMode,
+    currentMode, documentBusy, documentRevision,
     setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
     saveModeState, loadModeState, switchMode, rebindPaths, syncTitleFromPath,
+    beginDocumentOperation, isCurrentDocumentOperation, finishDocumentOperation,
   }
 })

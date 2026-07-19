@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2, Globe, Github, Compass } from 'lucide-vue-next'
+import { Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2, Globe, Github, Compass } from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settings'
 import { useEditorStore } from '../stores/editor'
 import { useAppUpdateStore } from '../stores/appUpdate'
@@ -17,6 +17,7 @@ import { openExternal, LINKS } from '../utils/openExternal'
 import { useTour } from '../onboarding/useTour'
 import { appWelcomeTour } from '../onboarding/tours'
 import { useFileDialog } from '../composables/useFileDialog'
+import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -29,6 +30,84 @@ const appUpdate = useAppUpdateStore()
 
 const appVersion = __APP_VERSION__
 const checking = ref(false)
+
+const settingsSections = [
+  { id: 'settings-appearance', label: '外观', icon: Palette },
+  { id: 'settings-editor', label: '编辑器', icon: SlidersHorizontal },
+  { id: 'settings-files', label: '保存与下载', icon: Save },
+  { id: 'settings-network', label: '网络与调试', icon: Wifi },
+  { id: 'settings-shortcuts', label: '快捷键', icon: Keyboard },
+  { id: 'settings-local', label: '本地文件', icon: FolderOpen },
+  { id: 'settings-plugins', label: '插件', icon: Puzzle },
+  { id: 'settings-about', label: '关于', icon: Info },
+]
+const activeSettingsSection = ref(settingsSections[0].id)
+const settingsPage = ref<HTMLElement | null>(null)
+let settingsScrollRaf = 0
+let scrollingToSettingsSection: string | null = null
+let settingsScrollUnlockTimer: ReturnType<typeof setTimeout> | null = null
+
+function settingsNavigationOffset(): number {
+  const pageTop = settingsPage.value?.getBoundingClientRect().top ?? 0
+  const headerBottom = document.querySelector<HTMLElement>('.app-page-header')?.getBoundingClientRect().bottom ?? 0
+  const compactNav = document.querySelector<HTMLElement>('[data-settings-nav="compact"]')
+  const compactBottom = compactNav && compactNav.getBoundingClientRect().height > 0
+    ? compactNav.getBoundingClientRect().bottom
+    : 0
+  return Math.ceil(Math.max(headerBottom, compactBottom) - pageTop + 8)
+}
+
+function updateActiveSettingsSection() {
+  settingsScrollRaf = 0
+  if (scrollingToSettingsSection) return
+
+  const scroller = settingsPage.value
+  if (!scroller) return
+  const atPageBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
+  if (atPageBottom) {
+    activeSettingsSection.value = settingsSections[settingsSections.length - 1].id
+    return
+  }
+
+  const threshold = settingsNavigationOffset()
+  let current = settingsSections[0].id
+  for (const section of settingsSections) {
+    const el = document.getElementById(section.id)
+    if (el && el.getBoundingClientRect().top <= threshold) current = section.id
+  }
+  activeSettingsSection.value = current
+}
+
+function onSettingsScroll() {
+  if (scrollingToSettingsSection) {
+    if (settingsScrollUnlockTimer) window.clearTimeout(settingsScrollUnlockTimer)
+    settingsScrollUnlockTimer = window.setTimeout(() => {
+      scrollingToSettingsSection = null
+      settingsScrollUnlockTimer = null
+    }, 160)
+    return
+  }
+  if (!settingsScrollRaf) settingsScrollRaf = window.requestAnimationFrame(updateActiveSettingsSection)
+}
+
+function jumpToSettingsSection(id: string) {
+  const el = document.getElementById(id)
+  if (!el) return
+
+  activeSettingsSection.value = id
+  scrollingToSettingsSection = id
+  if (settingsScrollUnlockTimer) window.clearTimeout(settingsScrollUnlockTimer)
+  settingsScrollUnlockTimer = window.setTimeout(() => {
+    scrollingToSettingsSection = null
+    settingsScrollUnlockTimer = null
+  }, 800)
+
+  const scroller = settingsPage.value
+  if (!scroller) return
+  const top = scroller.scrollTop + el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - settingsNavigationOffset()
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  scroller.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? 'auto' : 'smooth' })
+}
 
 // 更新与插件市场的下载渠道；所选源优先、另一侧自动兜底（后端 routeDownloadURL）。
 const downloadMirrorOptions = [
@@ -247,29 +326,86 @@ function resetAllShortcuts() {
 }
 
 // Capture the next keystroke globally while recording.
-import { watch, onUnmounted } from 'vue'
 watch(recordingId, (id) => {
   if (id) window.addEventListener('keydown', onRecordKey, true)
   else window.removeEventListener('keydown', onRecordKey, true)
 })
-onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
+function attachSettingsNavigation() {
+  settingsPage.value?.addEventListener('scroll', onSettingsScroll, { passive: true })
+  // Router scroll restoration runs alongside keep-alive activation. Wait one
+  // extra frame so the highlighted category reflects the final scroll offset,
+  // not the cached position from before navigation.
+  settingsScrollRaf = window.requestAnimationFrame(() => {
+    settingsScrollRaf = window.requestAnimationFrame(updateActiveSettingsSection)
+  })
+}
+function detachSettingsNavigation() {
+  settingsPage.value?.removeEventListener('scroll', onSettingsScroll)
+  if (settingsScrollRaf) window.cancelAnimationFrame(settingsScrollRaf)
+  if (settingsScrollUnlockTimer) window.clearTimeout(settingsScrollUnlockTimer)
+  settingsScrollRaf = 0
+  settingsScrollUnlockTimer = null
+  scrollingToSettingsSection = null
+}
+onActivated(attachSettingsNavigation)
+onDeactivated(() => {
+  recordingId.value = null
+  detachSettingsNavigation()
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onRecordKey, true)
+  detachSettingsNavigation()
+})
 </script>
 
 
 <template>
-  <div class="min-h-screen page-bg text-[var(--color-text)]">
-    <header class="sticky top-0 z-[var(--z-sticky)] bg-[color-mix(in_oklch,var(--color-bg)_82%,transparent)] backdrop-blur-md border-b border-[var(--color-border)]">
-      <div class="max-w-4xl mx-auto px-6 h-14 flex items-center gap-3">
-        <button @click="router.push('/')" class="icon-btn -ml-1" title="返回编辑器"><ArrowLeft :size="18" /></button>
-        <h1 class="text-base font-bold tracking-tight">设置</h1>
-        <button @click="saveAndBack()" class="btn btn-sm btn-brand ml-auto">保存并返回</button>
-      </div>
-    </header>
+  <div ref="settingsPage" class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
+    <AppPageHeader title="设置" subtitle="调整界面、编辑体验与本地文件行为" width="6xl">
+      <button @click="saveAndBack()" class="btn btn-sm btn-brand">保存并返回</button>
+    </AppPageHeader>
 
-    <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+    <main class="max-w-6xl mx-auto px-6 py-7">
+      <nav
+        data-settings-nav="compact"
+        class="lg:hidden sticky top-16 z-[var(--z-sticky)] -mx-2 mb-5 px-2 py-2 flex gap-1 overflow-x-auto rounded-xl border border-[var(--color-border)] bg-[color-mix(in_oklch,var(--color-bg)_88%,transparent)] backdrop-blur-md"
+        aria-label="设置分类"
+      >
+        <button
+          v-for="section in settingsSections"
+          :key="`compact-${section.id}`"
+          class="settings-nav-link w-auto shrink-0"
+          :class="{ 'is-active': activeSettingsSection === section.id }"
+          :aria-current="activeSettingsSection === section.id ? 'location' : undefined"
+          @click="jumpToSettingsSection(section.id)"
+        >
+          <component :is="section.icon" :size="15" />
+          <span>{{ section.label }}</span>
+        </button>
+      </nav>
+
+      <div class="grid grid-cols-1 lg:grid-cols-[10.5rem_minmax(0,1fr)] gap-7 items-start">
+        <aside class="hidden lg:block sticky top-24">
+          <div class="section-eyebrow px-2 mb-2">设置分类</div>
+          <nav class="space-y-0.5" aria-label="设置分类">
+            <button
+              v-for="section in settingsSections"
+              :key="section.id"
+              class="settings-nav-link"
+              :class="{ 'is-active': activeSettingsSection === section.id }"
+              :aria-current="activeSettingsSection === section.id ? 'location' : undefined"
+              @click="jumpToSettingsSection(section.id)"
+            >
+              <component :is="section.icon" :size="15" />
+              <span>{{ section.label }}</span>
+            </button>
+          </nav>
+        </aside>
+
+        <div class="min-w-0 space-y-4">
 
       <!-- ====== 外观 ====== -->
-      <section class="app-card p-5" data-tour="set-appearance">
+      <section id="settings-appearance" class="app-card p-5 scroll-mt-24" data-tour="set-appearance">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Palette :size="15" /></span>
           <div class="section-title">外观</div>
@@ -305,7 +441,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 编辑器 ====== -->
-      <section class="app-card p-5" data-tour="set-editor">
+      <section id="settings-editor" class="app-card p-5 scroll-mt-24" data-tour="set-editor">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><SlidersHorizontal :size="15" /></span>
           <div class="section-title">编辑器</div>
@@ -373,7 +509,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 下载 ====== -->
-      <section class="app-card p-5">
+      <section id="settings-files" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><Download :size="15" /></span>
           <div class="section-title">下载</div>
@@ -459,7 +595,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 网络与调试 ====== -->
-      <section class="app-card p-5" data-tour="set-network">
+      <section id="settings-network" class="app-card p-5 scroll-mt-24" data-tour="set-network">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-accent/12 text-accent"><Wifi :size="15" /></span>
           <div class="section-title">网络与调试</div>
@@ -505,7 +641,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 快捷键 ====== -->
-      <section class="app-card p-5" data-tour="set-shortcuts">
+      <section id="settings-shortcuts" class="app-card p-5 scroll-mt-24" data-tour="set-shortcuts">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
             <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Keyboard :size="15" /></span>
@@ -536,7 +672,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 本地文件 ====== -->
-      <section class="app-card p-5">
+      <section id="settings-local" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><FolderOpen :size="15" /></span>
           <div class="section-title">本地文件</div>
@@ -553,7 +689,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 插件管理 ====== -->
-      <section class="app-card p-5">
+      <section id="settings-plugins" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
             <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><Puzzle :size="15" /></span>
@@ -613,7 +749,7 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       </section>
 
       <!-- ====== 关于 ====== -->
-      <section class="app-card p-5">
+      <section id="settings-about" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-success/12 text-success"><Info :size="15" /></span>
           <div class="section-title">关于</div>
@@ -641,6 +777,8 @@ onUnmounted(() => window.removeEventListener('keydown', onRecordKey, true))
       <div class="flex justify-end gap-2 border-t border-[var(--color-border)] pt-6">
         <button @click="router.push('/')" class="btn btn-sm btn-ghost border border-[var(--color-border)]">取消</button>
         <button @click="saveAndBack()" class="btn btn-sm btn-brand">保存设置</button>
+      </div>
+        </div>
       </div>
     </main>
   </div>
