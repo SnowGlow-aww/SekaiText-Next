@@ -38,6 +38,14 @@ test('app release validates the CDN market without owning market publication', (
   assert.match(marketVerifier, /requireV3:\s*true/)
 })
 
+test('release verification prepares generated Tauri inputs before Rust tests', () => {
+  const rustTest = release.indexOf('cargo test --locked --manifest-path src-tauri/Cargo.toml')
+  const sidecar = release.indexOf('node scripts/build-go.mjs')
+  const enginePath = release.indexOf('mkdir -p src-tauri/resources/engine')
+  assert.ok(rustTest >= 0 && sidecar >= 0 && sidecar < rustTest)
+  assert.ok(enginePath >= 0 && enginePath < rustTest)
+})
+
 test('all external workflow actions are pinned to full commit SHAs', () => {
   for (const [name, source] of [['release', release], ['manifest', manifest]]) {
     for (const match of source.matchAll(/^\s*-\s+uses:\s+([^\s#]+)/gm)) {
