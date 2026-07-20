@@ -74,6 +74,8 @@ jobs:
       - run: npm run build
       - run: go test -race ./...
         working-directory: backend
+      - name: Prepare generated engine resource path
+        run: mkdir -p src-tauri/resources/engine
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: cargo check --locked --release --manifest-path src-tauri/Cargo.toml
       - run: npm ci

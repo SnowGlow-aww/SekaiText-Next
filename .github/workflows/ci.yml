@@ -48,6 +48,8 @@ jobs:
           go-version: "1.24.x"
           cache-dependency-path: backend/go.sum
       - run: node scripts/build-go.mjs
+      - name: Prepare generated engine resource path
+        run: mkdir -p src-tauri/resources/engine
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
