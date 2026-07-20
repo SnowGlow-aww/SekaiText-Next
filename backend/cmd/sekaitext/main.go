@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"sekaitext/backend/internal/api"
@@ -55,6 +59,8 @@ func main() {
 	ensureDir(cfg.PluginsDir)
 
 	router := api.NewRouter(cfg)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	if *ipcMode {
 		// Stdio transport (Tauri sekai:// custom scheme): no TCP bind. Logs go to
@@ -63,8 +69,19 @@ func main() {
 		log.Printf("SekaiText server starting in IPC (stdio) mode")
 		log.Printf("Resource directory: %s", cfg.BaseDir)
 		log.Printf("Data directory: %s", cfg.DataBaseDir)
-		if err := ipc.Serve(router); err != nil {
-			log.Fatalf("IPC server failed: %v", err)
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- ipc.Serve(router) }()
+		var serveErr error
+		select {
+		case serveErr = <-serveDone:
+		case <-signalCtx.Done():
+		}
+		shutdownErr := shutdownLifecycle(router, nil, 8*time.Second)
+		if shutdownErr != nil {
+			log.Printf("IPC shutdown warning: %v", shutdownErr)
+		}
+		if serveErr != nil {
+			log.Printf("IPC server failed: %v", serveErr)
 		}
 		return
 	}
@@ -80,11 +97,53 @@ func main() {
 	// old backend (which lacks newer routes → 404s).
 	ln, err := listenWithRetry(addr, 25, 200*time.Millisecond)
 	if err != nil {
-		log.Fatalf("Server failed to bind %s: %v", addr, err)
+		_ = shutdownLifecycle(router, nil, 8*time.Second)
+		log.Printf("Server failed to bind %s: %v", addr, err)
+		return
 	}
-	if err := http.Serve(ln, router); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	httpServer := &http.Server{Handler: router}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- httpServer.Serve(ln) }()
+	var serveErr error
+	select {
+	case serveErr = <-serveDone:
+	case <-signalCtx.Done():
 	}
+	if err := shutdownLifecycle(router, httpServer, 8*time.Second); err != nil {
+		log.Printf("Server shutdown warning: %v", err)
+	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		log.Printf("Server failed: %v", serveErr)
+	}
+}
+
+type lifecycleShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+// shutdownLifecycle is the single exit path for TCP serve errors, OS signals,
+// and IPC EOF. HTTP intake stops before process-wide engine cleanup begins.
+func shutdownLifecycle(backend lifecycleShutdowner, server *http.Server, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var serverDone chan error
+	if server != nil {
+		serverDone = make(chan error, 1)
+		go func() { serverDone <- server.Shutdown(ctx) }()
+	}
+	var err error
+	if backend != nil {
+		err = errors.Join(err, backend.Shutdown(ctx))
+	}
+	if serverDone != nil {
+		select {
+		case serverErr := <-serverDone:
+			err = errors.Join(err, serverErr)
+		case <-ctx.Done():
+			err = errors.Join(err, ctx.Err())
+		}
+	}
+	return err
 }
 
 // listenWithRetry binds addr, retrying briefly so a port momentarily held by a

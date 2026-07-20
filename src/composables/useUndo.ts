@@ -11,6 +11,11 @@ interface Snapshot {
 const undoStack = ref<Snapshot[]>([])
 const redoStack = ref<Snapshot[]>([])
 
+export function clearUndoHistory() {
+  undoStack.value = []
+  redoStack.value = []
+}
+
 export function useUndo() {
   const settings = useSettingsStore()
   const maxDepth = computed(() => settings.settings.undoDepth ?? 20)
@@ -50,8 +55,7 @@ export function useUndo() {
   }
 
   function clear() {
-    undoStack.value = []
-    redoStack.value = []
+    clearUndoHistory()
   }
 
   const canUndo = computed(() => undoStack.value.length > 0)

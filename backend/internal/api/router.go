@@ -1,10 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,8 +15,19 @@ import (
 	"sekaitext/backend/internal/service"
 )
 
+// Server exposes the HTTP router together with process-wide service cleanup.
+type Server struct {
+	http.Handler
+	engine    *service.EngineManager
+	appUpdate *service.AppUpdateService
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return errors.Join(s.appUpdate.Shutdown(ctx), s.engine.Shutdown(ctx))
+}
+
 // NewRouter creates and returns a chi router with all routes and middleware configured.
-func NewRouter(cfg *config.AppConfig) http.Handler {
+func NewRouter(cfg *config.AppConfig) *Server {
 	logBuf := service.NewLogBuffer(200)
 	h := NewHandler(cfg, logBuf)
 	r := chi.NewRouter()
@@ -25,16 +37,9 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger(logBuf))
 
-	// CORS - allow all origins in dev.
-	// NOTE: '*' is intentionally permissive because the Tauri webview origin
-	// (tauri://localhost) varies by platform/dev-server; left unrestricted by design.
-	corsHandler := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"*"},
-		AllowCredentials: true,
-	})
-	r.Use(corsHandler.Handler)
+	// Packaged builds use process-private IPC and do not depend on browser CORS.
+	// TCP is only used by the two explicit Vite development origins below.
+	r.Use(developmentCORS().Handler)
 	r.Use(capabilityToken(cfg.AuthToken))
 
 	// Health check
@@ -122,6 +127,8 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 			r.Get("/list", h.PluginsList)
 			r.Post("/install", h.PluginInstall)
 			r.Post("/{id}/enabled", h.PluginSetEnabled)
+			r.Post("/{id}/rollback", h.PluginRollback)
+			r.Post("/{id}/mark-good", h.PluginMarkGood)
 			r.Delete("/{id}", h.PluginUninstall)
 			r.Get("/{id}/files/*", h.PluginFile)
 		})
@@ -149,6 +156,7 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		// model_list against the local mirror and fetch the missing models +
 		// their motion data. Start returns {taskId}; poll sync-progress.
 		r.Post("/live2d/sync", h.Live2DSync)
+		r.Post("/live2d/sync-cancel", h.Live2DSyncCancel)
 		r.Get("/live2d/sync-progress", h.Live2DSyncProgress)
 
 		// Glossary (term library): search, browse, CRUD, import, sync, appellations
@@ -172,10 +180,11 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		})
 
 		// Team mode: proxy to a remote glossary-server (login, sync, proposals,
-		// review, admin). The local backend holds the token + skips the server's
-		// self-signed TLS; the frontend only ever talks to localhost.
+		// review, admin). The local backend holds the token and pins the explicitly
+		// confirmed server certificate; the frontend only talks to localhost.
 		r.Route("/team", func(r chi.Router) {
 			r.Get("/status", h.TeamStatus)
+			r.Post("/probe", h.TeamProbe)
 			r.Post("/login", h.TeamLogin)
 			r.Post("/logout", h.TeamLogout)
 			r.Post("/connect", h.TeamConnect)
@@ -256,22 +265,24 @@ func NewRouter(cfg *config.AppConfig) http.Handler {
 		})
 	})
 
-	return r
+	return &Server{Handler: r, engine: h.engine, appUpdate: h.appUpdate}
+}
+
+func developmentCORS() *cors.Cors {
+	return cors.New(cors.Options{
+		AllowedOrigins:   []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "X-Sekai-Token"},
+		AllowCredentials: false,
+	})
 }
 
 // capabilityToken rejects mutating requests that don't carry the per-launch
 // X-Sekai-Token (set by the Tauri shell, forwarded by the frontend fetch wrapper
-// in main.ts). Enforced only when token != "" (production). GET/HEAD/OPTIONS and a
-// few routes that can't carry the header are exempt: recovery/clear (sendBeacon),
-// and the plugin-driven engine/live2d routes — none of which are part of the
-// settings → download → open RCE surface this guards.
+// in main.ts). Enforced only when token != "" (production). GET/HEAD/OPTIONS are
+// non-mutating; the sole write exemption is the exact sendBeacon recovery clear
+// request, whose browser API cannot attach the custom header.
 func capabilityToken(token string) func(http.Handler) http.Handler {
-	exempt := map[string]bool{
-		"/api/v1/recovery/clear":       true, // sendBeacon on beforeunload (headers impossible)
-		"/api/v1/live2d/import":        true, // invoked by the Live2D plugin bundle
-		"/api/v1/live2d/sync":          true, // invoked by the Live2D plugin bundle
-		"/api/v1/live2d/sync-progress": true, // GET; listed for parity (GET is never token-checked)
-	}
 	mutating := func(m string) bool {
 		switch m {
 		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
@@ -281,8 +292,8 @@ func capabilityToken(token string) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if token != "" && mutating(r.Method) &&
-				!exempt[r.URL.Path] && !strings.HasPrefix(r.URL.Path, "/api/v1/engine/") {
+			recoveryBeacon := r.Method == http.MethodPost && r.URL.Path == "/api/v1/recovery/clear"
+			if token != "" && mutating(r.Method) && !recoveryBeacon {
 				got := r.Header.Get("X-Sekai-Token")
 				if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 					w.Header().Set("Content-Type", "application/json")

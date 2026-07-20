@@ -18,6 +18,7 @@ package ipc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -25,15 +26,27 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // magic is the 4-byte marker that prefixes every frame.
 var magic = [4]byte{'S', 'K', 'F', '1'}
+
+const (
+	maxFrameHeaderSize    = 1 << 20   // 1 MiB
+	maxRequestBodySize    = 16 << 20  // 16 MiB; requests are JSON/control payloads
+	maxFrameBodySize      = 128 << 20 // 128 MiB; responses may contain Live2D assets
+	maxBufferedResponses  = 192 << 20 // shared cap across concurrent response recorders
+	maxConcurrentRequests = 8
+)
+
+// ErrFrameTooLarge is returned before allocating or writing a frame whose
+// declared size exceeds the transport limits.
+var ErrFrameTooLarge = errors.New("ipc: frame exceeds size limit")
 
 // RequestHeader is the JSON header of a request frame (Rust → Go).
 // Field names are pinned by transport-spec §2 and must not change.
@@ -43,6 +56,7 @@ type RequestHeader struct {
 	Path    string            `json:"path"`
 	Query   string            `json:"query"` // no leading '?'; empty when absent
 	Headers map[string]string `json:"headers"`
+	Cancel  uint64            `json:"cancel,omitempty"` // control frame: cancel this request id
 }
 
 // ResponseHeader is the JSON header of a response frame (Go → Rust).
@@ -58,6 +72,10 @@ type ResponseHeader struct {
 // closed mid-frame surfaces as io.ErrUnexpectedEOF. The stream stays byte-aligned
 // even if headerJSON later fails to parse, because the full frame is consumed here.
 func ReadFrame(r io.Reader) (header []byte, body []byte, err error) {
+	return readFrame(r, maxFrameBodySize)
+}
+
+func readFrame(r io.Reader, maxBodySize uint64) (header []byte, body []byte, err error) {
 	var m [4]byte
 	if _, err = io.ReadFull(r, m[:]); err != nil {
 		return nil, nil, err
@@ -71,6 +89,9 @@ func ReadFrame(r io.Reader) (header []byte, body []byte, err error) {
 	}
 	headerLen := binary.LittleEndian.Uint32(lens[0:4])
 	bodyLen := binary.LittleEndian.Uint32(lens[4:8])
+	if err := validateFrameLengthsWithBodyLimit(uint64(headerLen), uint64(bodyLen), maxBodySize); err != nil {
+		return nil, nil, err
+	}
 
 	header = make([]byte, headerLen)
 	if _, err = io.ReadFull(r, header); err != nil {
@@ -90,25 +111,59 @@ func ReadFrame(r io.Reader) (header []byte, body []byte, err error) {
 // + headerJSON go out in a single write; the (possibly large, binary) body in a
 // second write so it is never copied.
 func WriteFrame(w io.Writer, header []byte, body []byte) error {
+	if err := validateFrameLengths(uint64(len(header)), uint64(len(body))); err != nil {
+		return err
+	}
 	prefix := make([]byte, 12+len(header))
 	copy(prefix[0:4], magic[:])
 	binary.LittleEndian.PutUint32(prefix[4:8], uint32(len(header)))
 	binary.LittleEndian.PutUint32(prefix[8:12], uint32(len(body)))
 	copy(prefix[12:], header)
-	if _, err := w.Write(prefix); err != nil {
+	if err := writeAll(w, prefix); err != nil {
 		return err
 	}
 	if len(body) > 0 {
-		if _, err := w.Write(body); err != nil {
+		if err := writeAll(w, body); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func validateFrameLengths(headerLen, bodyLen uint64) error {
+	return validateFrameLengthsWithBodyLimit(headerLen, bodyLen, maxFrameBodySize)
+}
+
+func validateFrameLengthsWithBodyLimit(headerLen, bodyLen, maxBodySize uint64) error {
+	if headerLen > uint64(^uint32(0)) || bodyLen > uint64(^uint32(0)) {
+		return fmt.Errorf("%w: length does not fit uint32", ErrFrameTooLarge)
+	}
+	if headerLen > maxFrameHeaderSize {
+		return fmt.Errorf("%w: header is %d bytes (max %d)", ErrFrameTooLarge, headerLen, maxFrameHeaderSize)
+	}
+	if bodyLen > maxBodySize {
+		return fmt.Errorf("%w: body is %d bytes (max %d)", ErrFrameTooLarge, bodyLen, maxBodySize)
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		if n <= 0 || n > len(p) {
+			return io.ErrShortWrite
+		}
+		p = p[n:]
+	}
+	return nil
+}
+
 // Serve runs the stdio transport: it writes the ready control frame, then reads
 // request frames from os.Stdin and dispatches each (in its own goroutine) through
-// router via an httptest recorder, writing the response frame back to stdout.
+// router via a bounded recorder, writing the response frame back to stdout.
 //
 // stdout carries response frames ONLY. Serve captures the real stdout up front,
 // then points os.Stdout and the standard logger at stderr so any stray
@@ -146,9 +201,44 @@ func Serve(router http.Handler) error {
 		return err
 	}
 
+	requestSlots := make(chan struct{}, maxConcurrentRequests)
+	responseBudget := &byteBudget{limit: maxBufferedResponses}
+	var activeMu sync.Mutex
+	var activeWG sync.WaitGroup
+	active := make(map[uint64]context.CancelFunc)
+	cancelAll := func() {
+		activeMu.Lock()
+		for id, cancel := range active {
+			cancel()
+			delete(active, id)
+		}
+		activeMu.Unlock()
+	}
+	defer func() {
+		cancelAll()
+		done := make(chan struct{})
+		go func() {
+			activeWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			log.Printf("ipc: timed out waiting for active request handlers during shutdown")
+		}
+	}()
+
+	writeError := func(id uint64, status int, message string) error {
+		h, err := json.Marshal(ResponseHeader{ID: id, Status: status, Headers: map[string]string{"Content-Type": "text/plain; charset=utf-8"}})
+		if err != nil {
+			return err
+		}
+		return writeFrame(h, []byte(message))
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		header, body, err := ReadFrame(reader)
+		header, body, err := readFrame(reader, maxRequestBodySize)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil // pipe closed → graceful exit
@@ -162,13 +252,63 @@ func Serve(router http.Handler) error {
 			log.Printf("ipc: malformed request header: %v", err)
 			continue
 		}
-		go dispatch(router, req, body, writeFrame)
+		if req.Cancel != 0 {
+			activeMu.Lock()
+			cancel := active[req.Cancel]
+			activeMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			continue
+		}
+		if req.ID == 0 {
+			if err := writeError(0, http.StatusBadRequest, "request id 0 is reserved"); err != nil {
+				return err
+			}
+			continue
+		}
+
+		select {
+		case requestSlots <- struct{}{}:
+		default:
+			if err := writeError(req.ID, http.StatusServiceUnavailable, "ipc request limit reached"); err != nil {
+				return err
+			}
+			continue
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		activeMu.Lock()
+		if _, duplicate := active[req.ID]; duplicate {
+			activeMu.Unlock()
+			cancel()
+			<-requestSlots
+			if err := writeError(req.ID, http.StatusConflict, "duplicate ipc request id"); err != nil {
+				return err
+			}
+			continue
+		}
+		active[req.ID] = cancel
+		activeMu.Unlock()
+
+		activeWG.Add(1)
+		go func() {
+			defer func() {
+				activeWG.Done()
+				activeMu.Lock()
+				delete(active, req.ID)
+				activeMu.Unlock()
+				cancel()
+				<-requestSlots
+			}()
+			dispatch(ctx, router, req, body, writeFrame, responseBudget)
+		}()
 	}
 }
 
 // dispatch reconstructs an *http.Request from a request frame, runs it through
-// the existing chi router via httptest.NewRecorder, and writes the response frame.
-func dispatch(router http.Handler, req RequestHeader, body []byte, writeFrame func(header, body []byte) error) {
+// the existing chi router, and writes the response frame.
+func dispatch(ctx context.Context, router http.Handler, req RequestHeader, body []byte, writeFrame func(header, body []byte) error, budget *byteBudget) {
 	target := req.Path
 	if req.Query != "" {
 		target += "?" + req.Query
@@ -192,6 +332,7 @@ func dispatch(router http.Handler, req RequestHeader, body []byte, writeFrame fu
 		RemoteAddr:    "ipc",
 		RequestURI:    target,
 	}
+	httpReq = httpReq.WithContext(ctx)
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 		if http.CanonicalHeaderKey(k) == "Host" {
@@ -199,8 +340,16 @@ func dispatch(router http.Handler, req RequestHeader, body []byte, writeFrame fu
 		}
 	}
 
-	rec := httptest.NewRecorder()
+	rec := newBudgetedCappedRecorder(maxFrameBodySize, budget)
+	defer func() { rec.releaseBudget() }()
 	router.ServeHTTP(rec, httpReq)
+	if rec.tooLarge || rec.budgetExceeded {
+		rec.releaseBudget()
+		rec = newCappedRecorder(maxFrameBodySize)
+		rec.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rec.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = rec.Write([]byte("ipc response body exceeds memory or frame limit"))
+	}
 
 	respHeaders := make(map[string]string, len(rec.Header()))
 	for k, vs := range rec.Header() {
@@ -233,7 +382,114 @@ func dispatch(router http.Handler, req RequestHeader, body []byte, writeFrame fu
 		log.Printf("ipc: marshal response header for id=%d: %v", req.ID, err)
 		return
 	}
+	if err := validateFrameLengths(uint64(len(respHeader)), uint64(rec.Body.Len())); err != nil {
+		respHeader, _ = json.Marshal(ResponseHeader{
+			ID:      req.ID,
+			Status:  http.StatusInsufficientStorage,
+			Headers: map[string]string{"Content-Type": "text/plain; charset=utf-8"},
+		})
+		rec.releaseBudget()
+		rec = newCappedRecorder(maxFrameBodySize)
+		_, _ = rec.Write([]byte("ipc response exceeds frame limit"))
+	}
 	if err := writeFrame(respHeader, rec.Body.Bytes()); err != nil {
 		log.Printf("ipc: write response frame for id=%d: %v", req.ID, err)
+	}
+}
+
+// cappedRecorder mirrors the ResponseRecorder behavior used by the IPC adapter,
+// but never retains more than the SKF1 body limit.
+type cappedRecorder struct {
+	header         http.Header
+	Body           bytes.Buffer
+	Code           int
+	limit          int
+	wroteHeader    bool
+	tooLarge       bool
+	budget         *byteBudget
+	reserved       int
+	budgetExceeded bool
+}
+
+func newCappedRecorder(limit int) *cappedRecorder {
+	return &cappedRecorder{header: make(http.Header), Code: http.StatusOK, limit: limit}
+}
+
+func newBudgetedCappedRecorder(limit int, budget *byteBudget) *cappedRecorder {
+	recorder := newCappedRecorder(limit)
+	recorder.budget = budget
+	return recorder
+}
+
+func (r *cappedRecorder) Header() http.Header { return r.header }
+
+func (r *cappedRecorder) WriteHeader(code int) {
+	if r.wroteHeader {
+		return
+	}
+	r.wroteHeader = true
+	r.Code = code
+}
+
+func (r *cappedRecorder) Write(p []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	remaining := r.limit - r.Body.Len()
+	retained := len(p)
+	if retained > remaining {
+		retained = remaining
+	}
+	if retained > 0 && r.budget != nil && !r.budget.reserve(retained) {
+		r.budgetExceeded = true
+		return len(p), nil
+	}
+	r.reserved += retained
+	if len(p) > remaining {
+		if remaining > 0 {
+			_, _ = r.Body.Write(p[:remaining])
+		}
+		r.tooLarge = true
+		return len(p), nil
+	}
+	_, _ = r.Body.Write(p)
+	return len(p), nil
+}
+
+func (r *cappedRecorder) releaseBudget() {
+	if r.budget != nil && r.reserved > 0 {
+		r.budget.release(r.reserved)
+		r.reserved = 0
+	}
+}
+
+type byteBudget struct {
+	mu    sync.Mutex
+	used  int
+	limit int
+}
+
+func (b *byteBudget) reserve(size int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if size < 0 || b.used > b.limit-size {
+		return false
+	}
+	b.used += size
+	return true
+}
+
+func (b *byteBudget) release(size int) {
+	b.mu.Lock()
+	b.used -= size
+	if b.used < 0 {
+		b.used = 0
+	}
+	b.mu.Unlock()
+}
+
+func (r *cappedRecorder) Flush() {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
 	}
 }

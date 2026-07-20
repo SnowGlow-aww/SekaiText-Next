@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,33 +22,35 @@ var teamRefreshMu sync.Mutex
 // do performs an authenticated request to the remote server, transparently
 // refreshing the access token once on 401. Returns the raw body and status.
 func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) {
-	if !t.LoggedIn() {
+	t.mu.RLock()
+	epoch, serverURL, access, client := t.sessionEpoch, t.serverURL, t.access, t.client
+	t.mu.RUnlock()
+	if access == "" {
 		return nil, 0, ErrNotLoggedIn
 	}
 	// send issues the request and reports which access token it used, so the
 	// 401 path can tell whether a concurrent goroutine already rotated it.
-	send := func() (*http.Response, string, error) {
-		t.mu.RLock()
-		url, access := t.serverURL+path, t.access
-		t.mu.RUnlock()
+	send := func(serverURL, access string, client *http.Client) (*http.Response, error) {
+		if client == nil {
+			return nil, ErrTeamFingerprintRequired
+		}
 		var rdr io.Reader
 		if payload != nil {
 			b, _ := json.Marshal(payload)
 			rdr = bytes.NewReader(b)
 		}
-		req, err := http.NewRequest(method, url, rdr)
+		req, err := http.NewRequest(method, serverURL+path, rdr)
 		if err != nil {
-			return nil, access, err
+			return nil, err
 		}
 		if payload != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Authorization", "Bearer "+access)
-		resp, err := t.client.Do(req)
-		return resp, access, err
+		return client.Do(req)
 	}
 
-	resp, usedAccess, err := send()
+	resp, err := send(serverURL, access, client)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -59,16 +62,29 @@ func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) 
 		// straight to the retry rather than POSTing our now-stale token.
 		teamRefreshMu.Lock()
 		t.mu.RLock()
-		alreadyRefreshed := t.access != usedAccess
+		if t.sessionEpoch != epoch || t.serverURL != serverURL || t.client != client {
+			t.mu.RUnlock()
+			teamRefreshMu.Unlock()
+			return nil, 0, ErrStaleTeamSession
+		}
+		alreadyRefreshed := t.access != access
 		t.mu.RUnlock()
 		if !alreadyRefreshed {
-			if err := t.doRefresh(); err != nil {
+			if err := t.doRefreshFor(epoch); err != nil {
 				teamRefreshMu.Unlock()
-				return nil, http.StatusUnauthorized, ErrNotLoggedIn
+				return nil, http.StatusUnauthorized, err
 			}
 		}
+		t.mu.RLock()
+		if t.sessionEpoch != epoch || t.serverURL != serverURL || t.client != client {
+			t.mu.RUnlock()
+			teamRefreshMu.Unlock()
+			return nil, 0, ErrStaleTeamSession
+		}
+		access = t.access
+		t.mu.RUnlock()
 		teamRefreshMu.Unlock()
-		resp, _, err = send()
+		resp, err = send(serverURL, access, client)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -93,9 +109,12 @@ func remoteErr(body []byte, status int) error {
 // Used for no-login readonly mode.
 func (t *TeamService) getPublic(path string) ([]byte, int, error) {
 	t.mu.RLock()
-	url := t.serverURL + path
+	url, client := t.serverURL+path, t.client
 	t.mu.RUnlock()
-	resp, err := t.client.Get(url)
+	if client == nil {
+		return nil, 0, ErrTeamFingerprintRequired
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -110,26 +129,27 @@ func (t *TeamService) getPublic(path string) ([]byte, int, error) {
 // non-JSON/empty config): callers fall back to the direct server endpoints.
 func (t *TeamService) snapshot() string {
 	t.mu.RLock()
-	server, base, forURL := t.serverURL, t.snapshotBase, t.snapshotBaseFor
+	server, fingerprint, client := t.serverURL, t.fingerprint, t.client
+	base, forURL, forFingerprint := t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseFingerprint
 	t.mu.RUnlock()
 	if server == "" {
 		return ""
 	}
-	if forURL == server {
+	if forURL == server && forFingerprint == fingerprint {
 		// 已针对当前服务器发现过（base 可能是空串，代表老服务器，同样不再重探）。
 		return base
 	}
 	// 首次或切服务器：向服务器发现 CDN 基址。config 是幂等 GET，无令牌轮换风险，
 	// 并发多次探测顶多多打一两个请求，无需像刷新那样串行化。
-	discovered := t.discoverSnapshotBase(server)
+	discovered := t.discoverSnapshotBase(server, client)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// 双检：期间 serverURL 若被切换/清空，本次结果作废，交给下次读路径重探。
-	if t.serverURL == server {
-		t.snapshotBase, t.snapshotBaseFor = discovered, server
+	// 双检：期间 URL 或证书 pin 若被切换/清空，本次结果作废，交给下次读路径重探。
+	if t.serverURL == server && t.fingerprint == fingerprint {
+		t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseFingerprint = discovered, server, fingerprint
 		return discovered
 	}
-	if t.snapshotBaseFor == t.serverURL {
+	if t.snapshotBaseFor == t.serverURL && t.snapshotBaseFingerprint == t.fingerprint {
 		return t.snapshotBase
 	}
 	return ""
@@ -138,9 +158,12 @@ func (t *TeamService) snapshot() string {
 // discoverSnapshotBase asks the team server where its CDN snapshot lives via the
 // public GET /api/config. Returns "" for old servers (404), unreachable servers,
 // or an unparseable/empty payload — callers then fall back to direct endpoints.
-// Goes through t.client because the team server itself uses a self-signed cert.
-func (t *TeamService) discoverSnapshotBase(server string) string {
-	resp, err := t.client.Get(server + "/api/config")
+// Goes through the pinned team client because the server may be self-signed.
+func (t *TeamService) discoverSnapshotBase(server string, client *http.Client) string {
+	if client == nil {
+		return ""
+	}
+	resp, err := client.Get(server + "/api/config")
 	if err != nil {
 		return ""
 	}
@@ -155,7 +178,11 @@ func (t *TeamService) discoverSnapshotBase(server string) string {
 	if json.Unmarshal(raw, &c) != nil {
 		return ""
 	}
-	return strings.TrimRight(strings.TrimSpace(c.SnapshotBase), "/")
+	base := strings.TrimRight(strings.TrimSpace(c.SnapshotBase), "/")
+	if !t.snapshotURLAllowed(base) {
+		return ""
+	}
+	return base
 }
 
 // getCDN performs a clean GET against the public CDN (real certificate, default
@@ -164,6 +191,9 @@ func (t *TeamService) discoverSnapshotBase(server string) string {
 // ETag, so a conditional request would mismatch and defeat caching. Freshness rides
 // on the object's short CDN TTL (version.json) plus the ?v= cache key (export.json).
 func (t *TeamService) getCDN(url string) ([]byte, int, error) {
+	if !t.snapshotURLAllowed(url) {
+		return nil, 0, errors.New("snapshot URL must be public HTTPS")
+	}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, err
@@ -253,6 +283,103 @@ func (t *TeamService) FetchExport(version int) ([]byte, error) {
 		// CDN 失败/body 不可信 → 落到服务器直连回退。
 	}
 	return t.fetchExportDirect()
+}
+
+// TeamSyncResult is the outcome of one serialized version/export/merge cycle.
+type TeamSyncResult struct {
+	Version int
+	Changed bool
+	Raw     []byte
+	Removed int
+}
+
+// Sync serializes the complete pull and merge sequence against other syncs. The
+// URL, certificate fingerprint, and session epoch captured at entry must remain
+// current after each remote operation and immediately before both merge and
+// last-version commit. Session transitions are excluded only during the local
+// merge, so logout remains immediate while a network request is in flight.
+func (t *TeamService) Sync(force bool, merge func([]byte) (int, error)) (TeamSyncResult, error) {
+	t.syncMu.Lock()
+	defer t.syncMu.Unlock()
+
+	t.mu.RLock()
+	session := teamSessionIdentity{
+		epoch:       t.sessionEpoch,
+		serverURL:   t.serverURL,
+		fingerprint: t.fingerprint,
+	}
+	lastVer := t.lastVer
+	t.mu.RUnlock()
+	if session.serverURL == "" {
+		return TeamSyncResult{}, ErrNotLoggedIn
+	}
+
+	remoteVer, err := t.RemoteVersion()
+	if err != nil {
+		if !t.sessionIdentityCurrent(session) {
+			return TeamSyncResult{}, ErrStaleTeamSession
+		}
+		return TeamSyncResult{}, err
+	}
+	if !t.sessionIdentityCurrent(session) {
+		return TeamSyncResult{}, ErrStaleTeamSession
+	}
+	if remoteVer < lastVer {
+		return TeamSyncResult{Version: lastVer}, nil
+	}
+	if !force && remoteVer == lastVer {
+		return TeamSyncResult{Version: remoteVer}, nil
+	}
+
+	raw, err := t.FetchExport(remoteVer)
+	if err != nil {
+		if !t.sessionIdentityCurrent(session) {
+			return TeamSyncResult{}, ErrStaleTeamSession
+		}
+		return TeamSyncResult{}, err
+	}
+	if !t.sessionIdentityCurrent(session) {
+		return TeamSyncResult{}, ErrStaleTeamSession
+	}
+	if merge == nil {
+		return TeamSyncResult{}, errors.New("team sync merge callback is required")
+	}
+
+	// Login/connect/logout/disconnect take sessionMu for their in-memory
+	// transition. Once this check passes, the identity cannot change between the
+	// merge and commit; the second check documents and enforces that invariant.
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	t.mu.RLock()
+	if !t.sessionIdentityCurrentLocked(session) {
+		t.mu.RUnlock()
+		return TeamSyncResult{}, ErrStaleTeamSession
+	}
+	currentLastVer := t.lastVer
+	t.mu.RUnlock()
+	if remoteVer < currentLastVer || (!force && remoteVer == currentLastVer) {
+		return TeamSyncResult{Version: currentLastVer}, nil
+	}
+
+	removed, err := merge(raw)
+	if err != nil {
+		return TeamSyncResult{}, err
+	}
+
+	t.mu.Lock()
+	if !t.sessionIdentityCurrentLocked(session) {
+		t.mu.Unlock()
+		return TeamSyncResult{}, ErrStaleTeamSession
+	}
+	if remoteVer < t.lastVer {
+		version := t.lastVer
+		t.mu.Unlock()
+		return TeamSyncResult{Version: version}, nil
+	}
+	t.lastVer = remoteVer
+	t.mu.Unlock()
+
+	return TeamSyncResult{Version: remoteVer, Changed: true, Raw: raw, Removed: removed}, nil
 }
 
 // fetchExportDirect reads the full export straight from the server (the pre-CDN path).

@@ -2,7 +2,8 @@
 import { ref, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { Save, Trash2, Pause, Play } from 'lucide-vue-next'
 import { useDebugLog } from '../composables/useDebugLog'
-import { BASE_URL } from '../api/client'
+import { api } from '../api/client'
+import { formatDebugLogLines } from '../utils/debugLogs'
 import AppPageHeader from '../components/ui/AppPageHeader.vue'
 
 const { logs, clear: clearFrontend } = useDebugLog()
@@ -14,6 +15,7 @@ interface ServerLog {
 
 const serverLogs = ref<ServerLog[]>([])
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollController: AbortController | null = null
 const logContainer = ref<HTMLElement | null>(null)
 
 interface MergedEntry {
@@ -41,14 +43,14 @@ function mergeLogs() {
 }
 
 async function fetchServerLogs() {
+  const controller = pollController
+  if (!controller) return
   try {
-    const res = await fetch(`${BASE_URL}/debug/logs`)
-    if (res.ok) {
-      serverLogs.value = await res.json()
-      mergeLogs()
-      scrollToBottom()
-    }
-  } catch {
+    serverLogs.value = await api.debugLogs(controller.signal)
+    mergeLogs()
+    scrollToBottom()
+  } catch (error) {
+    if (controller.signal.aborted) return
     // server not available
   }
 }
@@ -78,6 +80,8 @@ function stopPolling() {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  pollController?.abort()
+  pollController = null
 }
 
 onMounted(mergeLogs)
@@ -85,6 +89,7 @@ onMounted(mergeLogs)
 // 2s poll is tied to activation — otherwise it keeps hitting /debug/logs forever
 // after the page is left once.
 onActivated(() => {
+  pollController = new AbortController()
   fetchServerLogs()
   if (!pollTimer) pollTimer = setInterval(fetchServerLogs, 2000)
 })
@@ -92,19 +97,14 @@ onDeactivated(stopPolling)
 onUnmounted(stopPolling)
 
 async function saveLogs() {
-  const lines = mergedLogs.value.map(e => {
-    const tag = e.type === 'server' ? 'server' : 'front'
-    return `[${e.ts}] [${tag}] ${e.msg}`
-  }).join('\n')
+  const lines = formatDebugLogLines(mergedLogs.value)
   try {
-    const res = await fetch(`${BASE_URL}/debug/save`, { method: 'POST' })
-    if (res.ok) {
-      const data = await res.json()
-      addLogLine(`日志已保存 (${data.lines} 行 → debug.log)`, 'info')
-    }
+    const data = await api.debugSaveLogs(lines)
+    addLogLine(`日志已保存 (${data.lines} 行 → ${data.path || 'debug.log'})`, 'info')
   } catch {
     // Fallback: download as blob
-    const blob = new Blob([lines], { type: 'text/plain' })
+    const header = `=== SekaiText Debug Log ${new Date().toISOString()} ===\n\n`
+    const blob = new Blob([header + lines.join('\n')], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

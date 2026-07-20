@@ -15,6 +15,7 @@ import { useGlossaryTooltip } from '../../composables/useGlossaryTooltip'
 import { annotateFlashbacks } from '../../utils/flashback'
 import { FileText } from 'lucide-vue-next'
 import type { DstTalk } from '../../types/translation'
+import { commitRebasedDocumentMutation, DocumentMutationQueue } from '../../editor/documentMutation'
 
 const iconErrors = ref<Set<number>>(new Set())
 const workspaceRef = ref<HTMLElement | null>(null)
@@ -141,6 +142,16 @@ const talkGroups = computed(() => {
   return groups
 })
 
+function updateTitle(e: Event) {
+  editor.updateTitle((e.target as HTMLInputElement).value)
+}
+
+function isEditableTalk(talk: DstTalk): boolean {
+  if (!talk.save) return false
+  if (talk.speaker !== '') return true
+  return talk.text.trim() !== '' || (srcTalk(talk)?.text ?? '').trim() !== ''
+}
+
 // ---- Editing (from DestPanel) ----
 // 按行防抖：每行独立 timer + 独立待提交文本。旧实现所有行共享一个 editTimeout /
 // pendingEdit，行 B 在 300ms 内开始编辑会 clearTimeout 掉行 A 尚未派发的
@@ -148,6 +159,32 @@ const talkGroups = computed(() => {
 // dstTalks，保存即写回旧文本＝丢译文。改为按行各清各的 timer，互不干扰。
 const editTimers = new Map<number, ReturnType<typeof setTimeout>>()
 const pendingEdits = new Map<number, { text: string; revision: number }>()
+const composingRows = new Set<number>()
+const compositionWaiters = new Map<number, Set<() => void>>()
+let editSessionRow = -1
+let editSessionSnapshotTaken = false
+let workspaceUnmounted = false
+
+function onCompositionStart(idx: number) {
+  composingRows.add(idx)
+}
+
+function onCompositionEnd(e: CompositionEvent, idx: number) {
+  composingRows.delete(idx)
+  materializeTextEdit(idx, (e.target as HTMLElement).textContent ?? '')
+  const waiters = compositionWaiters.get(idx)
+  compositionWaiters.delete(idx)
+  for (const resolve of waiters ?? []) resolve()
+}
+
+function waitForCompositionEnd(idx: number): Promise<void> {
+  if (!composingRows.has(idx)) return Promise.resolve()
+  return new Promise(resolve => {
+    const waiters = compositionWaiters.get(idx) ?? new Set<() => void>()
+    waiters.add(resolve)
+    compositionWaiters.set(idx, waiters)
+  })
+}
 
 // Per-row v-for keys use the talk's globalIdx (its index in editor.talks), which
 // is unique across the whole list. The old idx+dstidx key could collide between a
@@ -156,6 +193,53 @@ const pendingEdits = new Map<number, { text: string; revision: number }>()
 // line's text). globalIdx keys eliminate that aliasing.
 
 const MAX_LINES_PER_SRC = 10
+
+interface QueuedStructuralTarget {
+  row: number
+  revision: number
+  valid: boolean
+}
+
+const structuralQueue = new DocumentMutationQueue()
+const structuralTargets: QueuedStructuralTarget[] = []
+
+function enqueueStructuralMutation(
+  row: number,
+  mutation: (target: QueuedStructuralTarget) => Promise<void>,
+): Promise<void> {
+  const target = { row, revision: editor.documentRevision, valid: true }
+  structuralTargets.push(target)
+  return structuralQueue.run(() => mutation(target)).finally(() => {
+    const index = structuralTargets.indexOf(target)
+    if (index >= 0) structuralTargets.splice(index, 1)
+  })
+}
+
+function rebaseQueuedRows(
+  current: QueuedStructuralTarget,
+  operation: 'insert' | 'remove',
+  row: number,
+) {
+  const currentIndex = structuralTargets.indexOf(current)
+  for (let i = currentIndex + 1; i < structuralTargets.length; i++) {
+    const target = structuralTargets[i]
+    if (target.revision !== current.revision || !target.valid) continue
+    if (operation === 'insert') {
+      if (target.row > row) target.row++
+    } else if (target.row === row) {
+      target.valid = false
+    } else if (target.row > row) {
+      target.row--
+    }
+  }
+}
+
+function structuralTargetIsCurrent(target: QueuedStructuralTarget): boolean {
+  return target.valid
+    && editor.documentRevision === target.revision
+    && target.row >= 0
+    && target.row < editor.talks.length
+}
 
 // A row is "changed" iff it carries a real diff (computed by the backend against
 // its baseline). Using the diff as the single source of truth keeps the baseline
@@ -202,17 +286,20 @@ async function commitTextChange(row: number, newText: string, revision: number) 
   // write the old document's text into an unrelated row of the NEW document.
   if (editor.documentRevision !== revision || editor.talks[row]?.text !== newText) return
   try {
-    const result = await api.changeText({
-      row,
-      text: newText,
-      editorMode: app.editorMode,
-      talks: editor.talks,
-      dstTalks: editor.dstTalks,
-      referTalks: editor.referTalks,
-    })
-    if (editor.documentRevision !== revision) return
-    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
-    editor.markUnsaved()
+    await commitRebasedDocumentMutation(
+      () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+      () => editor.documentRevision === revision && editor.talks[row]?.text === newText,
+      () => api.changeText({
+        row,
+        text: newText,
+        editorMode: app.editorMode,
+        talks: editor.talks,
+        dstTalks: editor.dstTalks,
+        referTalks: editor.referTalks,
+      }),
+      result => editor.setTalks(result.talks, result.dstTalks, editor.referTalks),
+      materializeFocusedEdit,
+    )
   } catch (e: any) {
     console.error('[Editor] text change API failed', { row, error: e?.message || e })
     toast.show('Text save failed: ' + (e?.message || 'unknown error'), 'error')
@@ -234,26 +321,32 @@ function handleTextChange(row: number, newText: string) {
 
 // blur 包装：清编辑态（恢复外层选中框）再走原提交逻辑。
 function onEditBlur(e: Event, idx: number) {
-  if (editingRow.value === idx) editingRow.value = -1
   onBlur(e, idx)
+  if (editingRow.value === idx) editingRow.value = -1
+  if (editSessionRow === idx) {
+    editSessionRow = -1
+    editSessionSnapshotTaken = false
+  }
 }
 
-function onBlur(e: Event, idx: number) {
-  // Use textContent, not innerText: innerText reflects *rendered* layout and can
-  // pull in text from adjacent inline elements (e.g. the row-number "0" shown
-  // beside the field) or inject newlines from the diff <span>s. textContent
-  // returns exactly the concatenated text of this field's nodes — the line text.
-  const newText = (e.target as HTMLElement).textContent ?? ''
+function materializeTextEdit(idx: number, newText: string): boolean {
   // Real-change guard: blurring without an actual edit must not mark the
   // document dirty or trigger a diff recompute.
-  if (editor.talks[idx]?.text === newText) return
+  if (editor.talks[idx]?.text === newText) return false
   // Snapshot the PRE-edit state here — before the in-place commit below — so the
   // first undo actually reverts this edit. pushSnapshot deep-clones on capture,
   // and the debounced handleTextChange runs AFTER the commit; snapshotting there
   // recorded the already-applied text (off-by-one: the first undo appeared to do
   // nothing, every undo lagged one edit). It also survives debounce cancellation
   // when a second row is edited within 300ms, which previously dropped the snapshot.
-  undo.pushSnapshot(editor.talks, editor.dstTalks)
+  if (editSessionRow !== idx) {
+    editSessionRow = idx
+    editSessionSnapshotTaken = false
+  }
+  if (!editSessionSnapshotTaken) {
+    undo.pushSnapshot(editor.talks, editor.dstTalks)
+    editSessionSnapshotTaken = true
+  }
   // Commit the edit to the talks array SYNCHRONOUSLY before the debounced API
   // call. Otherwise the text only reaches editor.talks when the debounced
   // changeText returns, so a save (or cancelPendingEdit from undo / replace-all)
@@ -272,52 +365,108 @@ function onBlur(e: Event, idx: number) {
   if (di >= 0 && di < editor.dstTalks.length) editor.dstTalks[di].text = newText
   editor.markUnsaved()
   handleTextChange(idx, newText)
+  return true
+}
+
+function onBlur(e: Event, idx: number) {
+  // Use textContent, not innerText: innerText reflects *rendered* layout and can
+  // pull in text from adjacent inline elements (e.g. the row-number "0" shown
+  // beside the field) or inject newlines from the diff <span>s. textContent
+  // returns exactly the concatenated text of this field's nodes — the line text.
+  materializeTextEdit(idx, (e.target as HTMLElement).textContent ?? '')
+}
+
+async function materializeFocusedEdit() {
+  if (workspaceUnmounted || typeof document === 'undefined') return
+  const active = document.activeElement
+  if (!(active instanceof HTMLElement) || !workspaceRef.value?.contains(active) || !active.isContentEditable) return
+  const row = Number(active.dataset.gidx)
+  if (!Number.isInteger(row) || row < 0) return
+  await waitForCompositionEnd(row)
+  if (workspaceUnmounted) return
+  materializeTextEdit(row, active.textContent ?? '')
+}
+
+function releaseCompositionWaiters() {
+  composingRows.clear()
+  for (const waiters of compositionWaiters.values()) {
+    for (const resolve of waiters) resolve()
+  }
+  compositionWaiters.clear()
 }
 
 async function handleAddLine(row: number) {
-  // FLUSH (not cancel) any pending debounced edit before mutating rows: the
-  // changeText round-trip does not reorder talks, so the captured indices stay
-  // valid, and cancelling would leave dstTalks without the edit's processed
-  // form (for a compare deletion row the slot insert happens server-side, so a
-  // cancel would drop that edit from the saved file entirely).
-  await flushPendingEdit().catch(() => {})
-  const currentIdx = editor.talks[row]?.idx
-  if (currentIdx && editor.talks.filter(t => t.idx === currentIdx).length >= MAX_LINES_PER_SRC) {
-    toast.show(`每个原文行最多添加 ${MAX_LINES_PER_SRC} 行`, 'warn')
-    return
-  }
-  undo.pushSnapshot(editor.talks, editor.dstTalks)
-  try {
-    const result = await api.addLine({
-      row,
-      talks: editor.talks,
-      dstTalks: editor.dstTalks,
-      isProofreading: app.editorMode !== 0,
-    })
-    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
-    editor.markUnsaved()
-  } catch (e: any) {
-    console.error('[Editor] add line failed', { row, error: e?.message || e })
-    toast.show('Add line failed: ' + (e?.message || 'unknown error'), 'error')
-  }
+  if (editor.documentBusy) return
+  return enqueueStructuralMutation(row, async target => {
+    // FLUSH (not cancel) any pending debounced edit before mutating rows: the
+    // backend may be the only place that materializes a missing dstTalks slot.
+    await flushPendingEdit().catch(() => {})
+    if (!structuralTargetIsCurrent(target)) return
+    const currentIdx = editor.talks[target.row]?.idx
+    if (currentIdx && editor.talks.filter(t => t.idx === currentIdx).length >= MAX_LINES_PER_SRC) {
+      toast.show(`每个原文行最多添加 ${MAX_LINES_PER_SRC} 行`, 'warn')
+      return
+    }
+    undo.pushSnapshot(editor.talks, editor.dstTalks)
+    try {
+      const row = target.row
+      const previousLength = editor.talks.length
+      let inserted = false
+      const committed = await commitRebasedDocumentMutation(
+        () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+        () => structuralTargetIsCurrent(target),
+        () => api.addLine({
+          row,
+          talks: editor.talks,
+          dstTalks: editor.dstTalks,
+          isProofreading: app.editorMode !== 0,
+        }),
+        result => {
+          inserted = result.talks.length === previousLength + 1
+          editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+          editor.markUnsaved()
+        },
+        materializeFocusedEdit,
+      )
+      if (committed && inserted) rebaseQueuedRows(target, 'insert', row)
+    } catch (e: any) {
+      console.error('[Editor] add line failed', { row: target.row, error: e?.message || e })
+      toast.show('Add line failed: ' + (e?.message || 'unknown error'), 'error')
+    }
+  })
 }
 
 async function handleRemoveLine(row: number) {
-  // See handleAddLine: flush the pending debounced edit before mutating rows.
-  await flushPendingEdit().catch(() => {})
-  undo.pushSnapshot(editor.talks, editor.dstTalks)
-  try {
-    const result = await api.removeLine({
-      row,
-      talks: editor.talks,
-      dstTalks: editor.dstTalks,
-    })
-    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
-    editor.markUnsaved()
-  } catch (e: any) {
-    console.error('[Editor] remove line failed', { row, error: e?.message || e })
-    toast.show('Remove line failed: ' + (e?.message || 'unknown error'), 'error')
-  }
+  if (editor.documentBusy) return
+  return enqueueStructuralMutation(row, async target => {
+    await flushPendingEdit().catch(() => {})
+    if (!structuralTargetIsCurrent(target)) return
+    undo.pushSnapshot(editor.talks, editor.dstTalks)
+    try {
+      const row = target.row
+      const previousLength = editor.talks.length
+      let removed = false
+      const committed = await commitRebasedDocumentMutation(
+        () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+        () => structuralTargetIsCurrent(target),
+        () => api.removeLine({
+          row,
+          talks: editor.talks,
+          dstTalks: editor.dstTalks,
+        }),
+        result => {
+          removed = result.talks.length === previousLength - 1
+          editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+          editor.markUnsaved()
+        },
+        materializeFocusedEdit,
+      )
+      if (committed && removed) rebaseQueuedRows(target, 'remove', row)
+    } catch (e: any) {
+      console.error('[Editor] remove line failed', { row: target.row, error: e?.message || e })
+      toast.show('Remove line failed: ' + (e?.message || 'unknown error'), 'error')
+    }
+  })
 }
 
 // Render the read-only baseline row: shows baseline text with removed chars in red.
@@ -438,16 +587,31 @@ watch(() => app.searchActiveIndex, () => {
 })
 
 async function handleBracketsReplace(row: number, brackets: string) {
-  // See handleAddLine: flush, don't drop, the pending edit.
-  await flushPendingEdit().catch(() => {})
-  undo.pushSnapshot(editor.talks, editor.dstTalks)
-  api.replaceBrackets({ row, brackets, talks: editor.talks, dstTalks: editor.dstTalks }).then(({ talks, dstTalks }) => {
-    editor.talks = talks
-    editor.dstTalks = dstTalks
-    editor.markUnsaved()
-  }).catch((e: any) => {
-    console.error('[Editor] bracket replace failed', { row, brackets, error: e?.message || e })
-    toast.show('Bracket replace failed: ' + (e?.message || 'unknown error'), 'error')
+  if (editor.documentBusy) return
+  return enqueueStructuralMutation(row, async target => {
+    await flushPendingEdit().catch(() => {})
+    if (!structuralTargetIsCurrent(target)) return
+    undo.pushSnapshot(editor.talks, editor.dstTalks)
+    try {
+      await commitRebasedDocumentMutation(
+        () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+        () => structuralTargetIsCurrent(target),
+        () => api.replaceBrackets({
+          row: target.row,
+          brackets,
+          talks: editor.talks,
+          dstTalks: editor.dstTalks,
+        }),
+        ({ talks, dstTalks }) => {
+          editor.setTalks(talks, dstTalks, editor.referTalks)
+          editor.markUnsaved()
+        },
+        materializeFocusedEdit,
+      )
+    } catch (e: any) {
+      console.error('[Editor] bracket replace failed', { row: target.row, brackets, error: e?.message || e })
+      toast.show('Bracket replace failed: ' + (e?.message || 'unknown error'), 'error')
+    }
   })
 }
 
@@ -496,6 +660,8 @@ const editingRow = ref(-1)
 function onEditFocus(gidx: number) {
   selectedRow.value = gidx
   editingRow.value = gidx
+  editSessionRow = gidx
+  editSessionSnapshotTaken = false
 }
 
 // 按显示顺序取全部可编辑行（data-gidx 标注 globalIdx）。
@@ -570,19 +736,40 @@ function cancelPendingEdit() {
 // EditorPage before saving so the file gets the fully processed (normalized +
 // diffed) text rather than relying on the raw onBlur commit alone.
 async function flushPendingEdit() {
-  // 取出所有待提交编辑，清掉各自 timer，按入队顺序串行提交后等整条链落地——
-  // 保存拿到的才是后端处理过（标准化 + diff）的译文，且各行都不漏。
-  const pending = Array.from(pendingEdits.entries())
-  for (const t of editTimers.values()) clearTimeout(t)
-  editTimers.clear()
-  pendingEdits.clear()
-  for (const [row, edit] of pending) enqueueCommit(row, edit.text, edit.revision)
-  await commitQueue
+  // Re-check after each round trip: the user may keep typing while an earlier
+  // row is being normalized. A response checkpoint materializes that DOM text,
+  // and this loop sends the resulting newer edit before the save can snapshot.
+  while (true) {
+    await materializeFocusedEdit()
+    const pending = Array.from(pendingEdits.entries())
+    for (const t of editTimers.values()) clearTimeout(t)
+    editTimers.clear()
+    pendingEdits.clear()
+    for (const [row, edit] of pending) enqueueCommit(row, edit.text, edit.revision)
+    await commitQueue
+    await materializeFocusedEdit()
+    if (pendingEdits.size === 0) break
+  }
 }
-defineExpose({ cancelPendingEdit, flushPendingEdit })
+
+async function flushPendingEditForDeactivation() {
+  // Route deactivation can detach the focused contenteditable without emitting a
+  // final compositionend in every WebView. Preserve the visible DOM text first,
+  // then release IME waiters so navigation never leaves the recovery sync stuck.
+  const active = typeof document !== 'undefined' ? document.activeElement : null
+  if (active instanceof HTMLElement && workspaceRef.value?.contains(active) && active.isContentEditable) {
+    const row = Number(active.dataset.gidx)
+    if (Number.isInteger(row) && row >= 0) materializeTextEdit(row, active.textContent ?? '')
+  }
+  releaseCompositionWaiters()
+  await flushPendingEdit()
+}
+defineExpose({ cancelPendingEdit, flushPendingEdit, flushPendingEditForDeactivation })
 
 // 组件真正销毁时清掉所有未触发的防抖 timer，避免回调在卸载后仍打后端 / setTalks。
 onUnmounted(() => {
+  workspaceUnmounted = true
+  releaseCompositionWaiters()
   for (const t of editTimers.values()) clearTimeout(t)
   editTimers.clear()
   pendingEdits.clear()
@@ -623,7 +810,8 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
         <div class="flex items-center px-3 py-2 border-l border-[var(--color-border)]">
           <span class="font-semibold text-sm text-[var(--color-text-secondary)]">译文</span>
           <input
-            v-model="editor.titleOverride"
+            :value="editor.titleOverride"
+            @input="updateTitle"
             type="text"
             :placeholder="editor.docMeta?.chapterTitle || story.chapterTitle || story.saveTitle || '标题...'"
             title="仅替换文件名中的标题部分（【模式】前缀与路径自动保留）"
@@ -753,13 +941,15 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                         @contextmenu="handleContextMenu($event, item.globalIdx)"
                       >
                         <div
-                          :contenteditable="item.talk.save && ![''].includes(item.talk.speaker)"
+                          :contenteditable="isEditableTalk(item.talk) && !editor.documentBusy"
                           :data-gidx="item.globalIdx"
                           class="leading-relaxed outline-none rounded px-1 -mx-1"
                           style="font-size: var(--editor-font-size)"
-                          :class="{ 'cursor-text': item.talk.save && ![''].includes(item.talk.speaker) }"
+                          :class="{ 'cursor-text': isEditableTalk(item.talk) }"
                           @focus="onEditFocus(item.globalIdx)"
                           @blur="onEditBlur($event, item.globalIdx)"
+                          @compositionstart="onCompositionStart(item.globalIdx)"
+                          @compositionend="onCompositionEnd($event, item.globalIdx)"
                           @keydown.enter="focusNext"
                           @keydown.esc="onEditableEsc($event, item.globalIdx)"
                           v-html="renderHighlight(item.talk)"

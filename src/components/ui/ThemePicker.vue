@@ -6,18 +6,21 @@ import { useSettingsStore } from '../../stores/settings'
 import { usePluginRegistry } from '../../plugin-host/registry'
 import { ACCENT_GROUPS, ACCENT_NAME_BY_COLOR } from '../../data/characterColors'
 import type { ThemeMode } from '../../stores/app'
+import type { Settings } from '../../types/api'
 import SkSelect from './SkSelect.vue'
 
 const app = useAppStore()
 const settings = useSettingsStore()
 const pluginRegistry = usePluginRegistry()
+const props = defineProps<{ settingsModel?: Settings }>()
+const editableSettings = computed(() => props.settingsModel ?? settings.settings)
 
 // Commit the UI zoom on release (@change), not on every drag tick — applying the
 // root font-size live would reflow the whole page (and this slider) under the
 // cursor, which feels jittery/over-sensitive. The draft drives the live number
 // readout while dragging; the zoom commits when the user lets go.
-const uiFontDraft = ref(settings.settings.uiFontSize)
-watch(() => settings.settings.uiFontSize, (v) => { uiFontDraft.value = v })
+const uiFontDraft = ref(editableSettings.value.uiFontSize)
+watch(() => editableSettings.value.uiFontSize, (v) => { uiFontDraft.value = v })
 
 const modes: { value: ThemeMode; label: string; icon: typeof Monitor }[] = [
   { value: 'system', label: '跟随系统', icon: Monitor },
@@ -113,7 +116,7 @@ async function onBgFile(e: Event) {
       <div>
         <div class="app-label mb-2">界面缩放</div>
         <div class="flex items-center gap-2 h-9">
-          <input v-model.number="uiFontDraft" type="range" min="12" max="25" step="1" @change="settings.settings.uiFontSize = uiFontDraft" class="range range-primary range-xs w-[200px]" />
+          <input v-model.number="uiFontDraft" type="range" min="12" max="25" step="1" @change="editableSettings.uiFontSize = uiFontDraft" class="range range-primary range-xs w-[200px]" />
           <span class="text-sm w-8 text-center font-mono">{{ uiFontDraft }}</span>
         </div>
       </div>
@@ -125,8 +128,8 @@ async function onBgFile(e: Event) {
         <div class="h-9 flex items-center">
           <SkSelect
             class="w-[200px]"
-            :model-value="settings.settings.live2dPosition || 'window'"
-            @update:model-value="settings.settings.live2dPosition = $event as string"
+            :model-value="editableSettings.live2dPosition || 'window'"
+            @update:model-value="editableSettings.live2dPosition = $event as string"
             :options="live2dPositionOptions"
           />
         </div>

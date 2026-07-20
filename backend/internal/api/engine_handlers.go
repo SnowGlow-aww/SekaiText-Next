@@ -1,17 +1,22 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"sekaitext/backend/internal/fsutil"
 	"sekaitext/backend/internal/service"
 )
 
@@ -64,6 +69,10 @@ var engineStatusPingGate struct {
 	failAt  time.Time
 	failMsg string
 }
+
+// Serializes destination validation and publication across concurrent timing
+// exports. The lock is deliberately outside EngineManager lifecycle handling.
+var timingOutputMu sync.Mutex
 
 const pingFailCooldown = 10 * time.Second
 
@@ -141,7 +150,7 @@ func (h *Handler) EngineTimingStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "启动打轴失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"taskId": job.TaskID})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"taskId": job.TaskID, "documentId": job.TaskID, "revision": uint64(0)})
 }
 
 func (h *Handler) EngineTimingProgress(w http.ResponseWriter, r *http.Request) {
@@ -153,11 +162,13 @@ func (h *Handler) EngineTimingProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	job.Mu.Lock()
 	snap := map[string]interface{}{
-		"taskId":      job.TaskID,
-		"status":      job.Status,
-		"percent":     job.Percent,
-		"fps":         job.Fps,
-		"eta":         job.Eta,
+		"taskId":        job.TaskID,
+		"documentId":    job.TaskID,
+		"revision":      job.SyncRevision,
+		"status":        job.Status,
+		"percent":       job.Percent,
+		"fps":           job.Fps,
+		"eta":           job.Eta,
 		"dialogTotal":   job.DialogTotal,
 		"bannerTotal":   job.BannerTotal,
 		"markerTotal":   job.MarkerTotal,
@@ -200,9 +211,14 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	job.Mu.Lock()
 	status := job.Status
 	scriptPath := job.ScriptPath
+	currentAssPath := job.ExportAssPath
+	currentDocumentID := job.ExportOpts.DocumentID
+	nextRevision := job.SyncRevision + 1
 	job.Mu.Unlock()
 	if status != "done" {
 		writeError(w, http.StatusConflict, "打轴尚未完成，无法导出")
@@ -211,13 +227,13 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	// Optional JSON body: output directory + post-process options. A missing/empty
 	// body keeps the legacy behavior (raw engine output, default subtitles dir).
 	var body struct {
-		OutputDir            string `json:"outputDir"`
-		Clean                bool   `json:"clean"`                // 内建 tools.lua：改样式/删 Character+Screen 行（\N 保留）
-		SyncTags             bool   `json:"syncTags"`             // Effect 埋 st:N 标识（Aegisub 同步的键）
-		StyleTemplate        string `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
-		StyleTemplateContent string `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
-		AegisubDir           string `json:"aegisubDir"`           // 用户指定的 Aegisub automation/autoload 目录（便携版）
-		Staff                *service.StaffInfo `json:"staff"`    // staff 制作人员行（可选，见 asspost.StaffInfo）
+		OutputDir            string             `json:"outputDir"`
+		Clean                bool               `json:"clean"`                // 内建 tools.lua：改样式/删 Character+Screen 行（\N 保留）
+		SyncTags             bool               `json:"syncTags"`             // Effect 埋 st:N 标识（Aegisub 同步的键）
+		StyleTemplate        string             `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
+		StyleTemplateContent string             `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
+		AegisubDir           string             `json:"aegisubDir"`           // 用户指定的 Aegisub automation/autoload 目录（便携版）
+		Staff                *service.StaffInfo `json:"staff"`                // staff 制作人员行（可选，见 asspost.StaffInfo）
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
 
@@ -234,6 +250,9 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		StyleTemplateContent: body.StyleTemplateContent,
 		Staff:                body.Staff,
 	}
+	if opts.SyncTags {
+		opts.DocumentID = job.TaskID
+	}
 	var warnings []string
 	if opts.Clean || opts.SyncTags || opts.Staff != nil {
 		post, perr := service.PostProcessAss(content, opts)
@@ -244,6 +263,19 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		} else {
 			content = post.Content
 			warnings = post.Warnings
+		}
+	}
+	syncHash := ""
+	if opts.SyncTags {
+		syncHash = contentSHA256([]byte(content))
+		content, err = service.EmbedAegisubSyncMetadata(content, service.AegisubSyncMetadata{
+			DocumentID:  job.TaskID,
+			Revision:    nextRevision,
+			ContentHash: syncHash,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "写入同步元数据失败: "+err.Error())
+			return
 		}
 	}
 
@@ -257,13 +289,29 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	}
 	// Name the .ass after the scenario script (event_206_05.json -> event_206_05.ass)
 	// rather than an opaque timing-<id>.ass; fall back to a timestamp if unknown.
-	assPath := filepath.Join(outDir, assFileNameFor(scriptPath))
-	if err := os.WriteFile(assPath, []byte(content), 0644); err != nil {
+	preferredAssPath := filepath.Join(outDir, assFileNameFor(scriptPath))
+	timingOutputMu.Lock()
+	// Sidecars are one-shot CAS requests. A re-export establishes a new baseline,
+	// so stale requests in both the old and new directories must be invalidated.
+	if err := invalidateAegisubSidecars(
+		service.AegisubSyncPath(currentAssPath, currentDocumentID),
+		service.AegisubSyncPath(preferredAssPath, opts.DocumentID),
+	); err != nil {
+		timingOutputMu.Unlock()
+		writeError(w, http.StatusInternalServerError, "无法使旧同步文件失效: "+err.Error())
+		return
+	}
+	contentBytes := []byte(content)
+	forceVersion := timingOutputConflict(h.engine, job.TaskID, preferredAssPath) != ""
+	assPath, err := publishTimingASS(preferredAssPath, job.TaskID, nextRevision, contentBytes, forceVersion)
+	if err != nil {
+		timingOutputMu.Unlock()
 		writeError(w, http.StatusInternalServerError, "写入字幕失败: "+err.Error())
 		return
 	}
 
-	// 记录导出/同步基线：mtime+size 用来检测 Aegisub 侧改动，DirtyLines 从零计。
+	// SHA-256 is the authoritative baseline. mtime/size remain populated for jobs
+	// exported by older in-process code which have no hash yet.
 	var mtime time.Time
 	var size int64
 	if fi, serr := os.Stat(assPath); serr == nil {
@@ -274,15 +322,22 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	job.ExportOpts = opts
 	job.ExportMTime = mtime
 	job.ExportSize = size
+	job.ExportHash = contentSHA256(contentBytes)
+	job.SyncRevision = nextRevision
+	job.ExportRevision = nextRevision
+	job.ExportSyncHash = syncHash
+	revision := nextRevision
 	job.DirtyLines = map[int]bool{}
+	job.LineRevisions = map[int]uint64{}
 	job.Mu.Unlock()
+	timingOutputMu.Unlock()
 
 	// 同步启用时顺手把 Aegisub 宏写到同目录，并尽力直接装进本机 Aegisub 的
 	// automation/autoload（探测到才装，开箱即用；没装 Aegisub 就只留目录副本）。
 	syncScript := ""
 	aegisubMacro := ""
 	if opts.SyncTags {
-		if p, serr := service.WriteAegisubSyncScript(outDir); serr == nil {
+		if p, serr := service.WriteAegisubSyncScript(filepath.Dir(assPath)); serr == nil {
 			syncScript = p
 		} else {
 			warnings = append(warnings, "写入 Aegisub 同步宏失败: "+serr.Error())
@@ -296,6 +351,9 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"assPath":      assPath,
+		"documentId":   job.TaskID,
+		"revision":     revision,
+		"contentHash":  contentSHA256(contentBytes),
 		"chars":        len(content),
 		"warnings":     warnings,
 		"syncScript":   syncScript,
@@ -316,6 +374,246 @@ func assFileNameFor(scriptPath string) string {
 		return "timing-" + newTaskID() + ".ass"
 	}
 	return base + ".ass"
+}
+
+func contentSHA256(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+func canonicalOutputPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		abs = filepath.Join(dir, filepath.Base(abs))
+	}
+	return filepath.Clean(abs)
+}
+
+func sameOutputPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if aInfo, aErr := os.Stat(a); aErr == nil {
+		if bInfo, bErr := os.Stat(b); bErr == nil && os.SameFile(aInfo, bInfo) {
+			return true
+		}
+	}
+	a, b = canonicalOutputPath(a), canonicalOutputPath(b)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func timingOutputConflict(engine *service.EngineManager, taskID, outputPath string) string {
+	if engine == nil {
+		return ""
+	}
+	timing, _ := engine.Tasks()
+	return timingOutputConflictIn(timing, taskID, outputPath)
+}
+
+func timingOutputConflictIn(timing []service.EngineTaskSnapshot, taskID, outputPath string) string {
+	for _, other := range timing {
+		if other.TaskID != taskID && sameOutputPath(other.ExportAssPath, outputPath) {
+			return fmt.Sprintf("输出路径已被打轴任务 %s 使用: %s", other.TaskID, outputPath)
+		}
+	}
+	return ""
+}
+
+// An existing SekaiText-tagged file is a document, not an anonymous output
+// blob. A matching immutable ID proves ownership even if this job exported to
+// another directory in between; legacy tags need the exact current binding.
+func validateExportDestination(path, currentPath, currentHash, documentID string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("检查输出路径失败: %w", err)
+	}
+	// Only an exact bound path with an unchanged content baseline may be
+	// overwritten. This protects Aegisub edits that have not been pulled yet and
+	// arbitrary pre-existing untagged subtitle files.
+	if !sameOutputPath(path, currentPath) || currentHash == "" {
+		return fmt.Errorf("输出路径已存在，且不是当前任务可安全覆盖的字幕: %s", path)
+	}
+	if contentSHA256(data) != currentHash {
+		return fmt.Errorf("字幕已在外部修改，请先从 Aegisub 回读或另存: %s", path)
+	}
+	groups, _, parseErr := service.ExtractSyncGroups(string(data))
+	if parseErr != nil || len(groups) == 0 {
+		// Non-sync exports are still safe because their exact content hash matches
+		// the baseline captured by this task.
+		return nil
+	}
+	if err := service.ValidateSyncGroups(groups, documentID, false); err == nil {
+		return nil
+	} else if legacySyncFileIsUnique(path) {
+		if legacyErr := service.ValidateSyncGroups(groups, documentID, true); legacyErr == nil {
+			return nil
+		}
+		return fmt.Errorf("输出路径文档身份冲突: %w", err)
+	} else {
+		return fmt.Errorf("输出路径文档身份冲突: %w", err)
+	}
+}
+
+func invalidateAegisubSidecars(paths ...string) error {
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		path = canonicalOutputPath(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// publishTimingASS never replaces an existing path. If the preferred scenario
+// name is occupied (including a normal re-export), it publishes a versioned
+// sibling instead. This avoids the check-then-rename overwrite race for files
+// Aegisub can modify independently.
+func publishTimingASS(preferredPath, documentID string, revision uint64, data []byte, forceVersion bool) (string, error) {
+	versionAttempt := 0
+	for attempt := 0; attempt < 1000; attempt++ {
+		path := preferredPath
+		if forceVersion {
+			path = versionedASSPath(preferredPath, documentID, revision, versionAttempt)
+			versionAttempt++
+		}
+		err := writeFileNoReplaceAtomic(path, data, 0644)
+		if errors.Is(err, os.ErrExist) {
+			forceVersion = true
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		// Establish no baseline unless the just-published path still contains the
+		// bytes we wrote. A later external change is detected by normal sync status.
+		readBack, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("verify published ASS: %w", err)
+		}
+		if contentSHA256(readBack) != contentSHA256(data) {
+			return "", fmt.Errorf("ASS changed during publication: %s", path)
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("无法找到未占用的版本化 ASS 输出路径")
+}
+
+func versionedASSPath(path, documentID string, revision uint64, attempt int) string {
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	suffix := fmt.Sprintf(".r%d-%s", revision, sanitizeBaseName(documentID))
+	if attempt > 0 {
+		suffix += "-" + strconv.Itoa(attempt+1)
+	}
+	return base + suffix + ext
+}
+
+// writeFileNoReplaceAtomic uses a sibling temp plus hard-link publication as an
+// atomic create-if-absent operation. Filesystems without hard links fall back to
+// O_EXCL direct creation: that fallback can expose a partial new version while
+// writing, but it still never overwrites existing user data.
+func writeFileNoReplaceAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileNoReplaceAtomicWithSync(path, data, perm, fsutil.SyncDir)
+}
+
+func writeFileNoReplaceAtomicWithSync(path string, data []byte, perm os.FileMode, syncDir func(string) error) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			err = errors.Join(err, tmp.Close())
+		}
+		if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if n, err := tmp.Write(data); err != nil {
+		return err
+	} else if n != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return err
+	}
+	closed = true
+
+	if err := os.Link(tmpPath, path); err == nil {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync ASS directory: %w", err)
+		}
+		return nil
+	} else if errors.Is(err, os.ErrExist) {
+		return err
+	}
+
+	// Hard links are unavailable on some network/FAT-style filesystems.
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	removeOnError := true
+	outClosed := false
+	defer func() {
+		if !outClosed {
+			if closeErr := out.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
+		if removeOnError {
+			_ = os.Remove(path)
+		}
+	}()
+	if n, writeErr := out.Write(data); writeErr != nil {
+		err = writeErr
+		return err
+	} else if n != len(data) {
+		err = io.ErrShortWrite
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		return err
+	}
+	err = out.Close()
+	outClosed = true
+	if err != nil {
+		return err
+	}
+	removeOnError = false
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync ASS directory: %w", err)
+	}
+	return nil
 }
 
 // sanitizeBaseName drops path separators, control chars, and characters that are

@@ -1,44 +1,67 @@
 @echo off
 chcp 65001 >nul
+setlocal
 
-set /p VERSION="Version (e.g. 0.2.0): "
+for /f "delims=" %%b in ('git branch --show-current') do set "BRANCH=%%b"
+if not "%BRANCH%"=="main" (
+  echo Release must run from the main branch.
+  exit /b 1
+)
+for /f "delims=" %%s in ('git status --porcelain') do (
+  echo Release requires a clean working tree, including untracked files.
+  exit /b 1
+)
 
-:: Check if version already matches package.json
+set /p VERSION="Version (e.g. 5.9.0): "
+call node scripts/sync-version.mjs --release-plan "%VERSION%" >nul
+if errorlevel 1 exit /b 1
+set "TAG=v%VERSION%"
+
+git show-ref --verify --quiet "refs/tags/%TAG%"
+if not errorlevel 1 (
+  echo Tag %TAG% already exists locally.
+  exit /b 1
+)
+git ls-remote --exit-code --tags origin "refs/tags/%TAG%" >nul 2>nul
+set "TAG_STATUS=%ERRORLEVEL%"
+if "%TAG_STATUS%"=="0" (
+  echo Tag %TAG% already exists on origin.
+  exit /b 1
+)
+if not "%TAG_STATUS%"=="2" (
+  echo Could not check %TAG% on origin.
+  exit /b 1
+)
+
 for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set CURRENT_VERSION=%%v
-
 if "%CURRENT_VERSION%"=="%VERSION%" (
-  echo.
   echo Version already %VERSION%, skipping bump.
 ) else (
-  echo.
-  echo Updating version...
-  call npm version %VERSION% --no-git-tag
+  call npm version "%VERSION%" --no-git-tag-version
+  if errorlevel 1 exit /b 1
 )
 
-echo.
-echo Syncing version to tauri...
 call node scripts/sync-version.mjs
+if errorlevel 1 exit /b 1
+call node scripts/sync-version.mjs --check --tag "%TAG%"
+if errorlevel 1 exit /b 1
 
-echo.
-echo Committing and pushing tag...
-git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+for /f "delims=" %%f in ('node scripts/sync-version.mjs --release-files "%VERSION%"') do (
+  git add -- "%%f"
+  if errorlevel 1 exit /b 1
+)
 
-:: Check if there are staged changes before committing
 git diff --cached --quiet
 if errorlevel 1 (
-  git commit -m "v%VERSION%"
+  git commit -m "%TAG%"
+  if errorlevel 1 exit /b 1
 ) else (
-  echo No changes to commit, reusing existing commit.
+  echo No version changes to commit; tagging the current commit.
 )
 
-:: Force-recreate the tag in case the previous build failed
-git tag -f v%VERSION%
+git tag "%TAG%"
+if errorlevel 1 exit /b 1
+git push --atomic origin main "%TAG%"
+if errorlevel 1 exit /b 1
 
-git push origin master
-
-:: Force-push the tag (may exist from a failed previous run)
-git push -f origin v%VERSION%
-
-echo.
-echo Done! CI will build and create the release.
-pause
+echo Release %TAG% pushed; CI will build and publish it.

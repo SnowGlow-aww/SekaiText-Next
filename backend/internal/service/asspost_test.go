@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -236,6 +237,95 @@ func TestExtractSyncGroupsAndTimes(t *testing.T) {
 	}
 }
 
+func TestDocumentScopedSyncTagsDoNotCross(t *testing.T) {
+	docA, err := PostProcessAss(sampleAss, AssPostOptions{SyncTags: true, DocumentID: "doc-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docB, err := PostProcessAss(sampleAss, AssPostOptions{SyncTags: true, DocumentID: "doc-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(docA.Content, ",st:doc-a:1,") || !strings.Contains(docB.Content, ",st:doc-b:1,") {
+		t.Fatalf("document-scoped Effect missing")
+	}
+	groupsA, _, err := ExtractSyncGroups(docA.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupsB, _, err := ExtractSyncGroups(docB.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSyncGroups(groupsA, "doc-a", false); err != nil {
+		t.Fatalf("own document rejected: %v", err)
+	}
+	if err := ValidateSyncGroups(groupsB, "doc-a", false); err == nil {
+		t.Fatal("foreign document with the same line IDs was accepted")
+	}
+	if _, ok := groupsA["st:doc-b:1"]; ok {
+		t.Fatal("document A unexpectedly contains document B groups")
+	}
+}
+
+func TestLegacySyncTagsRequireExplicitUniqueCompatibility(t *testing.T) {
+	legacy, err := PostProcessAss(sampleAss, AssPostOptions{SyncTags: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, _, err := ExtractSyncGroups(legacy.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSyncGroups(groups, "doc-a", false); err == nil {
+		t.Fatal("legacy st:N accepted without a uniqueness proof")
+	}
+	if err := ValidateSyncGroups(groups, "doc-a", true); err != nil {
+		t.Fatalf("unique legacy compatibility rejected: %v", err)
+	}
+
+	mixed := make(map[string][]SyncedEvent, len(groups)+1)
+	for tag, events := range groups {
+		mixed[tag] = events
+	}
+	mixed["st:doc-a:1"] = []SyncedEvent{{Kind: "Dialogue"}}
+	if err := ValidateSyncGroups(mixed, "doc-a", true); err == nil {
+		t.Fatal("mixed legacy/current tags were accepted")
+	}
+}
+
+func TestWriteFileAtomicPublishesOnlyCompleteContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "autosave.ass")
+	a := []byte(strings.Repeat("A", 32*1024))
+	b := []byte(strings.Repeat("B", 32*1024))
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(data []byte) {
+			defer wg.Done()
+			if err := WriteFileAtomic(path, data, 0644); err != nil {
+				t.Errorf("WriteFileAtomic: %v", err)
+			}
+		}([][]byte{a, b}[i%2])
+	}
+	wg.Wait()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(a) && string(got) != string(b) {
+		t.Fatalf("published partial/interleaved content: %d bytes", len(got))
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".autosave.ass.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("temporary files leaked: %v", temps)
+	}
+}
+
 func TestPostProcessStaffLine(t *testing.T) {
 	// 时轴与轴校&压制不同人：两行分开
 	post, err := PostProcessAss(sampleAss, AssPostOptions{Clean: true, Staff: &StaffInfo{
@@ -249,6 +339,9 @@ func TestPostProcessStaffLine(t *testing.T) {
 	want := `Dialogue: 0,0:00:00.00,0:00:05.00,staff,,0,0,0,,{\fad(300,200)}字幕制作 by PJS字幕组\N第一话：三周年\N录制：八成是茶币币\N翻译：组员A\N校对：组员B\N时轴：组员C\N轴校&压制：组员D`
 	if !strings.Contains(post.Content, want) {
 		t.Fatalf("缺少 staff 行:\n%s", post.Content)
+	}
+	if !strings.Contains(post.Content, "Style: staff,") {
+		t.Fatalf("staff event has no matching style definition:\n%s", post.Content)
 	}
 	// staff 行必须是 Format 之后的第一条事件
 	lines := strings.Split(post.Content, "\n")
@@ -282,5 +375,39 @@ func TestPostProcessStaffLine(t *testing.T) {
 	}
 	if strings.Contains(post.Content, ",staff,") {
 		t.Fatalf("全空不应生成 staff 行")
+	}
+}
+
+func TestPostProcessStaffSanitizesInjectedNewlines(t *testing.T) {
+	post, err := PostProcessAss(sampleAss, AssPostOptions{Staff: &StaffInfo{
+		Group: "group\nDialogue: injected", Title: "title\r\nComment: injected", Translator: `name\Nnext`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, injected := range []string{"\nDialogue: injected", "\nComment: injected", `name\Nnext`} {
+		if strings.Contains(post.Content, injected) {
+			t.Fatalf("staff field injected a newline %q:\n%s", injected, post.Content)
+		}
+	}
+	if !strings.Contains(post.Content, "group Dialogue: injected") || !strings.Contains(post.Content, "name next") {
+		t.Fatalf("sanitized staff values missing:\n%s", post.Content)
+	}
+}
+
+func TestPostProcessStaffCreatesMissingStyleSection(t *testing.T) {
+	const noStyles = `[Script Info]
+Title: Test
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,line
+`
+	post, err := PostProcessAss(noStyles, AssPostOptions{Staff: &StaffInfo{Group: "group"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(post.Content, "[V4+ Styles]\n") || !strings.Contains(post.Content, "Style: staff,") {
+		t.Fatalf("missing synthesized staff style section:\n%s", post.Content)
 	}
 }

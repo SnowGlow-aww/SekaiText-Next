@@ -6,10 +6,83 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: app-release-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
+      - name: Preflight updater publication credentials
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          APP_UPDATE_SIGNING_KEY_ID: ${{ vars.APP_UPDATE_SIGNING_KEY_ID }}
+          APP_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.APP_UPDATE_SIGNING_PRIVATE_KEY }}
+          SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createPrivateKey, createPublicKey } from 'node:crypto'
+          for (const name of ['OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET', 'APP_UPDATE_SIGNING_KEY_ID', 'APP_UPDATE_SIGNING_PRIVATE_KEY', 'SEKAITEXT_APP_UPDATE_PUBLIC_KEYS']) {
+            if (!process.env[name]) throw new Error(`${name} is required before release artifacts are published`)
+          }
+          const keyId = process.env.APP_UPDATE_SIGNING_KEY_ID
+          const keys = JSON.parse(process.env.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS)
+          const privateKey = createPrivateKey({
+            key: Buffer.from(process.env.APP_UPDATE_SIGNING_PRIVATE_KEY, 'base64'),
+            format: 'der',
+            type: 'pkcs8',
+          })
+          if (privateKey.asymmetricKeyType !== 'ed25519') throw new Error('app update signing key is not Ed25519')
+          const publicValue = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+          if (keys?.[keyId] !== publicValue) throw new Error(`app update key ${keyId} does not match the release trust root`)
+          NODE
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: backend/go.sum
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - run: npm ci
+      - name: Verify signed plugin market before embedding trust roots
+        env:
+          SEKAITEXT_PLUGIN_PUBLIC_KEYS: ${{ vars.SEKAITEXT_PLUGIN_PUBLIC_KEYS }}
+        run: node scripts/verify-plugin-market.mjs
+      - name: Verify release versions
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            node scripts/sync-version.mjs --check --tag "$GITHUB_REF_NAME"
+          else
+            node scripts/sync-version.mjs --check
+          fi
+      - run: npm test
+      - run: npm run build
+      - run: go test -race ./...
+        working-directory: backend
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo check --locked --release --manifest-path src-tauri/Cargo.toml
+      - run: npm ci
+        working-directory: website
+      - run: npm run build
+        working-directory: website
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -35,19 +108,26 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       # secrets.* cannot be used in step `if:` directly; surface presence as env.
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      # Public, non-secret Ed25519 trust set embedded into the Go sidecar as
+      # {"keyId":"base64-raw-public-key"}. Empty intentionally disables new
+      # official plugin installs/updates without affecting installed plugins.
+      SEKAITEXT_PLUGIN_PUBLIC_KEYS: ${{ vars.SEKAITEXT_PLUGIN_PUBLIC_KEYS }}
+      # Independent trust root for the signed app-release manifest. This only
+      # authenticates release metadata; it is unrelated to platform code signing.
+      SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
       # build-engine.mjs (run by `npx tauri build` via beforeBuildCommand) reads ENGINE_DIR
       # = the SekaiToolsEngine self-contained publish dir for this RID. The native libs
       # (libSkiaSharp/libHarfBuzzSharp/libcvextern) sit as SEPARATE files alongside the
       # single-file engine binary in that dir.
       ENGINE_DIR: ${{ github.workspace }}/engine-src/SekaiToolsEngine/bin/Release/net10.0/${{ matrix.rid }}/publish
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Auto-timing/压制 engine source (SnowGlow-aww/SekaiTools-Avalonia). The whole solution
       # is needed: SekaiToolsEngine has ProjectReferences to Core/Base/DataFetch/Platform and
       # Compile-links 4 files from SekaiToolsApp/Services.
       - name: Checkout SekaiToolsEngine source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: SnowGlow-aww/SekaiTools-Avalonia
           # Pin the exact engine revision used by this app release. Moving-branch checkouts
@@ -55,32 +135,22 @@ jobs:
           ref: 6ed8009247814911abbed39a4105241e778a27d6
           path: engine-src
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      # Guard: the built app bakes package.json's version into __APP_VERSION__ (the
-      # self-updater's "current"). Fail fast if it drifts from the release tag, which
-      # would otherwise ship a perpetual "update available" or hide a real update.
-      - name: Verify package.json version matches the tag
-        if: github.ref_type == 'tag'
-        shell: bash
-        run: |
-          PKG=$(node -p "require('./package.json').version")
-          TAG=${GITHUB_REF_NAME#v}
-          echo "package.json=$PKG tag=$TAG"
-          [ "$PKG" = "$TAG" ] || { echo "::error::package.json version ($PKG) != tag ($TAG)"; exit 1; }
-
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.24"
+          go-version: "1.24.x"
           cache-dependency-path: backend/go.sum
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -112,24 +182,24 @@ jobs:
       - name: Publish SekaiToolsEngine sidecar
         run: dotnet publish engine-src/SekaiToolsEngine/SekaiToolsEngine.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o "${{ env.ENGINE_DIR }}"
 
-      # Static ffmpeg WITH libass for ASS subtitle burn-in (build-engine.mjs FFMPEG_BIN).
-      # macOS arm64: martin-riedl release channel (static + libass), always latest;
-      # the libass grep below hard-gates a broken/changed build.
+      # Static FFmpeg 8.1.2 WITH libass for ASS subtitle burn-in. Both archives and
+      # digests are pinned to versioned upstream paths and published checksums.
       - name: Fetch static ffmpeg (macOS arm64, libass)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/ffmpeg-bin"
           FF="$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg"
-          curl -fL --retry 3 -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+          curl -fL --retry 3 -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffmpeg.zip"
+          echo "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c  $GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" | shasum -a 256 -c -
           unzip -o "$GITHUB_WORKSPACE/ffmpeg-bin/ffmpeg.zip" ffmpeg -d "$GITHUB_WORKSPACE/ffmpeg-bin"
           chmod +x "$FF"
           "$FF" -hide_banner -version > "$GITHUB_WORKSPACE/ffver.txt" 2>&1
           grep -q -- enable-libass "$GITHUB_WORKSPACE/ffver.txt" && echo "libass OK" || { echo "::error::ffmpeg missing libass"; exit 1; }
           echo "FFMPEG_BIN=$FF" >> "$GITHUB_ENV"
 
-      # Windows x64: BtbN static GPL build pinned to the STABLE release branch (n8.1), matching
-      # the macOS stable channel. The former ffmpeg-master-latest (git master nightly) shipped a
+      # Windows x64: BtbN static GPL build pinned to one n8.1 autobuild, matching the
+      # macOS stable channel. The former ffmpeg-master-latest (git master nightly) shipped a
       # build whose stderr periodic stats never appear on real Windows hw pipelines (dxva2+QSV),
       # blanking suppress progress — never ship nightlies. Uses pwsh so
       # `curl.exe` (not the Invoke-WebRequest alias) and Expand-Archive avoid tar/unzip pitfalls.
@@ -139,7 +209,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          curl.exe -fL -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
+          curl.exe -fL --retry 3 -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-18-13-13/ffmpeg-n8.1.2-22-g94138f6973-win64-gpl-8.1.zip"
+          $actual = (Get-FileHash -Algorithm SHA256 ffmpeg.zip).Hash.ToLowerInvariant()
+          $expected = '764716fa5cff555431791945f15db61c0aa85cc61023bfe36668f32f2b256b62'
+          if ($actual -ne $expected) { Write-Error "ffmpeg.zip SHA-256 mismatch: $actual"; exit 1 }
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $bin = (Get-ChildItem -Path ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\ffmpeg-bin" | Out-Null
@@ -249,7 +322,7 @@ jobs:
           test -n "$BUNDLED_APP"
           codesign --verify --deep --strict --verbose=2 "$BUNDLED_APP"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sekaitext-${{ matrix.target }}
           path: |
@@ -259,14 +332,26 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: sekaitext-*
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
+      - name: Reject retries after an app manifest has been published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
+        run: node scripts/check-release-mutable.mjs
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          overwrite_files: false
           files: |
             **/*.deb
             **/*.dmg
@@ -276,6 +361,8 @@ jobs:
   manifest:
     needs: release
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     uses: ./.github/workflows/release-manifest.yml
     with:
       tag: ${{ github.ref_name }}

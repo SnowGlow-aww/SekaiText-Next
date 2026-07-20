@@ -15,20 +15,22 @@ _✨ Project Sekai Story Translation Editor ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <img alt="Version" src="https://img.shields.io/badge/version-5.8.13-blue?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-5.9.1-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
 </p>
 
 <p align="center">
-  <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6c5ce7?style=flat-square" />
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon%20%7C%20Windows%20x64-6c5ce7?style=flat-square" />
   <a href="https://sakimizuki.accr.cc/web/index.html"><img alt="Website" src="https://img.shields.io/badge/website-sakimizuki.accr.cc-39c5bb?style=flat-square" /></a>
 </p>
 
 <!-- prettier-ignore-end -->
 
 SekaiText is a desktop application for browsing, translating, and proofreading Project Sekai: Colorful Stage! story scenarios. It combines a Vue 3 frontend with a Go backend, packaged as a Tauri desktop app, with a built-in auto-timing / encoding engine, a Live2D story player, and a hot-loadable plugin system.
+
+Supported platforms are macOS 12 or later on Apple Silicon (M-series) and Windows 10 or later on x64.
 
 ## Tech Stack
 
@@ -75,18 +77,15 @@ sekaitext/
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 20
+- [Node.js](https://nodejs.org/) >= 20.19
 - [Go](https://go.dev/) >= 1.24
 - [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (Rust toolchain, system dependencies)
 
 ### Install
 
 ```bash
-# Install frontend dependencies
-npm install
-
-# Install Tauri CLI
-npm install -D @tauri-apps/cli
+# Install the locked dependency tree (npm is the only package manager)
+npm ci
 ```
 
 ### Development
@@ -115,14 +114,12 @@ Settings are available in-app via the Settings page:
 - **Font Size** — Editor text display size (10–48px)
 - **Index Order** — Story index dropdown sort order
 - **Save \\N** — Preserve `\N` line break markers in translation files
-- **Save Voice** — Download and save voice files locally
-- **SSL Verification** — Disable SSL certificate verification (needed in some network environments)
 - **Dark Mode** — Toggle between light and dark themes
 - **Debug Log** — Show debug log panel at the bottom of the editor
 
 ## Version
 
-Current version: **5.8.13** (stable)
+Current version: **5.9.1** (stable)
 
 ## License
 

@@ -38,9 +38,15 @@ func routeDownloadURL(rawurl string) []string {
 			if rest, ok := strings.CutPrefix(rawurl, cdn); ok {
 				return []string{gh + rest, rawurl}
 			}
+			if rest, ok := strings.CutPrefix(rawurl, gh); ok {
+				return []string{rawurl, cdn + rest}
+			}
 		} else {
 			if rest, ok := strings.CutPrefix(rawurl, gh); ok {
 				return []string{cdn + rest, rawurl}
+			}
+			if rest, ok := strings.CutPrefix(rawurl, cdn); ok {
+				return []string{rawurl, gh + rest}
 			}
 		}
 	}

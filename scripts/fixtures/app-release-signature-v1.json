@@ -1,0 +1,28 @@
+{
+  "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "canonicalPayload": "U2VrYWlUZXh0LUFwcC1SZWxlYXNlLVNpZ25hdHVyZS1WMQphbGdvcml0aG06NzplZDI1NTE5CmtleUlkOjEyOmZpeHR1cmUtMjAyNgp2ZXJzaW9uOjEyOjYuMS4wLWJldGEuMgpub3RlczoyODpVbmljb2RlOiDliJ3pn7Pjg5/jgq8KbGluZSAyCnB1YkRhdGU6MTA6MjAyNi0wNy0xOQpwbGF0Zm9ybUNvdW50OjE6MgpwbGF0Zm9ybToxNDpkYXJ3aW4tYWFyY2g2NApkb3dubG9hZDo3MzpodHRwczovL3Nha2ltaXp1a2kuYWNjci5jYy9zZWthaXRleHQtcmVsZWFzZXMvdjYuMS4wLWJldGEuMi9TZWthaVRleHQuZG1nCmRpZ2VzdDo3MTpzaGEyNTY6YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQpzaXplOjM6MTAxCnBsYXRmb3JtOjEzOndpbmRvd3MtYW1kNjQKZG93bmxvYWQ6NzM6aHR0cHM6Ly9zYWtpbWl6dWtpLmFjY3IuY2Mvc2VrYWl0ZXh0LXJlbGVhc2VzL3Y2LjEuMC1iZXRhLjIvU2VrYWlUZXh0LmV4ZQpkaWdlc3Q6NzE6c2hhMjU2OmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmIKc2l6ZTozOjIwMgo=",
+  "manifest": {
+    "version": "6.1.0-beta.2",
+    "notes": "Unicode: 初音ミク\nline 2",
+    "pubDate": "2026-07-19",
+    "downloads": {
+      "windows-amd64": "https://sakimizuki.accr.cc/sekaitext-releases/v6.1.0-beta.2/SekaiText.exe",
+      "darwin-aarch64": "https://sakimizuki.accr.cc/sekaitext-releases/v6.1.0-beta.2/SekaiText.dmg"
+    },
+    "artifacts": {
+      "windows-amd64": {
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 202
+      },
+      "darwin-aarch64": {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 101
+      }
+    },
+    "signature": {
+      "algorithm": "ed25519",
+      "keyId": "fixture-2026",
+      "value": "FrVGI98/98fMNbpLBdg66Mu1SR5ZmONEDPL9k59wSyZSXkUEby2EAWYYN+FA0+GM3mSh1PMl25YwQF7AmxJ6DA=="
+    }
+  }
+}

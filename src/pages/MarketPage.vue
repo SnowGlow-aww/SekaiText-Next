@@ -95,6 +95,9 @@ async function install(id: string, name: string) {
             </div>
           </div>
           <p class="text-xs leading-relaxed text-[var(--color-text-secondary)] flex-1 line-clamp-3 mb-3">{{ p.description || '暂无插件说明' }}</p>
+          <p v-if="!p.signatureVerified" class="text-xs leading-relaxed text-warning mb-3">
+            {{ p.signatureError || '官方签名不可用，已禁止安装' }}
+          </p>
           <div class="flex items-center justify-between gap-2">
             <!-- Tauri webview 不处理 target=_blank，必须经 openExternal 调系统浏览器 -->
             <button
@@ -104,11 +107,11 @@ async function install(id: string, name: string) {
             ><ExternalLink :size="12" /> 主页</button>
             <span v-else />
             <button
-              v-if="p.updateAvailable"
+              v-if="p.updateAvailable || p.reinstallAvailable"
               @click="install(p.id, p.name)"
-              :disabled="market.busyId === p.id"
+              :disabled="market.busyId === p.id || !p.signatureVerified"
               class="btn btn-sm btn-brand gap-1"
-            ><Download :size="14" /> {{ market.busyId === p.id ? '更新中…' : `更新到 v${p.version}` }}</button>
+            ><Download :size="14" /> {{ market.busyId === p.id ? '安装中…' : p.updateAvailable ? `更新到 v${p.version}` : '重新验证并安装' }}</button>
             <span
               v-else-if="p.installed"
               class="app-chip bg-success/12 text-success"
@@ -116,7 +119,7 @@ async function install(id: string, name: string) {
             <button
               v-else
               @click="install(p.id, p.name)"
-              :disabled="market.busyId === p.id"
+              :disabled="market.busyId === p.id || !p.signatureVerified"
               class="btn btn-sm btn-brand gap-1"
             ><Download :size="14" /> {{ market.busyId === p.id ? '安装中…' : '安装' }}</button>
           </div>

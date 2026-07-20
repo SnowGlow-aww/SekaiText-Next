@@ -572,7 +572,9 @@ func (e *EditorService) ChangeText(row int, text string, editormode int,
 		msg = "文本含换行符，请拆分至多行"
 	}
 
-	if speaker == "" {
+	// Empty-speaker rows can be real narration. Only an actually blank row is a
+	// synthetic separator and must remain read-only.
+	if speaker == "" && strings.TrimSpace(talks[row].Text) == "" {
 		return talks, dsttalks
 	}
 

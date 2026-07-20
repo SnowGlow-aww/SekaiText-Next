@@ -3,10 +3,10 @@
 // points at the custom scheme (sekai://localhost or http://sekai.localhost); in
 // dev (plain browser / vite) the global is absent so we fall back to the TCP
 // backend on localhost:9800. No platform branching needed here.
-export const ORIGIN = (window as any).__SEKAI_ORIGIN__ || 'http://localhost:9800'
+export const ORIGIN = (typeof window !== 'undefined' && (window as any).__SEKAI_ORIGIN__) || 'http://localhost:9800'
 export const BASE_URL = ORIGIN + '/api/v1'
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
     super(message)
@@ -15,18 +15,40 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export const DEFAULT_TIMEOUT_MS = 30_000
+export const LONG_MUTATION_TIMEOUT_MS = 30 * 60_000
+
+export interface RequestOptions extends RequestInit {
+  timeoutMs?: number
+}
+
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase()
   const url = `${BASE_URL}${path}`
   const start = Date.now()
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, ...fetchOptions } = options
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort(callerSignal?.reason)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+
+  if (callerSignal) {
+    if (callerSignal.aborted) forwardAbort()
+    else callerSignal.addEventListener('abort', forwardAbort, { once: true })
+  }
+  if (timeoutMs > 0) {
+    timeout = setTimeout(() => {
+      controller.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError'))
+    }, timeoutMs)
+  }
 
   try {
+    if (controller.signal.aborted) throw controller.signal.reason
+    const headers = new Headers(fetchOptions.headers)
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     const res = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-      ...options,
+      ...fetchOptions,
+      headers,
+      signal: controller.signal,
     })
 
     const elapsed = Date.now() - start
@@ -45,15 +67,20 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       throw err
     }
 
-    const data = await res.json()
+    const raw = await res.text()
+    const data = raw ? JSON.parse(raw) : undefined
     console.log(`[API] ${method} ${path} → ${res.status} (${elapsed}ms)`)
     return data
   } catch (e) {
     const elapsed = Date.now() - start
     if (e instanceof ApiError) throw e
+    if (controller.signal.aborted) throw controller.signal.reason ?? e
     const wrap = new Error(`${method} ${path} → 网络请求失败: ${(e as Error).message}`)
     console.error(`[API] ${method} ${path} → NETWORK ERROR (${elapsed}ms)`, (e as Error).message)
     throw wrap
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    callerSignal?.removeEventListener('abort', forwardAbort)
   }
 }
 
@@ -300,6 +327,15 @@ export const api = {
   recoveryClear: () =>
     request<{ status: string }>('/recovery/clear', { method: 'DELETE' }),
 
+  // Debug log viewer/export
+  debugLogs: (signal?: AbortSignal) =>
+    request<{ timestamp: string; message: string }[]>('/debug/logs', { signal }),
+  debugSaveLogs: (lines: string[]) =>
+    request<{ status: string; lines: number; path: string }>('/debug/save', {
+      method: 'POST',
+      body: JSON.stringify({ lines }),
+    }),
+
   // Settings
   getSettings: () => request<import('../types/api').Settings>('/settings'),
   putSettings: (settings: import('../types/api').Settings) =>
@@ -316,6 +352,7 @@ export const api = {
     request<import('../types/api').MigrateSaveDirResult>('/save-dir/migrate', {
       method: 'POST',
       body: JSON.stringify({ newDir }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   openUrl: (url: string) =>
     request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
@@ -324,17 +361,34 @@ export const api = {
     request<{ dir: string; moved: number }>('/live2d/import', {
       method: 'POST',
       body: JSON.stringify({ srcDir }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
 
   // Plugins (management). The listing/entry-serving is handled directly by the
   // plugin-host loader against /plugins/*; these cover enable/disable + uninstall.
-  pluginSetEnabled: (id: string, enabled: boolean) =>
+  pluginSetEnabled: (id: string, enabled: boolean, approveLocal = false) =>
     request<{ ok: boolean }>(`/plugins/${id}/enabled`, {
       method: 'POST',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, approveLocal }),
     }),
   pluginUninstall: (id: string) =>
     request<{ ok: boolean }>(`/plugins/${id}`, { method: 'DELETE' }),
+  pluginRollback: (id: string) =>
+    request<Omit<import('../plugin-host/autoload').InstalledPlugin, 'enabled' | 'local' | 'loadToken' | 'provenance'>>(
+      `/plugins/${id}/rollback`,
+      { method: 'POST', timeoutMs: LONG_MUTATION_TIMEOUT_MS },
+    ),
+  pluginMarkGood: (
+    id: string,
+    version: string,
+    loadToken: string,
+    provenance?: import('../plugin-host/autoload').PluginProvenance,
+    signal?: AbortSignal,
+  ) => request<{ ok: boolean }>(`/plugins/${id}/mark-good`, {
+    method: 'POST',
+    body: JSON.stringify({ version, loadToken, provenance: provenance ?? null }),
+    signal,
+  }),
   // Install a .sekplugin package from a local file path (Tauri dialog → path,
   // or marketplace download → temp path). hostVersion gates minHostVersion.
   pluginInstall: (srcPath: string, hostVersion: string) =>
@@ -343,6 +397,7 @@ export const api = {
     request<Omit<import('../plugin-host/autoload').InstalledPlugin, 'enabled'>>('/plugins/install', {
       method: 'POST',
       body: JSON.stringify({ srcPath, hostVersion }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
 
   // Plugin marketplace
@@ -354,6 +409,7 @@ export const api = {
     request<Omit<import('../plugin-host/autoload').InstalledPlugin, 'enabled'>>('/market/install', {
       method: 'POST',
       body: JSON.stringify({ id, hostVersion }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   // Reinstall every installed plugin that has a newer market version. Silent
   // auto-update on boot; the summary drives a "已更新 N 个插件" toast.
@@ -361,6 +417,7 @@ export const api = {
     request<import('../stores/appUpdate').AutoUpdateSummary>('/market/auto-update', {
       method: 'POST',
       body: JSON.stringify({ hostVersion }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
 
   // App self-update (本体 检查 → 下载 → 打开安装)
@@ -384,7 +441,10 @@ export const api = {
     }),
 
   // Update (CDN refresh)
-  update: () => request<{ status: string }>('/update', { method: 'POST' }),
+  update: () => request<{ status: string }>('/update', {
+    method: 'POST',
+    timeoutMs: LONG_MUTATION_TIMEOUT_MS,
+  }),
   updateProgress: () =>
     request<{ current: number; total: number; message?: string; done: boolean }>('/update/progress'),
 
@@ -419,6 +479,7 @@ export const api = {
     request<{ filePath: string }>('/story/export-original-txt', {
       method: 'POST',
       body: JSON.stringify(data),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
 
   // Assets
@@ -433,6 +494,7 @@ export const api = {
     request<{ active: boolean; count: number }>('/assets/character-icon-custom', {
       method: 'POST',
       body: JSON.stringify({ dir }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   chrIconCustomReset: () =>
     request<{ active: boolean; count: number }>('/assets/character-icon-custom', { method: 'DELETE' }),
@@ -461,11 +523,13 @@ export const api = {
   glossaryImport: (srcPath: string) =>
     request<import('../types/glossary').ImportReport>('/glossary/import', {
       method: 'POST', body: JSON.stringify({ srcPath }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   glossaryReload: () => request<{ status: string }>('/glossary/reload', { method: 'POST' }),
   glossarySync: (remoteUrl: string) =>
     request<{ status: string; entries: number; appellations: number }>('/glossary/sync', {
       method: 'POST', body: JSON.stringify({ remoteUrl }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   // Appellation lookup (人称表)
   glossaryAppellationSpeakers: () =>
@@ -490,19 +554,23 @@ export const api = {
 
   // --- Team mode (proxied to remote glossary-server via local backend) ---
   teamStatus: () => request<import('../types/glossary').TeamStatus>('/team/status'),
-  teamLogin: (serverUrl: string, username: string, password: string) =>
+  teamProbe: (serverUrl: string) =>
+    request<import('../types/glossary').TeamCertificateProbe>('/team/probe', {
+      method: 'POST', body: JSON.stringify({ serverUrl }),
+    }),
+  teamLogin: (serverUrl: string, username: string, password: string, fingerprint: string) =>
     request<{ loggedIn: boolean; user: import('../types/glossary').TeamUser }>('/team/login', {
-      method: 'POST', body: JSON.stringify({ serverUrl, username, password }),
+      method: 'POST', body: JSON.stringify({ serverUrl, username, password, fingerprint }),
     }),
   teamLogout: () => request<{ status: string }>('/team/logout', { method: 'POST' }),
-  teamConnect: (serverUrl: string) =>
+  teamConnect: (serverUrl: string, fingerprint: string) =>
     request<{ connected: boolean; readonly: boolean }>('/team/connect', {
-      method: 'POST', body: JSON.stringify({ serverUrl }),
+      method: 'POST', body: JSON.stringify({ serverUrl, fingerprint }),
     }),
   teamDisconnect: () => request<{ status: string }>('/team/disconnect', { method: 'POST' }),
   teamSync: (force = false) =>
     request<{ status: string; version: number; changed: boolean; entries?: number }>(
-      `/team/sync${force ? '?force=1' : ''}`, { method: 'POST' },
+      `/team/sync${force ? '?force=1' : ''}`, { method: 'POST', timeoutMs: LONG_MUTATION_TIMEOUT_MS },
     ),
   teamCreateProposal: (p: {
     kind: string; targetType?: string; targetId?: string; category: string
@@ -577,6 +645,7 @@ export const api = {
     request<{ deleted: number; written: number; entries: number; appellations: number; grammar: number; version: number }>(
       '/team/admin/glossary/replace', {
         method: 'POST',
+        timeoutMs: LONG_MUTATION_TIMEOUT_MS,
         body: JSON.stringify({
           entries: data.entries,
           appellations: data.appellations ?? [],
@@ -586,6 +655,7 @@ export const api = {
   teamBulkImport: (data: import('../types/glossary').GlossaryData) =>
     request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
       method: 'POST',
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
       body: JSON.stringify({
         entries: data.entries,
         appellations: data.appellations ?? [],

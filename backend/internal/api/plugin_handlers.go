@@ -37,13 +37,18 @@ func (h *Handler) PluginSetEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled      bool `json:"enabled"`
+		ApproveLocal bool `json:"approveLocal"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.plugins.SetEnabled(id, req.Enabled); err != nil {
+	if err := h.plugins.SetEnabled(id, req.Enabled, req.ApproveLocal); err != nil {
+		if errors.Is(err, service.ErrPluginApprovalRequired) {
+			writeError(w, http.StatusConflict, "本地或旧版未验证插件需要用户明确确认后才能启用")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "set enabled failed: "+err.Error())
 		return
 	}
@@ -64,6 +69,56 @@ func (h *Handler) PluginUninstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// PluginRollback restores the payload retained immediately before the latest
+// successful activation. Runtime loading is handled by the frontend afterwards.
+func (h *Handler) PluginRollback(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing plugin id")
+		return
+	}
+	m, err := h.plugins.Rollback(id)
+	if err != nil {
+		if errors.Is(err, service.ErrNoPluginBackup) {
+			writeError(w, http.StatusConflict, "没有可恢复的插件版本")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "rollback failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// PluginMarkGood consumes the previous rollback payload only after the frontend
+// has successfully completed setup for this exact version and provenance.
+func (h *Handler) PluginMarkGood(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Version    string                    `json:"version"`
+		LoadToken  string                    `json:"loadToken"`
+		Provenance *service.PluginProvenance `json:"provenance"`
+	}
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing plugin id")
+		return
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.plugins.MarkGood(id, req.Version, req.LoadToken, req.Provenance); err != nil {
+		if errors.Is(err, service.ErrPluginChanged) {
+			writeError(w, http.StatusConflict, "plugin changed before activation completed")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "mark plugin good failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // PluginFile serves a static file from a plugin's directory (entry.js, assets).
 func (h *Handler) PluginFile(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -75,6 +130,10 @@ func (h *Handler) PluginFile(w http.ResponseWriter, r *http.Request) {
 	base := h.plugins.PluginDir(id)
 	if base == "" { // invalid plugin id (rejected by the store)
 		writeError(w, http.StatusBadRequest, "invalid plugin id")
+		return
+	}
+	if err := h.plugins.VerifyLoad(id, r.URL.Query().Get("token")); err != nil {
+		writeError(w, http.StatusConflict, "plugin is disabled or changed")
 		return
 	}
 	target := filepath.Join(base, filepath.Clean("/"+rest))
@@ -115,7 +174,7 @@ func (h *Handler) PluginInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "package file not found")
 		return
 	}
-	m, err := h.plugins.Install(src, req.HostVersion, "")
+	m, err := h.plugins.InstallLocal(src, req.HostVersion)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrIncompatible):
@@ -174,6 +233,12 @@ func (h *Handler) MarketInstall(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "插件需要更新版本的主程序（minHostVersion="+m.MinHostVersion+"）")
 		case errors.Is(err, service.ErrIDMismatch):
 			writeError(w, http.StatusBadGateway, "插件包与市场条目不一致，已拒绝安装")
+		case errors.Is(err, service.ErrVersionMismatch):
+			writeError(w, http.StatusBadGateway, "插件包版本与市场条目不一致，已拒绝安装")
+		case errors.Is(err, service.ErrPluginDowngrade):
+			writeError(w, http.StatusConflict, "已拒绝用较旧的市场版本替换当前插件")
+		case errors.Is(err, service.ErrPluginChanged):
+			writeError(w, http.StatusConflict, "插件在安装期间发生变化，请刷新后重试")
 		case errors.Is(err, service.ErrBadPackage):
 			writeError(w, http.StatusBadRequest, "无效的插件包")
 		default:

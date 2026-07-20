@@ -21,10 +21,6 @@ export interface TermMatch {
   end: number
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 // Fold a string for matching: compatibility-normalize (NFKC) + lowercase each
 // code point so matching is case- and full/half-width-insensitive (e.g. ＶＩＶＩＤ
 // and vivid both match a "Vivid" term, ！ matches !). A code point is only
@@ -41,11 +37,22 @@ function foldForMatch(s: string): string {
   return out
 }
 
-// Module-level singleton state so every editor row shares one prebuilt regex.
+interface TrieNode {
+  children: Map<string, TrieNode>
+  key?: string
+  entry?: GlossaryEntry
+}
+
+function trieNode(): TrieNode {
+  return { children: new Map() }
+}
+
+// Module-level singleton state so every editor row shares one prebuilt index.
 const entriesLoaded = ref(false)
-let combinedRe: RegExp | null = null
+let root = trieNode()
+let indexedTermCount = 0
 let termToEntry = new Map<string, GlossaryEntry>()
-// The exact allEntries array the current regex/map were built from. Compared by
+// The exact allEntries array the current index/map were built from. Compared by
 // identity (not length): the store swaps in a fresh array on every (re)load /
 // sync / import, so this invalidates the cache on ANY content change — including
 // edits that keep the entry count the same (changed source/translation, or a
@@ -62,12 +69,14 @@ export function useGlossaryMatcher() {
     rebuild()
   }
 
-  // Rebuild the combined regex from the current entry cache. Sources are sorted
-  // longest-first so alternation prefers the longest match at a given position.
+  // Build a character trie instead of concatenating up to 100k sources into one
+  // regular expression. Matching cost depends on text/max-term length rather than
+  // repeatedly compiling and scanning an enormous alternation.
   function rebuild() {
     const entries = glossary.allEntries
+    root = trieNode()
+    indexedTermCount = 0
     termToEntry = new Map()
-    const sources: string[] = []
     for (const e of entries) {
       const src = (e.source || '').trim()
       if ([...src].length < MIN_TERM_LEN) continue
@@ -77,14 +86,19 @@ export function useGlossaryMatcher() {
       const key = foldForMatch(src)
       if (!termToEntry.has(key)) {
         termToEntry.set(key, e)
-        sources.push(key)
+        let node = root
+        for (const ch of key) {
+          let child = node.children.get(ch)
+          if (!child) {
+            child = trieNode()
+            node.children.set(ch, child)
+          }
+          node = child
+        }
+        node.key = key
+        node.entry = e
+        indexedTermCount++
       }
-    }
-    sources.sort((a, b) => b.length - a.length)
-    if (sources.length === 0) {
-      combinedRe = null
-    } else {
-      combinedRe = new RegExp(sources.map(escapeRegExp).join('|'), 'g')
     }
     builtFromEntries = entries
   }
@@ -93,28 +107,44 @@ export function useGlossaryMatcher() {
   function matchTerms(text: string): TermMatch[] {
     if (!text) return []
     if (builtFromEntries !== glossary.allEntries) rebuild()
-    if (!combinedRe) return []
+    if (indexedTermCount === 0) return []
     const out: TermMatch[] = []
-    // Match against the folded text; foldForMatch preserves length, so m.index
-    // and the match length map straight onto the original `text`.
+    // Match against the folded text; foldForMatch preserves UTF-16 length, so
+    // trie offsets map straight onto the original on-screen string.
     const folded = foldForMatch(text)
-    combinedRe.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = combinedRe.exec(folded)) !== null) {
-      const key = m[0]
-      const entry = termToEntry.get(key)
-      // Report the ORIGINAL substring (not the folded key) so downstream
-      // highlight re-search and hover lookup key off real on-screen text.
-      if (entry) {
-        const term = text.slice(m.index, m.index + key.length)
-        out.push({ term, entry, start: m.index, end: m.index + key.length })
+    let start = 0
+    while (start < folded.length) {
+      let node = root
+      let cursor = start
+      let matchedNode: TrieNode | undefined
+      let matchedEnd = start
+      while (cursor < folded.length) {
+        const ch = String.fromCodePoint(folded.codePointAt(cursor)!)
+        const child = node.children.get(ch)
+        if (!child) break
+        cursor += ch.length
+        node = child
+        if (node.entry) {
+          matchedNode = node
+          matchedEnd = cursor
+        }
       }
-      if (m.index === combinedRe.lastIndex) combinedRe.lastIndex++ // guard zero-width
+      if (matchedNode?.entry && matchedNode.key) {
+        out.push({
+          term: text.slice(start, matchedEnd),
+          entry: matchedNode.entry,
+          start,
+          end: matchedEnd,
+        })
+        start = matchedEnd
+      } else {
+        start += String.fromCodePoint(folded.codePointAt(start)!).length
+      }
     }
     return out
   }
 
-  const ready = computed(() => entriesLoaded.value && combinedRe !== null)
+  const ready = computed(() => entriesLoaded.value && indexedTermCount > 0)
 
   // lookup is called with the original on-screen term (data-term), so fold it to
   // match the folded keys stored in termToEntry.

@@ -8,7 +8,7 @@ let autoPulledOnce = false
 </script>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated, onDeactivated } from 'vue'
 import { RefreshCw, Download, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -18,7 +18,9 @@ import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import { useDebugLog } from '../../composables/useDebugLog'
 import { useDownloadFloat } from '../../composables/useDownloadFloat'
+import { clearUndoHistory } from '../../composables/useUndo'
 import SkSelect from '../ui/SkSelect.vue'
+import { syncRecoveryNow } from '../../composables/useAutoSave'
 
 const sourceOptions = [
   { value: 'haruki', label: 'HarukiBot NEO' },
@@ -60,6 +62,9 @@ async function confirmDiscardUnsaved(): Promise<boolean> {
 }
 const debug = useDebugLog()
 const dlFloat = useDownloadFloat()
+const navigatorActive = ref(true)
+onActivated(() => { navigatorActive.value = true })
+onDeactivated(() => { navigatorActive.value = false })
 
 const unitMap = ref<Record<string, string>>({})
 async function loadUnitDict() {
@@ -103,38 +108,28 @@ onMounted(() => {
 
 
 watch(() => story.selectedType, async (type) => {
+  if (!navigatorActive.value) return
   debug.log(`selectedType changed: "${type}"`)
   if (!type) return
-  story.selectedSort = ''
-  story.selectedIndex = ''
-  story.selectedChapter = -1
-  story.sorts = []
-  story.indices = []
-  story.chapters = []
   await story.fetchSorts(type)
-  if (story.sorts.length === 0) {
-    story.fetchIndex(type, '')
+  if (navigatorActive.value && story.selectedType === type && story.sorts.length === 0) {
+    await story.fetchIndex(type, '')
   }
 })
 
 watch(() => story.selectedSort, (sort) => {
+  if (!navigatorActive.value) return
   debug.log(`selectedSort changed: "${sort}"`)
   if (!sort || !story.selectedType) return
-  story.selectedIndex = ''
-  story.selectedChapter = -1
-  story.indices = []
-  story.chapters = []
-  story.fetchIndex(story.selectedType, sort)
+  void story.fetchIndex(story.selectedType, sort)
 })
 
 watch(() => story.selectedIndex, (idx) => {
+  if (!navigatorActive.value) return
   debug.log(`selectedIndex changed: "${idx}"`)
-  story.selectedIndexLabel = story.indices.find(i => i.value === idx)?.label || idx
   if (!idx || !story.selectedType) return
-  story.selectedChapter = -1
-  story.chapters = []
   if (idx !== '-') {
-    story.fetchChapters(story.selectedType, story.selectedSort, idx)
+    void story.fetchChapters(story.selectedType, story.selectedSort, idx)
   }
 })
 
@@ -208,6 +203,8 @@ async function handleLoad() {
       // would let the 30s autosave overwrite the recovery file with this
       // near-empty template.
       editor.markSaved()
+      await syncRecoveryNow().catch(() => {})
+      clearUndoHistory()
       dlFloat.done(taskId, `已载入 ${loadedStory.sourceTalks.length} 行`)
     } else {
       debug.log('故事载入返回0行', 'warn')

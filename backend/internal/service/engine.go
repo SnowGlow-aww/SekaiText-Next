@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,13 @@ type EngineManager struct {
 	// suppress.probe 结果（可用编码器+推荐值）。首跑要对每个硬件编码器试编码
 	// （数秒），显卡不会中途更换，成功结果缓存整个后端生命周期。
 	probeCache json.RawMessage
+
+	procs        map[*engineProc]struct{}
+	shuttingDown bool
+	spawnMu      sync.Mutex
+	shutdownOnce sync.Once
+	shutdownDone chan struct{}
+	shutdownErr  error
 }
 
 // 并行上限：识别/压制本身就吃满多核，同域 4 个并行进程已经远超普通机器的合理负载；
@@ -79,6 +87,7 @@ var (
 	ErrSuppressOutputConflict = errors.New("已有压制任务正在输出到同一个文件，请更换输出路径或等其完成")
 
 	ErrSuppressCloseRunning = errors.New("压制任务运行中，请先取消，到达终态后再移除")
+	ErrEngineShuttingDown   = errors.New("内核管理器正在关闭")
 )
 
 // envelope is the union of response + notification fields; "id" presence selects.
@@ -92,13 +101,22 @@ type ipcEnvelope struct {
 
 // --- engineProc：一个已拉起的引擎进程，自带独立的 NDJSON 收发通道 ---
 
+type processTreeAuthority interface {
+	Kill() error
+}
+
 type engineProc struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	writeMu sync.Mutex // serializes writes so each JSON object is one atomic line
-	nextID  int64      // atomic request-id counter
-	pending sync.Map   // map[int64]chan rawResponse
-	exited  chan struct{}
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	writeMu      sync.Mutex // serializes writes so each JSON object is one atomic line
+	nextID       int64      // atomic request-id counter
+	pending      sync.Map   // map[int64]chan rawResponse
+	exited       chan struct{}
+	closeOnce    sync.Once
+	killOnce     sync.Once
+	tree         processTreeAuthority
+	treeKillOnce sync.Once
+	treeKillErr  error
 
 	mu       sync.Mutex // guards dead/notify/onExitCb
 	dead     bool
@@ -107,6 +125,16 @@ type engineProc struct {
 }
 
 func (em *EngineManager) spawnProc() (*engineProc, error) {
+	// Serialize process creation with the shutdown snapshot so a process can
+	// never start in the gap after shutdown collected em.procs.
+	em.spawnMu.Lock()
+	defer em.spawnMu.Unlock()
+	em.mu.Lock()
+	shuttingDown := em.shuttingDown
+	em.mu.Unlock()
+	if shuttingDown {
+		return nil, ErrEngineShuttingDown
+	}
 	if !em.Available() {
 		return nil, fmt.Errorf("engine binary not found: %s", em.enginePath)
 	}
@@ -127,14 +155,38 @@ func (em *EngineManager) spawnProc() (*engineProc, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("engine start: %w", err)
 	}
-	p := &engineProc{cmd: cmd, stdin: stdin, exited: make(chan struct{})}
+	tree, err := newProcessTreeAuthority(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("contain engine process tree: %w", err)
+	}
+	p := &engineProc{cmd: cmd, stdin: stdin, exited: make(chan struct{}), tree: tree}
+	em.mu.Lock()
+	if em.shuttingDown {
+		shuttingDown = true
+	} else {
+		em.procs[p] = struct{}{}
+	}
+	em.mu.Unlock()
 	go p.readLoop(stdout)
 	go drainStderr(stderr)
 	go func() {
 		_ = cmd.Wait()
-		p.onExit()
+		p.finishExit()
+		em.unregisterProc(p)
 	}()
+	if shuttingDown {
+		p.kill()
+		return nil, ErrEngineShuttingDown
+	}
 	return p, nil
+}
+
+func (em *EngineManager) unregisterProc(p *engineProc) {
+	em.mu.Lock()
+	delete(em.procs, p)
+	em.mu.Unlock()
 }
 
 // readLoop parses one NDJSON object per line. Uses bufio.Reader.ReadString (which
@@ -228,24 +280,54 @@ func (p *engineProc) bind(notify func(string, json.RawMessage), onExit func()) b
 // it doesn't. Detaches callbacks first so the teardown doesn't fail a job that
 // has already been handed a different proc (or none).
 func (p *engineProc) kill() {
-	p.mu.Lock()
-	p.notify = nil
-	p.onExitCb = nil
-	p.mu.Unlock()
-	_ = p.stdin.Close()
-	go func() {
-		select {
-		case <-p.exited:
-		case <-time.After(3 * time.Second):
-			if p.cmd.Process != nil {
-				_ = p.cmd.Process.Kill()
+	p.killOnce.Do(func() {
+		p.mu.Lock()
+		p.notify = nil
+		p.onExitCb = nil
+		p.mu.Unlock()
+		// Close can block behind an in-flight pipe write on some platforms. It
+		// must never hold up a cancellation or manager shutdown caller.
+		go p.closeInput()
+		go func() {
+			select {
+			case <-p.exited:
+			case <-time.After(3 * time.Second):
+				p.forceKill()
 			}
+		}()
+	})
+}
+
+func (p *engineProc) closeInput() {
+	p.closeOnce.Do(func() { _ = p.stdin.Close() })
+}
+
+func (p *engineProc) forceKill() {
+	if p.tree != nil {
+		p.treeKillOnce.Do(func() { p.treeKillErr = p.tree.Kill() })
+		if p.treeKillErr == nil {
+			return
 		}
-	}()
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = KillProcessTree(p.cmd)
+	}
+}
+
+// finishExit runs after Wait has reaped the engine leader. Windows still retains
+// a Job Object handle here, so closing it kills ffmpeg descendants before the job
+// callback can expose a terminal state and allow another output writer to start.
+func (p *engineProc) finishExit() {
+	p.forceKill()
+	p.onExit()
 }
 
 // request sends a method call and waits for the matching response.
 func (p *engineProc) request(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	return p.requestWithSent(ctx, method, params, nil)
+}
+
+func (p *engineProc) requestWithSent(ctx context.Context, method string, params interface{}, sent func()) (json.RawMessage, error) {
 	if p.isDead() {
 		return nil, errors.New("内核进程已退出")
 	}
@@ -265,6 +347,9 @@ func (p *engineProc) request(ctx context.Context, method string, params interfac
 
 	p.writeMu.Lock()
 	_, werr := p.stdin.Write(append(buf, '\n'))
+	if werr == nil && sent != nil {
+		sent()
+	}
 	p.writeMu.Unlock()
 	if werr != nil {
 		p.pending.Delete(id)
@@ -289,6 +374,9 @@ func (p *engineProc) request(ctx context.Context, method string, params interfac
 // mutable fields, written by the notification-router goroutine and read by the
 // progress HTTP handler.
 type EngineTimingJob struct {
+	// DocumentMu serializes engine document mutations with export and Aegisub
+	// push/pull. Mu only protects snapshots; it must not be held across IPC.
+	DocumentMu    sync.Mutex
 	Mu            sync.Mutex
 	TaskID        string
 	ScriptPath    string // scenario JSON path; used to name the exported .ass
@@ -309,13 +397,21 @@ type EngineTimingJob struct {
 	Error         string
 
 	// --- 导出与 Aegisub 同步状态（由 HTTP 层维护，同样由 Mu 保护） ---
-	ExportAssPath string         // 最近一次导出的 .ass 绝对路径（空=未导出）
-	ExportOpts    AssPostOptions // 导出时的后处理选项，推送同步时复用
-	ExportMTime   time.Time      // 我们最后一次写盘后的 mtime（据此判定 Aegisub 侧是否改过）
-	ExportSize    int64
-	DirtyLines    map[int]bool // 自上次导出/推送后经 broker 编辑过的 dialog index
+	ExportAssPath  string         // 最近一次导出的 .ass 绝对路径（空=未导出）
+	ExportOpts     AssPostOptions // 导出时的后处理选项，推送同步时复用
+	ExportMTime    time.Time      // 我们最后一次写盘后的 mtime（据此判定 Aegisub 侧是否改过）
+	ExportSize     int64
+	ExportHash     string         // 最后写入/回读内容的 SHA-256；mtime/size 仅兼容旧基线
+	SyncRevision   uint64         // 文档同步代次；导出及任一侧内容变更后单调递增
+	ExportRevision uint64         // ExportAssPath 内同步元数据记录的 revision
+	ExportSyncHash string         // ExportAssPath 内同步元数据记录的 logical content hash
+	DirtyLines     map[int]bool   // 自上次导出/推送后经 broker 编辑过的 dialog index
+	LineRevisions  map[int]uint64 // 每行最近一次引擎编辑代次；保护已推送但尚未落入 ASS 的改动
 
-	proc *engineProc // 该任务独占的引擎进程；nil = 尚未领养或已回收/死亡
+	proc            *engineProc // 该任务独占的引擎进程；nil = 尚未领养或已回收/死亡
+	cancelRequested bool
+	startSent       bool
+	stopSent        bool
 }
 
 // EngineSuppressJob mirrors ProgressTracker for a 压制 (encode) run.
@@ -338,7 +434,10 @@ type EngineSuppressJob struct {
 	LogPath         string
 	logLastProgress bool
 
-	proc *engineProc
+	proc            *engineProc
+	cancelRequested bool
+	startSent       bool
+	stopSent        bool
 }
 
 // NewEngineManager constructs a manager. No engine process is spawned until the
@@ -350,6 +449,8 @@ func NewEngineManager(enginePath, ffmpegPath, logsDir string) *EngineManager {
 		logsDir:      logsDir,
 		timingJobs:   map[string]*EngineTimingJob{},
 		suppressJobs: map[string]*EngineSuppressJob{},
+		procs:        map[*engineProc]struct{}{},
+		shutdownDone: make(chan struct{}),
 	}
 }
 
@@ -368,6 +469,10 @@ func (em *EngineManager) FfmpegPath() string { return em.ffmpegPath }
 // takeProc hands out the spare proc (warm start) or spawns a fresh one.
 func (em *EngineManager) takeProc() (*engineProc, error) {
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return nil, ErrEngineShuttingDown
+	}
 	p := em.spare
 	em.spare = nil
 	em.mu.Unlock()
@@ -392,6 +497,11 @@ func (em *EngineManager) recycleProc(p *engineProc) {
 		return
 	}
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		p.kill()
+		return
+	}
 	if em.spare == nil || em.spare.isDead() {
 		em.spare = p
 		em.mu.Unlock()
@@ -405,6 +515,10 @@ func (em *EngineManager) recycleProc(p *engineProc) {
 // parking one if needed.
 func (em *EngineManager) spareProc() (*engineProc, error) {
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return nil, ErrEngineShuttingDown
+	}
 	if em.spare != nil && !em.spare.isDead() {
 		p := em.spare
 		em.mu.Unlock()
@@ -416,6 +530,11 @@ func (em *EngineManager) spareProc() (*engineProc, error) {
 		return nil, err
 	}
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		p.kill()
+		return nil, ErrEngineShuttingDown
+	}
 	if em.spare == nil || em.spare.isDead() {
 		em.spare = p
 		em.mu.Unlock()
@@ -469,6 +588,10 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 	job := &EngineTimingJob{TaskID: taskID, ScriptPath: p.ScriptPath, VideoPath: p.VideoPath, Status: "running"}
 
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return nil, ErrEngineShuttingDown
+	}
 	running := 0
 	for _, j := range em.timingJobs {
 		if j.statusSnapshot() == "running" {
@@ -487,17 +610,11 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 		em.mu.Unlock()
 		return nil, fmt.Errorf("保留的打轴任务过多（上限 %d），请先关闭已完成的任务", maxKeptTimingJobs)
 	}
-	var replaced []*engineProc
+	var replaced []*EngineTimingJob
 	if !parallel {
 		// 老语义：新一轮打轴替换全部旧任务；其进程回收一个当备胎、其余杀掉。
 		for id, j := range em.timingJobs {
-			j.Mu.Lock()
-			pr := j.proc
-			j.proc = nil
-			j.Mu.Unlock()
-			if pr != nil {
-				replaced = append(replaced, pr)
-			}
+			replaced = append(replaced, j)
 			delete(em.timingJobs, id)
 		}
 		em.timingOrder = nil
@@ -505,8 +622,8 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 	em.timingJobs[taskID] = job
 	em.timingOrder = append(em.timingOrder, taskID)
 	em.mu.Unlock()
-	for _, pr := range replaced {
-		em.recycleProc(pr)
+	for _, oldJob := range replaced {
+		em.retireTimingJob(oldJob, false)
 	}
 
 	// Fire subtitle.start asynchronously and return the taskId now. The engine
@@ -527,14 +644,14 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 	}
 	proc, err := em.takeProc()
 	if err != nil {
-		em.failStart(&job.Mu, &job.Status, &job.Error, "启动打轴失败: "+err.Error())
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动打轴失败: "+err.Error())
 		return
 	}
 	if !proc.bind(
 		func(method string, params json.RawMessage) { routeTimingNotification(job, method, params) },
-		func() { failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason) },
+		func() { failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested) },
 	) {
-		em.failStart(&job.Mu, &job.Status, &job.Error, "内核进程启动后立即退出")
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "内核进程启动后立即退出")
 		return
 	}
 	job.Mu.Lock()
@@ -552,11 +669,15 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 	// state through its notifications or the proc's exit callback).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if _, err := proc.request(ctx, "subtitle.start", p); err != nil {
+	if _, err := proc.requestWithSent(ctx, "subtitle.start", p, func() {
+		if claimTimingStopAfterStart(job) {
+			go func() { _ = stopTimingProc(proc, 10*time.Second) }()
+		}
+	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		em.failStart(&job.Mu, &job.Status, &job.Error, "启动打轴失败: "+err.Error())
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动打轴失败: "+err.Error())
 		job.Mu.Lock()
 		pr := job.proc
 		job.proc = nil
@@ -566,33 +687,73 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 	}
 	// A cancel that raced the start send has already marked the job canceled but
 	// had no proc to stop — make sure the engine actually stops now.
-	if job.statusSnapshot() == "canceled" {
-		sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, _ = proc.request(sctx, "subtitle.stop", nil)
-		scancel()
+	if claimTimingStop(job) {
+		_ = stopTimingProc(proc, 10*time.Second)
 	}
+}
+
+func claimTimingStopAfterStart(job *EngineTimingJob) bool {
+	job.Mu.Lock()
+	defer job.Mu.Unlock()
+	job.startSent = true
+	if !job.cancelRequested || job.stopSent {
+		return false
+	}
+	job.stopSent = true
+	return true
+}
+
+func claimTimingStop(job *EngineTimingJob) bool {
+	job.Mu.Lock()
+	defer job.Mu.Unlock()
+	if !job.cancelRequested || !job.startSent || job.stopSent {
+		return false
+	}
+	job.stopSent = true
+	return true
+}
+
+func stopTimingProc(proc *engineProc, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := proc.request(ctx, "subtitle.stop", nil)
+	return err
 }
 
 // failStart marks a still-running job as failed at start time. The job stays
 // registered so the progress poll surfaces the error (serial-mode starts only
 // count running jobs, so a failed job never blocks a retry).
-func (em *EngineManager) failStart(mu *sync.Mutex, status, errMsg *string, msg string) {
+func (em *EngineManager) failStart(mu *sync.Mutex, status, errMsg, reason *string, cancelRequested *bool, msg string) {
 	mu.Lock()
 	if *status == "running" {
-		*status = "error"
-		*errMsg = msg
+		if *cancelRequested {
+			*status = "canceled"
+			*errMsg = ""
+			*reason = "Canceled"
+			*cancelRequested = false
+		} else {
+			*status = "error"
+			*errMsg = msg
+		}
 	}
 	mu.Unlock()
 }
 
 // failJobExit is the proc-death callback: a still-running job will never get its
 // finished notification once the engine dies, so fail it explicitly.
-func failJobExit(mu *sync.Mutex, status, errMsg, reason *string) {
+func failJobExit(mu *sync.Mutex, status, errMsg, reason *string, cancelRequested *bool) {
 	mu.Lock()
 	if *status == "running" {
-		*status = "error"
-		*errMsg = "内核进程已退出"
-		*reason = "EngineExited"
+		if *cancelRequested {
+			*status = "canceled"
+			*errMsg = ""
+			*reason = "Canceled"
+			*cancelRequested = false
+		} else {
+			*status = "error"
+			*errMsg = "内核进程已退出"
+			*reason = "EngineExited"
+		}
 	}
 	mu.Unlock()
 }
@@ -674,23 +835,32 @@ func (em *EngineManager) CloseTiming(taskID string) error {
 	em.timingOrder = removeID(em.timingOrder, taskID)
 	em.mu.Unlock()
 
+	em.retireTimingJob(job, true)
+	return nil
+}
+
+// retireTimingJob waits for any document operation that already owns the job
+// before detaching its process. The manager lock is deliberately not held while
+// waiting for DocumentMu, avoiding an em.mu -> DocumentMu lock inversion.
+func (em *EngineManager) retireTimingJob(job *EngineTimingJob, cancelRunning bool) {
+	job.DocumentMu.Lock()
 	job.Mu.Lock()
 	pr := job.proc
 	job.proc = nil
 	running := job.Status == "running"
-	if running {
+	if running && cancelRunning {
 		job.Status = "canceled"
 		job.FinishReason = "Canceled"
 	}
 	job.Mu.Unlock()
+	job.DocumentMu.Unlock()
 	if pr != nil {
-		if running {
+		if running && cancelRunning {
 			pr.kill()
 		} else {
 			em.recycleProc(pr)
 		}
 	}
-	return nil
 }
 
 func removeID(order []string, id string) []string {
@@ -734,6 +904,10 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 	}
 
 	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return nil, ErrEngineShuttingDown
+	}
 	running := 0
 	for _, j := range em.suppressJobs {
 		if j.statusSnapshot() != "running" {
@@ -742,7 +916,7 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 		running++
 		// 并行任务各自独占引擎进程，但输出文件仍是共享资源：两个 ffmpeg 写同一个
 		// 文件在 Windows 上不报错、产物直接损坏，启动前必须拦下。
-		if filepath.Clean(j.OutputPath) == filepath.Clean(p.OutputPath) {
+		if sameEngineOutputPath(j.OutputPath, p.OutputPath) {
 			em.mu.Unlock()
 			return nil, ErrSuppressOutputConflict
 		}
@@ -785,19 +959,45 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 	return job, nil
 }
 
+func sameEngineOutputPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if aInfo, aErr := os.Stat(a); aErr == nil {
+		if bInfo, bErr := os.Stat(b); bErr == nil && os.SameFile(aInfo, bInfo) {
+			return true
+		}
+	}
+	canonical := func(path string) string {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = filepath.Clean(path)
+		}
+		if parent, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+			abs = filepath.Join(parent, filepath.Base(abs))
+		}
+		return filepath.Clean(abs)
+	}
+	a, b = canonical(a), canonical(b)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams) {
 	if job.statusSnapshot() != "running" {
 		return
 	}
 	proc, err := em.takeProc()
 	if err != nil {
-		em.failStart(&job.Mu, &job.Status, &job.Error, "启动压制失败: "+err.Error())
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动压制失败: "+err.Error())
 		return
 	}
 	if !proc.bind(
 		func(method string, params json.RawMessage) { em.routeSuppressNotification(job, method, params) },
 		func() {
-			failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason)
+			failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested)
 			// 引擎进程异常死亡拿不到 suppress.finished——把死亡记录进日志并导出，
 			// 否则最需要日志的崩溃场景反而什么都留不下。
 			if job.statusSnapshot() == "error" {
@@ -812,7 +1012,7 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 			}
 		},
 	) {
-		em.failStart(&job.Mu, &job.Status, &job.Error, "内核进程启动后立即退出")
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "内核进程启动后立即退出")
 		return
 	}
 	job.Mu.Lock()
@@ -826,19 +1026,49 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if _, err := proc.request(ctx, "suppress.start", p); err != nil {
+	if _, err := proc.requestWithSent(ctx, "suppress.start", p, func() {
+		if claimSuppressStopAfterStart(job) {
+			go func() { _ = stopSuppressProc(proc, 10*time.Second) }()
+		}
+	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		em.failStart(&job.Mu, &job.Status, &job.Error, "启动压制失败: "+err.Error())
+		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动压制失败: "+err.Error())
 		em.releaseSuppressProc(job)
 		return
 	}
-	if job.statusSnapshot() == "canceled" {
-		sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, _ = proc.request(sctx, "suppress.stop", nil)
-		scancel()
+	if claimSuppressStop(job) {
+		_ = stopSuppressProc(proc, 10*time.Second)
 	}
+}
+
+func claimSuppressStopAfterStart(job *EngineSuppressJob) bool {
+	job.Mu.Lock()
+	defer job.Mu.Unlock()
+	job.startSent = true
+	if !job.cancelRequested || job.stopSent {
+		return false
+	}
+	job.stopSent = true
+	return true
+}
+
+func claimSuppressStop(job *EngineSuppressJob) bool {
+	job.Mu.Lock()
+	defer job.Mu.Unlock()
+	if !job.cancelRequested || !job.startSent || job.stopSent {
+		return false
+	}
+	job.stopSent = true
+	return true
+}
+
+func stopSuppressProc(proc *engineProc, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := proc.request(ctx, "suppress.stop", nil)
+	return err
 }
 
 // releaseSuppressProc 在压制到达终态后回收其进程（压制完成后进程再无用处，
@@ -897,19 +1127,22 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 		job.Mu.Lock()
 		proc := job.proc
 		running := job.Status == "running"
-		if running && proc == nil {
-			// start goroutine 还没领养到进程：直接标记取消，launchTiming 会自行退出
-			job.Status = "canceled"
-			job.FinishReason = "Canceled"
+		stop := false
+		if running {
+			job.cancelRequested = true
+			if proc == nil {
+				job.Status = "canceled"
+				job.FinishReason = "Canceled"
+			} else if job.startSent && !job.stopSent {
+				job.stopSent = true
+				stop = true
+			}
 		}
 		job.Mu.Unlock()
-		if !running || proc == nil {
+		if !stop {
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, err := proc.request(ctx, "subtitle.stop", nil)
-		return err
+		return stopTimingProc(proc, 30*time.Second)
 	case "suppress":
 		job := em.pickSuppressForCancel(taskID)
 		if job == nil {
@@ -918,18 +1151,22 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 		job.Mu.Lock()
 		proc := job.proc
 		running := job.Status == "running"
-		if running && proc == nil {
-			job.Status = "canceled"
-			job.FinishReason = "Canceled"
+		stop := false
+		if running {
+			job.cancelRequested = true
+			if proc == nil {
+				job.Status = "canceled"
+				job.FinishReason = "Canceled"
+			} else if job.startSent && !job.stopSent {
+				job.stopSent = true
+				stop = true
+			}
 		}
 		job.Mu.Unlock()
-		if !running || proc == nil {
+		if !stop {
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, err := proc.request(ctx, "suppress.stop", nil)
-		return err
+		return stopSuppressProc(proc, 30*time.Second)
 	default:
 		return fmt.Errorf("unknown domain: %s", domain)
 	}
@@ -1016,6 +1253,154 @@ func (em *EngineManager) Ping() (map[string]interface{}, error) {
 	return out, nil
 }
 
+// Shutdown stops every timing/suppress run, closes idle engines, and waits for
+// every process registered with the manager. Once shutdown begins no new engine
+// process or job can be started. The caller should provide a deadline; a ten
+// second deadline is applied when it does not.
+func (em *EngineManager) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
+
+	em.shutdownOnce.Do(func() {
+		// Run outside sync.Once.Do so another caller with a shorter context is not
+		// trapped waiting inside Once before it can observe its own deadline.
+		go func() {
+			em.shutdownErr = em.shutdown(ctx)
+			close(em.shutdownDone)
+		}()
+	})
+	select {
+	case <-em.shutdownDone:
+		return em.shutdownErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (em *EngineManager) shutdown(ctx context.Context) error {
+	em.spawnMu.Lock()
+	em.mu.Lock()
+	em.shuttingDown = true
+	em.spare = nil
+	procs := make([]*engineProc, 0, len(em.procs))
+	for p := range em.procs {
+		procs = append(procs, p)
+	}
+	timingJobs := make([]*EngineTimingJob, 0, len(em.timingJobs))
+	for _, job := range em.timingJobs {
+		timingJobs = append(timingJobs, job)
+	}
+	suppressJobs := make([]*EngineSuppressJob, 0, len(em.suppressJobs))
+	for _, job := range em.suppressJobs {
+		suppressJobs = append(suppressJobs, job)
+	}
+	em.mu.Unlock()
+	em.spawnMu.Unlock()
+
+	stopMethods := make(map[*engineProc]string)
+	for _, job := range timingJobs {
+		job.Mu.Lock()
+		if job.Status == "running" {
+			job.Status = "canceled"
+			job.FinishReason = "Canceled"
+		}
+		if job.proc != nil {
+			stopMethods[job.proc] = "subtitle.stop"
+		}
+		job.Mu.Unlock()
+	}
+	for _, job := range suppressJobs {
+		job.Mu.Lock()
+		if job.Status == "running" {
+			job.Status = "canceled"
+			job.FinishReason = "Canceled"
+		}
+		if job.proc != nil {
+			stopMethods[job.proc] = "suppress.stop"
+		}
+		job.Mu.Unlock()
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(ctx, 3*time.Second)
+	var stopWG sync.WaitGroup
+	var failedStops sync.Map
+	for p, method := range stopMethods {
+		stopWG.Add(1)
+		go func(proc *engineProc, stopMethod string) {
+			defer stopWG.Done()
+			if _, err := proc.request(stopCtx, stopMethod, nil); err != nil {
+				failedStops.Store(proc, true)
+			}
+		}(p, method)
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		stopWG.Wait()
+		close(stopDone)
+	}()
+	gracefulStops := false
+	select {
+	case <-stopDone:
+		gracefulStops = true
+	case <-stopCtx.Done():
+	}
+	stopCancel()
+
+	// Never wait unconditionally for stop requests: a request may be stuck
+	// acquiring writeMu or inside a blocked stdin Write. Closing the pipe is done
+	// asynchronously for the same reason. A failed/timed-out stop kills the tree
+	// while the leader is still present whenever possible.
+	for _, p := range procs {
+		_, stopFailed := failedStops.Load(p)
+		if !gracefulStops || stopFailed {
+			go p.forceKill()
+		}
+		go p.closeInput()
+	}
+	allExited := waitForEngineProcs(procs)
+	select {
+	case <-allExited:
+		return nil
+	case <-ctx.Done():
+	}
+
+	// Kill every process group, including groups whose leader exited already.
+	// Do not wait beyond the caller's deadline for taskkill/Wait/reaping.
+	for _, p := range procs {
+		if runtime.GOOS == "windows" {
+			// taskkill is an external process and can itself stall; launch it without
+			// extending the shutdown deadline. Unix group signals are non-blocking.
+			go p.forceKill()
+		} else {
+			p.forceKill()
+		}
+	}
+	return fmt.Errorf("engine shutdown deadline exceeded; remaining process trees were force-killed: %w", ctx.Err())
+}
+
+func waitForEngineProcs(procs []*engineProc) <-chan struct{} {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(len(procs))
+	for _, p := range procs {
+		go func() {
+			defer wg.Done()
+			<-p.exited
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
+}
+
 func (em *EngineManager) TimingJob(taskID string) (*EngineTimingJob, bool) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
@@ -1033,6 +1418,7 @@ func (em *EngineManager) SuppressJob(taskID string) (*EngineSuppressJob, bool) {
 // EngineTaskSnapshot 是 /engine/tasks 的一行：插件重挂载后据此找回全部任务。
 type EngineTaskSnapshot struct {
 	TaskID        string  `json:"taskId"`
+	DocumentID    string  `json:"documentId,omitempty"`
 	Status        string  `json:"status"`
 	Percent       float64 `json:"percent"`
 	Error         string  `json:"error,omitempty"`
@@ -1069,6 +1455,7 @@ func (em *EngineManager) Tasks() ([]EngineTaskSnapshot, []EngineTaskSnapshot) {
 		j.Mu.Lock()
 		timing = append(timing, EngineTaskSnapshot{
 			TaskID:        j.TaskID,
+			DocumentID:    j.TaskID,
 			Status:        j.Status,
 			Percent:       j.Percent,
 			Error:         j.Error,
@@ -1158,10 +1545,15 @@ func routeTimingNotification(j *EngineTimingJob, method string, params json.RawM
 		_ = json.Unmarshal(params, &p)
 		j.Mu.Lock()
 		j.FinishReason = p.Reason
+		canceled := j.Status == "canceled" || j.cancelRequested
 		// ReadFailed means the engine ran to the end of the video (read past
 		// EOF) — a normal successful finish, same as Completed. See native app
 		// SekaiToolsApp/Views/Pages/SubtitlePageView.cs:513-518.
-		if p.Reason == "Completed" || p.Reason == "ReadFailed" {
+		if canceled {
+			j.Status = "canceled"
+			j.FinishReason = "Canceled"
+			j.Error = ""
+		} else if p.Reason == "Completed" || p.Reason == "ReadFailed" {
 			j.Status = "done"
 			j.Percent = 100
 			// A transient per-frame error (below ExceptionThreshold) can emit
@@ -1183,6 +1575,7 @@ func routeTimingNotification(j *EngineTimingJob, method string, params json.RawM
 		// The last preview frame is a multi-MB base64 jpeg and useless once the
 		// run is terminal — drop it so it doesn't sit resident until the next run.
 		j.PreviewB64 = ""
+		j.cancelRequested = false
 		j.Mu.Unlock()
 	case "subtitle.error":
 		var p struct{ Message string }
@@ -1220,7 +1613,12 @@ func (em *EngineManager) routeSuppressNotification(j *EngineSuppressJob, method 
 		_ = json.Unmarshal(params, &p)
 		j.Mu.Lock()
 		j.FinishReason = p.Reason
-		if p.Reason == "Completed" {
+		if j.Status == "canceled" || j.cancelRequested {
+			j.Status = "canceled"
+			j.FinishReason = "Canceled"
+			j.Error = ""
+			j.appendLogLocked("[SekaiText] 已取消", false)
+		} else if p.Reason == "Completed" {
 			j.Status = "done"
 			j.appendLogLocked("[SekaiText] 压制完成", false)
 		} else if p.Reason == "Canceled" {
@@ -1232,6 +1630,7 @@ func (em *EngineManager) routeSuppressNotification(j *EngineSuppressJob, method 
 			j.appendLogLocked("[SekaiText] 压制失败（"+p.Reason+"）: "+p.Error, false)
 		}
 		failed := j.Status == "error"
+		j.cancelRequested = false
 		j.Mu.Unlock()
 		// 报错自动导出日志：用户不用在错误发生后到处找现场，直接把文件发给开发者。
 		if failed {

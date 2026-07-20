@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,33 +18,42 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"sekaitext/backend/internal/config"
+	"sekaitext/backend/internal/fsutil"
 	"sekaitext/backend/internal/model"
 	"sekaitext/backend/internal/service"
 )
 
 // Handler holds shared dependencies for all HTTP handlers.
 type Handler struct {
-	cfg             *config.AppConfig
-	lm              *service.ListManager
-	editor          *service.EditorService
-	jsonLoader      *service.JsonLoaderService
-	fb              *service.FlashbackAnalyzer
-	dl              *service.Downloader
-	progress        *service.ProgressTracker
-	logBuf          *service.LogBuffer
-	glossary        *service.GlossaryStore
-	plugins         *service.PluginStore
-	market          *service.MarketService
-	appUpdate       *service.AppUpdateService
-	team            *service.TeamService
-	engine          *service.EngineManager
-	voiceAlign      *service.VoiceAligner
-	downloadTasks   sync.Map // map[string]*model.DownloadTaskProgress
-	live2dSyncTasks sync.Map // map[string]*model.Live2DSyncProgress
+	cfg               *config.AppConfig
+	lm                *service.ListManager
+	editor            *service.EditorService
+	jsonLoader        *service.JsonLoaderService
+	fb                *service.FlashbackAnalyzer
+	dl                *service.Downloader
+	progress          *service.ProgressTracker
+	logBuf            *service.LogBuffer
+	glossary          *service.GlossaryStore
+	plugins           *service.PluginStore
+	market            *service.MarketService
+	appUpdate         *service.AppUpdateService
+	team              *service.TeamService
+	engine            *service.EngineManager
+	voiceAlign        *service.VoiceAligner
+	downloadTasks     sync.Map // map[string]*model.DownloadTaskProgress
+	appUpdateMu       sync.Mutex
+	saveDirMu         sync.RWMutex
+	saveDirGeneration atomic.Uint64
+	writeSettingsFile func(string, []byte, os.FileMode) error
+	moveFileNoReplace func(string, string) error
+	live2dSyncMu      sync.Mutex
+	live2dSyncTasks   map[string]*live2dSyncTask
+	live2dSyncRoots   map[string]string
 }
 
 // NewHandler creates a new Handler with all services initialized.
@@ -64,12 +76,15 @@ func NewHandler(cfg *config.AppConfig, logBuf *service.LogBuffer) *Handler {
 		glossary:   service.NewGlossaryStore(cfg.DataDir),
 		plugins:    pluginStore,
 		market:     service.NewMarketService(pluginStore),
-		appUpdate:  service.NewAppUpdateService(),
+		appUpdate:  service.NewAppUpdateService(cfg.DataDir),
 		team:       service.NewTeamService(cfg.DataDir),
 		engine:     service.NewEngineManager(cfg.EnginePath, cfg.FfmpegPath, filepath.Join(cfg.DataBaseDir, "logs")),
 		voiceAlign: service.NewVoiceAligner(cfg.DataDir, cfg.FfmpegPath),
 	}
 	h.startDownloadTaskGC()
+	h.startLive2DTaskGC()
+	h.cleanupUpdateLaunchDirs()
+	h.logInterruptedSaveDirMigration()
 	// 让「下载源」设置（CDN 加速 / GitHub 直连）在启动时即生效。
 	if s, err := h.loadSettings(); err == nil {
 		service.SetDownloadMirror(s.DownloadMirror)
@@ -284,11 +299,18 @@ func (h *Handler) TranslationLoadContent(w http.ResponseWriter, r *http.Request)
 // dialog can default to it without macOS NSSavePanel rejecting a non-existent
 // parent. Returns the directory that now exists.
 func (h *Handler) EnsureDir(w http.ResponseWriter, r *http.Request) {
+	pathGeneration := h.saveDirGeneration.Load()
 	var req struct {
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	h.saveDirMu.RLock()
+	defer h.saveDirMu.RUnlock()
+	if pathGeneration != h.saveDirGeneration.Load() {
+		writeError(w, http.StatusConflict, "save path changed during a directory migration; retry with the current path")
 		return
 	}
 	dir := req.Path
@@ -312,6 +334,7 @@ func (h *Handler) EnsureDir(w http.ResponseWriter, r *http.Request) {
 // (mode label / translated title). Refuses to overwrite a different existing
 // file — the caller falls back to writing the old path, so content is never lost.
 func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
+	pathGeneration := h.saveDirGeneration.Load()
 	var req struct {
 		OldPath string `json:"oldPath"`
 		NewPath string `json:"newPath"`
@@ -324,6 +347,12 @@ func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "oldPath/newPath required")
 		return
 	}
+	h.saveDirMu.RLock()
+	defer h.saveDirMu.RUnlock()
+	if pathGeneration != h.saveDirGeneration.Load() {
+		writeError(w, http.StatusConflict, "save path changed during a directory migration; retry with the current path")
+		return
+	}
 	if req.OldPath == req.NewPath {
 		writeJSON(w, http.StatusOK, map[string]string{"path": req.NewPath})
 		return
@@ -331,12 +360,22 @@ func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(req.NewPath); err == nil {
 		writeError(w, http.StatusConflict, "target already exists")
 		return
+	} else if !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, "target check failed: "+err.Error())
+		return
 	}
 	if err := os.MkdirAll(filepath.Dir(req.NewPath), 0755); err != nil {
 		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
 		return
 	}
-	if err := os.Rename(req.OldPath, req.NewPath); err != nil {
+	move := fsutil.MoveFileNoReplace
+	if h.moveFileNoReplace != nil {
+		move = h.moveFileNoReplace
+	}
+	if err := move(req.OldPath, req.NewPath); errors.Is(err, os.ErrExist) {
+		writeError(w, http.StatusConflict, "target already exists")
+		return
+	} else if err != nil {
 		log.Printf("[rename-file] rename error: %v", err)
 		writeError(w, http.StatusInternalServerError, "rename failed: "+err.Error())
 		return
@@ -350,10 +389,20 @@ func (h *Handler) RenameFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
+	// Capture before decoding or waiting on saveDirMu. A migration that overtakes
+	// this already-queued request advances the generation and makes its old path
+	// stale instead of letting it recreate/write the retired directory.
+	pathGeneration := h.saveDirGeneration.Load()
 	var req model.TranslationSaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[save] decode error: %v", err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	h.saveDirMu.RLock()
+	defer h.saveDirMu.RUnlock()
+	if pathGeneration != h.saveDirGeneration.Load() {
+		writeError(w, http.StatusConflict, "save path changed during a directory migration; retry with the current path")
 		return
 	}
 
@@ -370,7 +419,7 @@ func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 	// os.WriteFile O_TRUNCs the user's translation file FIRST, so a crash /
 	// disk-full / kill mid-write destroys the only copy of their work. With the
 	// rename the previous file stays intact until the new content is durable.
-	if err := writeFileAtomic(req.FilePath, []byte(content), 0644); err != nil {
+	if err := fsutil.WriteFileAtomic(req.FilePath, []byte(content), 0644); err != nil {
 		log.Printf("[save] write error: %v", err)
 		writeError(w, http.StatusInternalServerError, "file write failed: "+err.Error())
 		return
@@ -619,14 +668,7 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing url")
 		return
 	}
-	allowed := false
-	for _, host := range live2dAllowedHosts {
-		if strings.HasPrefix(url, host) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if !live2dHostAllowed(url) {
 		writeError(w, http.StatusForbidden, "url host not allowed")
 		return
 	}
@@ -634,7 +676,16 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 	// Try the local mirror first.
 	if local := live2dLocalPath(h.cfg.Live2DLocalDir, url); local != "" {
 		if info, err := os.Stat(local); err == nil && !info.IsDir() && info.Size() > 0 {
-			if f, err := os.Open(local); err == nil {
+			if info.Size() > maxLive2DAssetBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "live2d asset exceeds response limit")
+				return
+			}
+			if live2dCachedFileValid(local, url) {
+				f, err := os.Open(local)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "open local live2d asset: "+err.Error())
+					return
+				}
 				defer f.Close()
 				w.Header().Set("Content-Type", live2dContentType(local))
 				w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
@@ -657,20 +708,33 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("upstream returned HTTP %d", resp.StatusCode))
+		return
+	}
+	body, err := readLive2DBoundedBody(resp.Body, resp.ContentLength, maxLive2DAssetBytes)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream asset invalid: "+err.Error())
+		return
+	}
+	if !live2dAssetBodyValid(url, body) {
+		writeError(w, http.StatusBadGateway, "upstream response content does not match asset type")
+		return
+	}
 
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		w.Header().Set("Content-Length", cl)
-	}
+	w.Header().Set("Content-Type", live2dContentType(url))
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("X-Live2D-Source", "cdn")
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // live2dContentType picks a Content-Type for a locally-served Live2D asset.
 func live2dContentType(path string) string {
+	if u, err := neturl.Parse(path); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	path = strings.ToLower(path)
 	switch {
 	case strings.HasSuffix(path, ".json"), strings.HasSuffix(path, ".model3"),
 		strings.HasSuffix(path, ".motion3.json"), strings.HasSuffix(path, ".physics3"):
@@ -792,16 +856,22 @@ func (h *Handler) loadSettings() (model.Settings, error) {
 }
 
 func (h *Handler) saveSettings(s model.Settings) error {
-	os.MkdirAll(h.cfg.CatalogDir, 0755)
+	if err := os.MkdirAll(h.cfg.CatalogDir, 0755); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(h.settingsPath(), data, 0644); err != nil {
-		return err
+	write := fsutil.WriteFileAtomic
+	if h.writeSettingsFile != nil {
+		write = h.writeSettingsFile
 	}
-	service.SetDownloadMirror(s.DownloadMirror) // 下载源切换即时生效，无需重启
-	return nil
+	writeErr := write(h.settingsPath(), data, 0644)
+	if writeErr == nil || fsutil.IsWriteCommitted(writeErr) {
+		service.SetDownloadMirror(s.DownloadMirror) // 下载源切换即时生效，无需重启
+	}
+	return writeErr
 }
 
 // ImportLive2D moves a user-picked folder of Live2D assets (model/ + motion/ +
@@ -838,13 +908,27 @@ func (h *Handler) ImportLive2D(w http.ResponseWriter, r *http.Request) {
 	if absDst, err := filepath.Abs(dst); err == nil {
 		dst = absDst
 	}
-	// Guard against importing the target into itself, or a parent of the target.
-	if src == dst || strings.HasPrefix(dst+string(os.PathSeparator), src+string(os.PathSeparator)) {
+	// Guard both containment directions: walking either tree while writing into
+	// the other can recurse into newly-created output or remove the mirror itself.
+	if src == dst || pathWithin(dst, src) || pathWithin(src, dst) {
 		writeError(w, http.StatusBadRequest, "cannot import this folder into itself")
 		return
 	}
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		writeError(w, http.StatusInternalServerError, "create target failed: "+err.Error())
+		return
+	}
+	unlockRoot, err := live2dLockPath(r.Context(), dst)
+	if err != nil {
+		writeError(w, http.StatusRequestTimeout, "import canceled: "+err.Error())
+		return
+	}
+	defer unlockRoot()
+	if overlap, err := pathsPhysicallyOverlap(src, dst); err != nil {
+		writeError(w, http.StatusBadRequest, "cannot verify import paths: "+err.Error())
+		return
+	} else if overlap {
+		writeError(w, http.StatusBadRequest, "cannot import this folder into itself")
 		return
 	}
 
@@ -855,7 +939,7 @@ func (h *Handler) ImportLive2D(w http.ResponseWriter, r *http.Request) {
 	// (covers both the asset root containing model/motion/model_list.json and any
 	// loose layout).
 	if base == "model" || base == "motion" {
-		if err := mergeMove(src, filepath.Join(dst, base)); err != nil {
+		if err := mergeMove(r.Context(), src, filepath.Join(dst, base)); err != nil {
 			writeError(w, http.StatusInternalServerError, "import failed: "+err.Error())
 			return
 		}
@@ -867,31 +951,37 @@ func (h *Handler) ImportLive2D(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, e := range entries {
-			if err := mergeMove(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			if err := mergeMove(r.Context(), filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 				writeError(w, http.StatusInternalServerError, "import failed at "+e.Name()+": "+err.Error())
 				return
 			}
 			moved++
 		}
 		// The now-empty source folder is removed for the "move" semantics.
-		os.Remove(src)
+		_ = os.Remove(src)
 	}
 	log.Printf("[live2d-import] moved %d entries from %s into %s", moved, src, dst)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"dir": dst, "moved": moved})
 }
 
-// mergeMove moves src to dst, merging into an existing dst (files overwritten,
-// directories merged recursively). Tries a fast os.Rename first; on failure
-// (e.g. cross-volume EXDEV, or dst exists) falls back to copy + remove.
-func mergeMove(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
+// mergeMove moves src to dst, merging directories recursively. File replacement
+// is always atomic; a cross-volume move copies through a sibling temporary file
+// before removing the source, so an interrupted import retains both the previous
+// destination and the source asset.
+func mergeMove(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	si, err := os.Stat(src)
+	si, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 	if si.IsDir() {
+		if di, err := os.Lstat(dst); err == nil && !di.IsDir() {
+			return fmt.Errorf("target is not a directory: %s", dst)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		if err := os.MkdirAll(dst, si.Mode().Perm()|0o700); err != nil {
 			return err
 		}
@@ -900,37 +990,31 @@ func mergeMove(src, dst string) error {
 			return err
 		}
 		for _, e := range entries {
-			if err := mergeMove(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			if err := mergeMove(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 				return err
 			}
 		}
 		return os.Remove(src) // now empty
 	}
-	// File: copy then remove the source.
-	if err := copyFile(src, dst, si.Mode()); err != nil {
+	if !si.Mode().IsRegular() {
+		return fmt.Errorf("unsupported asset type: %s", src)
+	}
+
+	unlock, err := live2dLockPath(ctx, dst)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := fsutil.CopyFileAtomic(ctx, src, dst, si.Mode().Perm()); err != nil {
 		return err
 	}
 	return os.Remove(src)
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // OpenURL opens an external http/https link in the system browser. The Tauri
@@ -1020,6 +1104,10 @@ func (h *Handler) resolveSaveBaseDir() string {
 	if err != nil {
 		s = model.DefaultSettings()
 	}
+	return effectiveSaveBaseDir(s)
+}
+
+func effectiveSaveBaseDir(s model.Settings) string {
 	if s.SaveBaseDir != "" {
 		return s.SaveBaseDir
 	}
@@ -1057,9 +1145,10 @@ func (h *Handler) OpenSaveDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"dir": dir})
 }
 
-// MigrateSaveDir 更换译文保存根目录：把旧根目录里已生成的内容整体搬到新位置
-// （同卷 rename、跨卷回落复制+删除；目标已有同名目录则递归合并、同名文件一律
-// 跳过不覆盖），随后立即把新路径持久化进设置。旧目录搬空后删除。
+// MigrateSaveDir copies and verifies translations before switching settings.
+// The old tree is intentionally retained: verification followed by deletion has
+// an unavoidable source-change race, so cleanup is left to the user. Translation
+// saves and settings writes serialize with this transaction through saveDirMu.
 func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		NewDir string `json:"newDir"`
@@ -1073,128 +1162,353 @@ func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid newDir: "+err.Error())
 		return
 	}
+	h.saveDirMu.Lock()
+	defer h.saveDirMu.Unlock()
+	settings, settingsErr := h.loadSettings()
+	if settingsErr != nil {
+		if !errors.Is(settingsErr, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, "无法读取当前设置，迁移已中止: "+settingsErr.Error())
+			return
+		}
+		settings = model.DefaultSettings()
+	}
+
 	oldAbs := ""
-	if d := h.resolveSaveBaseDir(); d != "" {
+	if d := effectiveSaveBaseDir(settings); d != "" {
 		if a, err := filepath.Abs(d); err == nil {
 			oldAbs = a
 		}
 	}
-	sep := string(filepath.Separator)
-	// 新目录在旧目录内部会把树搬进自己的子孙（无限嵌套/丢数据），直接拒绝。
-	if oldAbs != "" && newAbs != oldAbs && strings.HasPrefix(newAbs+sep, oldAbs+sep) {
-		writeError(w, http.StatusBadRequest, "新目录不能位于当前保存目录内部")
+	oldExists := false
+	if oldAbs != "" {
+		info, statErr := os.Stat(oldAbs)
+		switch {
+		case statErr == nil && !info.IsDir():
+			writeError(w, http.StatusBadRequest, "旧保存路径不是目录")
+			return
+		case statErr == nil:
+			oldExists = true
+		case !os.IsNotExist(statErr):
+			writeError(w, http.StatusBadRequest, "无法读取旧保存目录: "+statErr.Error())
+			return
+		}
+	}
+	samePhysical := oldAbs != "" && oldAbs == newAbs
+	if oldExists && !samePhysical {
+		if newInfo, statErr := os.Stat(newAbs); statErr == nil {
+			if !newInfo.IsDir() {
+				writeError(w, http.StatusBadRequest, "新保存路径不是目录")
+				return
+			}
+			oldPhysical, oldErr := physicalFilesystemPath(oldAbs)
+			newPhysical, newErr := physicalFilesystemPath(newAbs)
+			if err := errors.Join(oldErr, newErr); err != nil {
+				writeError(w, http.StatusBadRequest, "无法验证新旧目录: "+err.Error())
+				return
+			}
+			samePhysical = oldPhysical == newPhysical
+		} else if !os.IsNotExist(statErr) {
+			writeError(w, http.StatusBadRequest, "无法读取新保存目录: "+statErr.Error())
+			return
+		}
+	}
+	// A configured path that never existed is an empty source, not an overlap.
+	if oldExists && !samePhysical && (pathWithin(newAbs, oldAbs) || pathWithin(oldAbs, newAbs)) {
+		writeError(w, http.StatusBadRequest, "新旧保存目录不能互相包含")
+		return
+	}
+	journal := saveDirMigrationJournal{
+		Version:   1,
+		OldDir:    oldAbs,
+		NewDir:    newAbs,
+		Phase:     "copying",
+		StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := h.writeSaveDirMigrationJournal(journal); err != nil {
+		writeError(w, http.StatusInternalServerError, "migration journal failed: "+err.Error())
 		return
 	}
 	if err := os.MkdirAll(newAbs, 0755); err != nil {
+		journal.Phase, journal.Error = "failed", err.Error()
+		_ = h.writeSaveDirMigrationJournal(journal)
 		writeError(w, http.StatusInternalServerError, "无法创建新目录: "+err.Error())
 		return
 	}
-	moved, skipped := 0, 0
-	skippedPaths := []string{} // 同名冲突未搬走、仍留旧目录的文件相对路径（前端据此不改绑定）
-	if oldAbs != "" && oldAbs != newAbs {
-		if entries, err := os.ReadDir(oldAbs); err == nil {
-			for _, e := range entries {
-				src := filepath.Join(oldAbs, e.Name())
-				dst := filepath.Join(newAbs, e.Name())
-				if err := moveMerge(src, dst, e.Name(), &skippedPaths); err != nil {
-					skipped++
-					log.Printf("[migrate-save-dir] skip %s: %v", src, err)
-				} else {
-					moved++
-				}
-			}
-			_ = os.Remove(oldAbs) // 只在已搬空时成功
+	if oldExists && !samePhysical {
+		oldPhysical, oldErr := physicalFilesystemPath(oldAbs)
+		newPhysical, newErr := physicalFilesystemPath(newAbs)
+		if err := errors.Join(oldErr, newErr); err != nil {
+			journal.Phase, journal.Error = "failed", err.Error()
+			_ = h.writeSaveDirMigrationJournal(journal)
+			writeError(w, http.StatusBadRequest, "无法验证新旧目录: "+err.Error())
+			return
+		}
+		samePhysical = oldPhysical == newPhysical
+		if !samePhysical && (pathWithin(oldPhysical, newPhysical) || pathWithin(newPhysical, oldPhysical)) {
+			journal.Phase, journal.Error = "failed", "physical paths overlap"
+			_ = h.writeSaveDirMigrationJournal(journal)
+			writeError(w, http.StatusBadRequest, "新旧保存目录不能互相包含")
+			return
 		}
 	}
-	s, err := h.loadSettings()
-	if err != nil {
-		s = model.DefaultSettings()
+	result := newSaveDirCopyResult()
+	if oldExists && !samePhysical {
+		var err error
+		result, err = copySaveDir(r.Context(), oldAbs, newAbs)
+		if err != nil {
+			journal.Phase, journal.Error = "failed", err.Error()
+			_ = h.writeSaveDirMigrationJournal(journal)
+			writeError(w, http.StatusInternalServerError, "migration copy failed: "+err.Error())
+			return
+		}
 	}
-	s.SaveBaseDir = newAbs
-	if err := h.saveSettings(s); err != nil {
-		writeError(w, http.StatusInternalServerError, "settings save failed: "+err.Error())
+	journal.Phase = "verified"
+	journal.SkippedPaths = append([]string(nil), result.skippedPaths...)
+	if err := h.writeSaveDirMigrationJournal(journal); err != nil {
+		writeError(w, http.StatusInternalServerError, "migration journal failed: "+err.Error())
 		return
 	}
-	log.Printf("[migrate-save-dir] %s -> %s (moved %d, skipped %d)", oldAbs, newAbs, moved, skipped)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"oldDir": oldAbs, "newDir": newAbs, "moved": moved, "skipped": skipped, "skippedPaths": skippedPaths,
-	})
+	settings.SaveBaseDir = newAbs
+	settingsErr = h.saveSettings(settings)
+	settingsWarning := ""
+	if settingsErr != nil && !fsutil.IsWriteCommitted(settingsErr) {
+		journal.Phase, journal.Error = "failed", settingsErr.Error()
+		_ = h.writeSaveDirMigrationJournal(journal)
+		writeError(w, http.StatusInternalServerError, "settings save failed: "+settingsErr.Error())
+		return
+	}
+	if settingsErr != nil {
+		settingsWarning = "settings committed, but directory durability confirmation failed: " + settingsErr.Error()
+		log.Printf("[migrate-save-dir] %s", settingsWarning)
+	}
+	h.saveDirGeneration.Add(1)
+	journal.Phase = "complete"
+	if err := h.writeSaveDirMigrationJournal(journal); err != nil {
+		log.Printf("[migrate-save-dir] record complete phase: %v", err)
+	}
+	if err := os.Remove(h.saveDirMigrationJournalPath()); err != nil && !os.IsNotExist(err) {
+		log.Printf("[migrate-save-dir] remove journal: %v", err)
+	}
+	moved, skipped := result.counts()
+	log.Printf("[migrate-save-dir] %s -> %s (copied %d, skipped %d, source retained)", oldAbs, newAbs, moved, skipped)
+	response := map[string]interface{}{
+		"oldDir": oldAbs, "newDir": newAbs, "moved": moved, "skipped": skipped, "skippedPaths": result.skippedPaths,
+		"sourceRetained": oldExists && !samePhysical,
+	}
+	if settingsWarning != "" {
+		response["warning"] = settingsWarning
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
-// moveMerge 把 src 移动到 dst：dst 不存在时先试 rename（同卷瞬间完成），失败
-// （跨卷等）回落复制+删除；dst 已存在时目录递归合并、文件跳过（绝不覆盖）。
-// rel 是 src 相对迁移根的路径（正斜杠，与前端文档路径同形）；每遇到一个被跳过
-// 的同名文件就把它的 rel 记进 *skipped——前端据此保留旧绑定，绝不把绑定改到新
-// 根那个内容不同的同名陌生文件上（否则下次自动保存会覆盖它、丢掉原稿）。
-func moveMerge(src, dst, rel string, skipped *[]string) error {
-	if _, err := os.Lstat(dst); os.IsNotExist(err) {
-		if err := os.Rename(src, dst); err == nil {
-			return nil
+type saveDirMigrationJournal struct {
+	Version      int      `json:"version"`
+	OldDir       string   `json:"oldDir"`
+	NewDir       string   `json:"newDir"`
+	Phase        string   `json:"phase"`
+	StartedAt    string   `json:"startedAt"`
+	SkippedPaths []string `json:"skippedPaths,omitempty"`
+	Error        string   `json:"error,omitempty"`
+}
+
+type saveDirCopyResult struct {
+	copiedFiles  []string
+	dirs         []string
+	skippedPaths []string
+	topCopied    map[string]bool
+	topSkipped   map[string]bool
+}
+
+func newSaveDirCopyResult() *saveDirCopyResult {
+	return &saveDirCopyResult{topCopied: make(map[string]bool), topSkipped: make(map[string]bool)}
+}
+
+func (r *saveDirCopyResult) counts() (moved, skipped int) {
+	for top := range r.topCopied {
+		if !r.topSkipped[top] {
+			moved++
 		}
-		if err := copyTree(src, dst); err != nil {
+	}
+	return moved, len(r.topSkipped)
+}
+
+func copySaveDir(ctx context.Context, srcRoot, dstRoot string) (*saveDirCopyResult, error) {
+	result := newSaveDirCopyResult()
+	entries, err := os.ReadDir(srcRoot)
+	if err != nil {
+		return result, err
+	}
+	for _, entry := range entries {
+		if err := copySaveDirEntry(ctx, filepath.Join(srcRoot, entry.Name()), filepath.Join(dstRoot, entry.Name()), entry.Name(), entry.Name(), result); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func copySaveDirEntry(ctx context.Context, src, dst, rel, top string, result *saveDirCopyResult) error {
+	return copySaveDirEntryWithCopy(ctx, src, dst, rel, top, result, fsutil.CopyFileNoReplaceAtomic)
+}
+
+func copySaveDirEntryWithCopy(
+	ctx context.Context,
+	src, dst, rel, top string,
+	result *saveDirCopyResult,
+	copyFile func(context.Context, string, string, os.FileMode) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if dstInfo, err := os.Lstat(dst); err == nil && !dstInfo.IsDir() {
+			return fmt.Errorf("target type conflict at %s", rel)
+		} else if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		return os.RemoveAll(src)
-	}
-	si, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	di, err := os.Stat(dst)
-	if err != nil {
-		return err
-	}
-	if si.IsDir() && di.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		result.dirs = append(result.dirs, rel)
+		result.topCopied[top] = true
 		entries, err := os.ReadDir(src)
 		if err != nil {
 			return err
 		}
-		var firstErr error
-		for _, e := range entries {
-			childRel := e.Name()
-			if rel != "" {
-				childRel = rel + "/" + e.Name()
-			}
-			if err := moveMerge(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), childRel, skipped); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		if firstErr != nil {
-			return firstErr
-		}
-		return os.Remove(src)
-	}
-	if skipped != nil && rel != "" {
-		*skipped = append(*skipped, rel)
-	}
-	return fmt.Errorf("目标已存在，跳过: %s", dst)
-}
-
-func copyTree(src, dst string) error {
-	si, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if si.IsDir() {
-		if err := os.MkdirAll(dst, si.Mode().Perm()); err != nil {
-			return err
-		}
-		entries, err := os.ReadDir(src)
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if err := copyTree(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+		for _, entry := range entries {
+			childRel := rel + "/" + entry.Name()
+			if err := copySaveDirEntryWithCopy(ctx, filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name()), childRel, top, result, copyFile); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	data, err := os.ReadFile(src)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("unsupported source type at %s", rel)
+	}
+	if dstInfo, err := os.Lstat(dst); err == nil {
+		if dstInfo.IsDir() {
+			return fmt.Errorf("target type conflict at %s", rel)
+		}
+		result.skippedPaths = append(result.skippedPaths, filepath.ToSlash(rel))
+		result.topSkipped[top] = true
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := copyFile(ctx, src, dst, info.Mode().Perm()); errors.Is(err, os.ErrExist) {
+		result.skippedPaths = append(result.skippedPaths, filepath.ToSlash(rel))
+		result.topSkipped[top] = true
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := verifySameFile(src, dst); err != nil {
+		return fmt.Errorf("verify %s: %w", rel, err)
+	}
+	result.copiedFiles = append(result.copiedFiles, rel)
+	result.topCopied[top] = true
+	return nil
+}
+
+func verifySameFile(a, b string) error {
+	aSum, aSize, err := fileDigest(a)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, si.Mode().Perm())
+	bSum, bSize, err := fileDigest(b)
+	if err != nil {
+		return err
+	}
+	if aSize != bSize || aSum != bSum {
+		return fmt.Errorf("content mismatch")
+	}
+	return nil
+}
+
+func fileDigest(path string) ([sha256.Size]byte, int64, error) {
+	var sum [sha256.Size]byte
+	f, err := os.Open(path)
+	if err != nil {
+		return sum, 0, err
+	}
+	hash := sha256.New()
+	n, copyErr := io.Copy(hash, f)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return sum, n, copyErr
+	}
+	if closeErr != nil {
+		return sum, n, closeErr
+	}
+	copy(sum[:], hash.Sum(nil))
+	return sum, n, nil
+}
+
+func pathWithin(path, parent string) bool {
+	path, parent = comparableFilesystemPath(path), comparableFilesystemPath(parent)
+	rel, err := filepath.Rel(parent, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func comparableFilesystemPath(path string) string {
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.ToLower(path)
+	}
+	return path
+}
+
+func pathsPhysicallyOverlap(a, b string) (bool, error) {
+	a, err := physicalFilesystemPath(a)
+	if err != nil {
+		return false, err
+	}
+	b, err = physicalFilesystemPath(b)
+	if err != nil {
+		return false, err
+	}
+	return a == b || pathWithin(a, b) || pathWithin(b, a), nil
+}
+
+func physicalFilesystemPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return comparableFilesystemPath(resolved), nil
+}
+
+func (h *Handler) saveDirMigrationJournalPath() string {
+	return filepath.Join(h.cfg.CatalogDir, "save-dir-migration.json")
+}
+
+func (h *Handler) writeSaveDirMigrationJournal(journal saveDirMigrationJournal) error {
+	data, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(h.saveDirMigrationJournalPath(), data, 0o644)
+}
+
+func (h *Handler) logInterruptedSaveDirMigration() {
+	data, err := os.ReadFile(h.saveDirMigrationJournalPath())
+	if err != nil {
+		return
+	}
+	var journal saveDirMigrationJournal
+	if err := json.Unmarshal(data, &journal); err != nil {
+		log.Printf("[migrate-save-dir] unreadable migration journal: %v", err)
+		return
+	}
+	log.Printf("[migrate-save-dir] interrupted migration detected: phase=%s old=%s new=%s error=%s", journal.Phase, journal.OldDir, journal.NewDir, journal.Error)
 }
 
 // defaultSaveBaseDir picks a user-visible home for translation output:
@@ -1217,11 +1531,42 @@ func (h *Handler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.saveSettings(s); err != nil {
-		writeError(w, http.StatusInternalServerError, "settings save failed: "+err.Error())
+	h.saveDirMu.Lock()
+	defer h.saveDirMu.Unlock()
+	oldSettings, oldErr := h.loadSettings()
+	if oldErr != nil {
+		oldSettings = model.DefaultSettings()
+	}
+	saveErr := h.saveSettings(s)
+	if saveErr != nil && !fsutil.IsWriteCommitted(saveErr) {
+		writeError(w, http.StatusInternalServerError, "settings save failed: "+saveErr.Error())
+		return
+	}
+	if !sameConfiguredSaveDir(effectiveSaveBaseDir(oldSettings), effectiveSaveBaseDir(s)) {
+		h.saveDirGeneration.Add(1)
+	}
+	if saveErr != nil {
+		warning := "settings committed, but directory durability confirmation failed: " + saveErr.Error()
+		log.Printf("[settings] %s", warning)
+		writeJSON(w, http.StatusOK, struct {
+			model.Settings
+			Warning string `json:"warning"`
+		}{Settings: s, Warning: warning})
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
+}
+
+func sameConfiguredSaveDir(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	aAbs, aErr := filepath.Abs(a)
+	bAbs, bErr := filepath.Abs(b)
+	if aErr == nil && bErr == nil {
+		a, b = aAbs, bAbs
+	}
+	return comparableFilesystemPath(a) == comparableFilesystemPath(b)
 }
 
 // --- Update ---
@@ -1280,6 +1625,7 @@ func (h *Handler) DownloadStoryJSON(w http.ResponseWriter, r *http.Request) {
 			task.Status = "done"
 			task.FilePath = dlPath
 		}
+		task.FinishedAt = time.Now().UnixNano()
 		task.Mu.Unlock()
 	}()
 
@@ -1323,7 +1669,7 @@ func (h *Handler) ExportStoryOriginalTxt(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
 		return
 	}
-	if err := writeFileAtomic(outPath, []byte(content), 0644); err != nil {
+	if err := fsutil.WriteFileAtomic(outPath, []byte(content), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "file write failed: "+err.Error())
 		return
 	}
@@ -1421,9 +1767,20 @@ func (h *Handler) startDownloadTaskGC() {
 				}
 				age := now.Sub(taskCreatedAt(taskID))
 				task.Mu.Lock()
-				terminal := task.Status == "done" || task.Status == "error"
+				done := task.Status == "done"
+				terminal := done || task.Status == "error"
+				purpose := task.Purpose
+				if terminal && task.FinishedAt > 0 {
+					age = now.Sub(time.Unix(0, task.FinishedAt))
+				}
 				task.Mu.Unlock()
-				if (terminal && age > downloadTaskGrace) || age > downloadTaskMaxAge {
+				// A completed app installer remains authorized for the lifetime of this
+				// backend process; unlike story downloads there is at most one active
+				// updater task, and deleting it makes a delayed Install click fail.
+				if done && purpose == "app-update" {
+					return true
+				}
+				if (terminal && age > downloadTaskGrace) || (!terminal && age > downloadTaskMaxAge) {
 					h.downloadTasks.Delete(key)
 				}
 				return true
@@ -1559,8 +1916,43 @@ func (h *Handler) DebugLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.logBuf.Lines())
 }
 
+var (
+	debugQuotedSecretRE   = regexp.MustCompile(`(?i)(["']?(?:password|passwd|token|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|api[_-]?key)["']?\s*[:=]\s*["'])[^"']*(["'])`)
+	debugUnquotedSecretRE = regexp.MustCompile(`(?i)(\b(?:password|passwd|token|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|api[_-]?key)\b\s*[:=]\s*)(?:Bearer\s+)?[^\s,;}&\]]+`)
+	debugBearerRE         = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
+	debugMacUserRE        = regexp.MustCompile(`/Users/[^/\s]+`)
+	debugWindowsUserRE    = regexp.MustCompile(`(?i)([A-Z]:\\Users\\)[^\\/\s]+`)
+)
+
+func redactDebugLine(line string) string {
+	line = debugQuotedSecretRE.ReplaceAllString(line, `${1}[REDACTED]${2}`)
+	line = debugUnquotedSecretRE.ReplaceAllString(line, `${1}[REDACTED]`)
+	line = debugBearerRE.ReplaceAllString(line, `Bearer [REDACTED]`)
+	line = debugMacUserRE.ReplaceAllString(line, `/Users/[USER]`)
+	return debugWindowsUserRE.ReplaceAllString(line, `${1}[USER]`)
+}
+
 func (h *Handler) DebugSaveLogs(w http.ResponseWriter, r *http.Request) {
-	entries := h.logBuf.Lines()
+	var req struct {
+		Lines []string `json:"lines"`
+	}
+	if r.Body != nil {
+		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&req)
+		if err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+	if len(req.Lines) > 2000 {
+		writeError(w, http.StatusBadRequest, "too many log lines")
+		return
+	}
+	lines := req.Lines
+	if len(lines) == 0 {
+		for _, entry := range h.logBuf.Lines() {
+			lines = append(lines, "["+entry.Timestamp+"] [server] "+entry.Message)
+		}
+	}
 
 	// Write into the app's known-writable data dir, not the process CWD: a bare
 	// relative "debug.log" lands in an unknown/unwritable place under the packaged
@@ -1579,20 +1971,22 @@ func (h *Handler) DebugSaveLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logPath := filepath.Join(dir, "debug.log")
-	f, err := os.Create(logPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "log file create failed: "+err.Error())
-		return
+	var buf strings.Builder
+	buf.WriteString("=== SekaiText Debug Log === " + time.Now().Format("2006-01-02 15:04:05") + " ===\n\n")
+	for _, line := range lines {
+		if len(line) > 16<<10 {
+			line = line[:16<<10]
+		}
+		buf.WriteString(redactDebugLine(line) + "\n")
 	}
-	defer f.Close()
-
-	f.WriteString("=== SekaiText Debug Log === " + time.Now().Format("2006-01-02 15:04:05") + " ===\n\n")
-	for _, e := range entries {
-		f.WriteString("[" + e.Timestamp + "] " + e.Message + "\n")
+	if err := fsutil.WriteFileAtomic(logPath, []byte(buf.String()), 0o644); err != nil {
+		log.Printf("[debug-logs] write error: %v", err)
+		writeError(w, http.StatusInternalServerError, "log file write failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "saved",
-		"lines":  len(entries),
+		"lines":  len(lines),
 		"path":   logPath,
 	})
 }
@@ -1624,6 +2018,41 @@ func (h *Handler) RecoverySave(w http.ResponseWriter, r *http.Request) {
 		StoryChapter: req.StoryChapter,
 		StorySource:  req.StorySource,
 	}
+	if req.Version >= 2 && len(req.Modes) > 0 {
+		data.Version = 2
+		data.ActiveMode = req.ActiveMode
+		data.Modes = make([]model.RecoveryModeData, 0, len(req.Modes))
+		for _, mode := range req.Modes {
+			data.Modes = append(data.Modes, model.RecoveryModeData{
+				Content:           h.editor.SerializeContent(mode.Talks, req.SaveN),
+				FilePath:          mode.FilePath,
+				EditorMode:        mode.EditorMode,
+				TitleOverride:     mode.TitleOverride,
+				HasUnsavedChanges: mode.HasUnsavedChanges,
+				SourceTalks:       mode.SourceTalks,
+				DocMeta:           mode.DocMeta,
+			})
+		}
+		active := &data.Modes[0]
+		for i := range data.Modes {
+			if data.Modes[i].EditorMode == req.ActiveMode {
+				active = &data.Modes[i]
+				break
+			}
+		}
+		// Mirror the active slot into V1 fields. Recovery V2 therefore remains
+		// discoverable by App.vue and readable by older single-mode clients.
+		data.Content = active.Content
+		data.FilePath = active.FilePath
+		data.EditorMode = active.EditorMode
+		if active.DocMeta != nil {
+			data.StoryType = active.DocMeta.StoryType
+			data.StorySort = active.DocMeta.Sort
+			data.StoryIndex = active.DocMeta.Index
+			data.StoryChapter = active.DocMeta.Chapter
+			data.StorySource = active.DocMeta.Source
+		}
+	}
 
 	// Encode fully in memory first, then write atomically (temp file + fsync +
 	// rename) so a crash / disk-full / kill mid-write can never truncate the
@@ -1637,10 +2066,16 @@ func (h *Handler) RecoverySave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "autosave encode failed: "+err.Error())
 		return
 	}
-	if err := writeFileAtomic(h.recoveryPath(), buf, 0644); err != nil {
-		log.Printf("[recovery] save write error: %v", err)
-		writeError(w, http.StatusInternalServerError, "autosave write failed: "+err.Error())
-		return
+	if err := fsutil.WriteFileAtomic(h.recoveryPath(), buf, 0644); err != nil {
+		if !fsutil.IsWriteCommitted(err) {
+			log.Printf("[recovery] save write error: %v", err)
+			writeError(w, http.StatusInternalServerError, "autosave write failed: "+err.Error())
+			return
+		}
+		// The rename already published the new recovery snapshot. Report success so
+		// the browser commits the matching lossless sidecar instead of restoring a
+		// previous sidecar that no longer corresponds to the backend file.
+		log.Printf("[recovery] autosave committed with directory sync warning: %v", err)
 	}
 	log.Printf("[recovery] autosave ok (%d bytes)", len(content))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
@@ -1664,6 +2099,9 @@ func (h *Handler) RecoveryLoad(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[recovery] found autosave from %s", data.SavedAt)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"exists":       true,
+		"version":      data.Version,
+		"activeMode":   data.ActiveMode,
+		"modes":        data.Modes,
 		"content":      data.Content,
 		"filePath":     data.FilePath,
 		"editorMode":   data.EditorMode,
@@ -1678,7 +2116,11 @@ func (h *Handler) RecoveryLoad(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RecoveryClear(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[recovery] clearing autosave")
-	os.Remove(h.recoveryPath())
+	if err := os.Remove(h.recoveryPath()); err != nil && !os.IsNotExist(err) {
+		log.Printf("[recovery] clear error: %v", err)
+		writeError(w, http.StatusInternalServerError, "autosave clear failed: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
@@ -1692,36 +2134,4 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-// writeFileAtomic writes data to path atomically: it writes to a sibling temp
-// file, fsyncs, then renames over path. A crash / disk-full / kill mid-write
-// leaves the existing file at path fully intact instead of a truncated or
-// half-written one. os.Rename replaces the destination on both POSIX and Windows
-// (MoveFileEx with MOVEFILE_REPLACE_EXISTING).
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }

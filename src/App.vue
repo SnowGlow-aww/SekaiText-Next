@@ -2,7 +2,7 @@
   <AppShell>
     <router-view v-slot="{ Component }">
       <transition name="page-shift" mode="out-in">
-        <keep-alive>
+        <keep-alive :include="keptAlivePages" :max="keptAlivePages.length">
           <component :is="Component" />
         </keep-alive>
       </transition>
@@ -40,8 +40,13 @@ import { useTour } from './onboarding/useTour'
 import { appWelcomeTour, pluginIntroTour, whatsNewTour } from './onboarding/tours'
 import { usePluginRegistry } from './plugin-host/registry'
 import { useRouter } from 'vue-router'
+import { hasRecovery } from './editor/recovery'
+import { pluginStartupResult } from './plugin-host/autoload'
 
 const settings = useSettingsStore()
+// Keep only pages with activation-bound lifecycle/state. Utility/listing pages
+// remount cheaply instead of accumulating every visited route for the app lifetime.
+const keptAlivePages = ['EditorPage', 'SettingsPage', 'DebugPage', 'GlossaryPage']
 const appUpdate = useAppUpdateStore()
 const toast = useToast()
 // Instantiate the app store at boot so theme + accent are applied immediately,
@@ -95,6 +100,12 @@ function maybeStartBootTour() {
 const pluginRegistry = usePluginRegistry()
 const appRouter = useRouter()
 appRouter.afterEach((to) => {
+  const attributedPlugin = to.meta.sekaiPluginId
+  if (typeof attributedPlugin === 'string') {
+    const intro = pluginIntroTour(attributedPlugin)
+    if (intro) tour.startOnce(intro)
+    return
+  }
   for (const [pluginId, paths] of Object.entries(pluginRegistry.routesByPlugin)) {
     if (paths.includes(to.path)) {
       const intro = pluginIntroTour(pluginId)
@@ -144,20 +155,19 @@ onMounted(async () => {
   // Check for autosave recovery
   try {
     const recovery = await api.recoveryLoad()
-    if (recovery.exists && recovery.content) {
+    if (hasRecovery(recovery)) {
       showRecovery.value = true
     }
   } catch {
     // backend not available, skip
   }
 
-  // Auto-update (non-blocking): silently bring installed plugins up to date
-  // (effective next launch) and check for a newer app version (→ UpdateBanner).
-  // Both swallow offline/mirror failures so a cold start is never blocked.
-  void appUpdate.autoUpdatePlugins().then((sum) => {
+  // Plugin startup performs its update before autoload so stale code cannot
+  // race a valid replacement and roll it back. Only surface its result here.
+  void pluginStartupResult().then((sum) => {
     if (sum && sum.updated?.length) {
       const names = sum.updated.map((p) => p.name || p.id).join('、')
-      toast.show(`已自动更新 ${sum.updated.length} 个插件（${names}），重启后生效`, 'success', 6000)
+      toast.show(`已自动更新并加载 ${sum.updated.length} 个插件（${names}）`, 'success', 6000)
     }
   }).catch(() => {})
   void appUpdate.check()

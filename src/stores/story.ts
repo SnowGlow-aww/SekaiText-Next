@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api } from '../api/client'
 import type { SourceTalk } from '../types/translation'
 import type { DocMeta } from './editor'
@@ -34,6 +34,40 @@ export const useStoryStore = defineStore('story', () => {
   let indexSeq = 0
   let chaptersSeq = 0
 
+  // Clearing a parent does not start a replacement request, so request-local
+  // sequence guards alone cannot invalidate the old response. Keep the entire
+  // child chain empty and advance its guards synchronously whenever a parent
+  // changes; this also covers callers outside StoryNavigator.
+  watch(selectedType, () => {
+    ++sortsSeq
+    ++indexSeq
+    ++chaptersSeq
+    selectedSort.value = ''
+    selectedIndex.value = ''
+    selectedIndexLabel.value = ''
+    selectedChapter.value = -1
+    sorts.value = []
+    indices.value = []
+    chapters.value = []
+  }, { flush: 'sync' })
+
+  watch(selectedSort, () => {
+    ++indexSeq
+    ++chaptersSeq
+    selectedIndex.value = ''
+    selectedIndexLabel.value = ''
+    selectedChapter.value = -1
+    indices.value = []
+    chapters.value = []
+  }, { flush: 'sync' })
+
+  watch(selectedIndex, (index) => {
+    ++chaptersSeq
+    selectedIndexLabel.value = indices.value.find((item) => item.value === index)?.label || index
+    selectedChapter.value = -1
+    chapters.value = []
+  }, { flush: 'sync' })
+
   async function fetchTypes() {
     const seq = ++typesSeq
     const result = await api.storyTypes()
@@ -42,23 +76,29 @@ export const useStoryStore = defineStore('story', () => {
   }
 
   async function fetchSorts(type: string) {
+    if (type !== selectedType.value) return
     const seq = ++sortsSeq
     const result = await api.storySorts(type)
-    if (seq !== sortsSeq) return
+    if (seq !== sortsSeq || type !== selectedType.value) return
     sorts.value = result
   }
 
   async function fetchIndex(type: string, sort: string) {
+    if (type !== selectedType.value || sort !== selectedSort.value) return
     const seq = ++indexSeq
     const result = await api.storyIndex(type, sort)
-    if (seq !== indexSeq) return
+    if (seq !== indexSeq || type !== selectedType.value || sort !== selectedSort.value) return
     indices.value = result
   }
 
   async function fetchChapters(type: string, sort: string, index: string) {
+    if (type !== selectedType.value || sort !== selectedSort.value || index !== selectedIndex.value) return
     const seq = ++chaptersSeq
     const result = await api.storyChapter(type, sort, index)
-    if (seq !== chaptersSeq) return
+    if (seq !== chaptersSeq
+      || type !== selectedType.value
+      || sort !== selectedSort.value
+      || index !== selectedIndex.value) return
     chapters.value = result
   }
 

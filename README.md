@@ -10,20 +10,22 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <img alt="Version" src="https://img.shields.io/badge/version-5.8.13-blue?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-5.9.1-blue?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
 </p>
 
 <p align="center">
-  <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6c5ce7?style=flat-square" />
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon%20%7C%20Windows%20x64-6c5ce7?style=flat-square" />
   <a href="https://sakimizuki.accr.cc/web/index.html"><img alt="Website" src="https://img.shields.io/badge/官网-sakimizuki.accr.cc-39c5bb?style=flat-square" /></a>
 </p>
 
 <!-- prettier-ignore-end -->
 
 SekaiText Next 是一款桌面应用程序，用于浏览、翻译和校对「プロジェクトセカイ カラフルステージ！ feat. 初音ミク」的剧情文本。它结合了 Vue 3 前端与 Go 后端，打包为 Tauri 桌面应用，并内置自动轴机 / 压制内核、Live2D 剧情播放器与热加载插件系统。
+
+支持 macOS 12 及以上的 Apple Silicon（M 系列）设备，以及 Windows 10 及以上的 x64 设备。
 
 ## 技术栈
 
@@ -70,18 +72,15 @@ sekaitext/
 
 ### 环境要求
 
-- [Node.js](https://nodejs.org/) >= 20
+- [Node.js](https://nodejs.org/) >= 20.19
 - [Go](https://go.dev/) >= 1.24
 - [Tauri 依赖](https://v2.tauri.app/start/prerequisites/)（Rust 工具链、系统依赖）
 
 ### 安装
 
 ```bash
-# 安装前端依赖
-npm install
-
-# 安装 Tauri CLI
-npm install -D @tauri-apps/cli
+# 按 package-lock.json 安装全部依赖（项目统一使用 npm）
+npm ci
 ```
 
 ### 开发
@@ -110,14 +109,12 @@ npm run build:tauri
 - **字号** — 编辑器文本显示大小（10–48px）
 - **索引排序** — 故事索引下拉列表的排列顺序
 - **保存 \\N 换行符** — 翻译文件中保留 `\N` 换行标记
-- **保存语音文件** — 下载并保存语音文件到本地
-- **SSL 验证** — 禁用 SSL 证书验证（某些网络环境需要）
 - **暗色主题** — 切换亮色 / 暗色显示
 - **调试日志** — 在编辑器底部显示调试日志面板
 
 ## 版本
 
-当前版本：**5.8.13** (stable)
+当前版本：**5.9.1** (stable)
 
 ## 开源协议
 

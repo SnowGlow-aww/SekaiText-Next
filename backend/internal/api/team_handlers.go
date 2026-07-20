@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,18 +13,21 @@ import (
 
 // TeamStatus reports the current team-mode session.
 func (h *Handler) TeamStatus(w http.ResponseWriter, r *http.Request) {
-	url, user := h.team.Status()
+	url, fingerprint, user := h.team.Status()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"loggedIn":  user != nil,
-		"connected": url != "",
-		"readonly":  url != "" && user == nil,
-		"serverUrl": url,
-		"user":      user,
+		"loggedIn":               user != nil,
+		"connected":              url != "",
+		"readonly":               url != "" && user == nil,
+		"serverUrl":              url,
+		"certificateFingerprint": fingerprint,
+		"user":                   user,
 	})
 }
 
-// TeamConnect sets the server URL for no-login readonly mode.
-func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
+// TeamProbe performs only a TLS handshake and returns the leaf certificate
+// fingerprint for explicit TOFU confirmation. No HTTP request or credential is
+// sent to the remote server.
+func (h *Handler) TeamProbe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ServerURL string `json:"serverUrl"`
 	}
@@ -30,8 +35,30 @@ func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.team.Connect(req.ServerURL); err != nil {
+	probe, _, err := h.team.ProbeCertificate(req.ServerURL)
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, probe)
+}
+
+// TeamConnect sets the server URL for no-login readonly mode.
+func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ServerURL   string `json:"serverUrl"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.team.Connect(req.ServerURL, req.Fingerprint); err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrTeamPersistence) {
+			status = http.StatusInternalServerError
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"connected": true, "readonly": true})
@@ -39,24 +66,32 @@ func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
 
 // TeamDisconnect fully clears the session (back to pure local).
 func (h *Handler) TeamDisconnect(w http.ResponseWriter, r *http.Request) {
-	h.team.Disconnect()
+	if err := h.team.Disconnect(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
 }
 
 // TeamLogin authenticates against a remote glossary-server.
 func (h *Handler) TeamLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ServerURL string `json:"serverUrl"`
-		Username  string `json:"username"`
-		Password  string `json:"password"`
+		ServerURL   string `json:"serverUrl"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		Fingerprint string `json:"fingerprint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	user, err := h.team.Login(req.ServerURL, req.Username, req.Password)
+	user, err := h.team.Login(req.ServerURL, req.Username, req.Password, req.Fingerprint)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		status := http.StatusUnauthorized
+		if errors.Is(err, service.ErrTeamPersistence) {
+			status = http.StatusInternalServerError
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"loggedIn": true, "user": user})
@@ -64,7 +99,10 @@ func (h *Handler) TeamLogin(w http.ResponseWriter, r *http.Request) {
 
 // TeamLogout clears the session.
 func (h *Handler) TeamLogout(w http.ResponseWriter, r *http.Request) {
-	h.team.Logout()
+	if err := h.team.Logout(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -72,43 +110,43 @@ func (h *Handler) TeamLogout(w http.ResponseWriter, r *http.Request) {
 // and merges as Origin=remote, reusing the existing glossary merge path.
 func (h *Handler) TeamSync(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "1"
-	remoteVer, err := h.team.RemoteVersion()
-	if err != nil {
-		if err == service.ErrNotLoggedIn {
-			writeError(w, http.StatusUnauthorized, "not logged in")
-			return
+	var gd model.GlossaryData
+	mergeStatus := 0
+	result, err := h.team.Sync(force, func(raw []byte) (int, error) {
+		if err := json.Unmarshal(raw, &gd); err != nil {
+			mergeStatus = http.StatusBadGateway
+			return 0, fmt.Errorf("invalid remote payload: %w", err)
 		}
-		writeError(w, http.StatusBadGateway, err.Error())
+		removed, err := h.glossary.MergeImport(gd.Entries, gd.Appellations, gd.Grammar, model.OriginRemote)
+		if err != nil {
+			mergeStatus = http.StatusInternalServerError
+		}
+		return removed, err
+	})
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrNotLoggedIn) {
+			status = http.StatusUnauthorized
+		} else if errors.Is(err, service.ErrStaleTeamSession) {
+			status = http.StatusConflict
+		} else if mergeStatus != 0 {
+			status = mergeStatus
+		}
+		writeError(w, status, err.Error())
 		return
 	}
-	if !force && remoteVer == h.team.LastSyncedVersion() {
+	if !result.Changed {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status": "up-to-date", "version": remoteVer, "changed": false,
+			"status": "up-to-date", "version": result.Version, "changed": false,
 		})
 		return
 	}
-	raw, err := h.team.FetchExport(remoteVer)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	var gd model.GlossaryData
-	if err := json.Unmarshal(raw, &gd); err != nil {
-		writeError(w, http.StatusBadGateway, "invalid remote payload: "+err.Error())
-		return
-	}
-	removed, err := h.glossary.MergeImport(gd.Entries, gd.Appellations, gd.Grammar, model.OriginRemote)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	h.team.SetLastSyncedVersion(remoteVer)
 	// 下行备份：把刚拉到的服务器全量 JSON 滚动存档（保留最近 10 份），误操作可回滚
-	h.glossary.WriteSyncBackup(raw)
+	h.glossary.WriteSyncBackup(result.Raw)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status": "synced", "version": remoteVer, "changed": true,
+		"status": "synced", "version": result.Version, "changed": true,
 		"entries": len(gd.Entries), "appellations": len(gd.Appellations), "grammar": len(gd.Grammar),
-		"removed": removed,
+		"removed": result.Removed,
 	})
 }
 

@@ -18,12 +18,10 @@ type ListManager struct {
 	updateMu sync.Mutex // single-flights UpdateAll so two CDN refreshes can't race-append the slices below
 
 	// mu guards the metadata slices below. Read methods
-	// (GetStory*/GetJsonPath/ResolveLabel/BuildVoiceIDClues) hold RLock; every
-	// writer publishes under a short Lock: loadAll and InferVoiceEventID, plus the
-	// incremental rebuild in update.go (updateEvents/updateCards/... build into a
-	// local, then swap the field under Lock). The file I/O and the heavy build
-	// always run outside the lock, so an update never blocks readers for more than
-	// a pointer swap — no rebuild-long critical section. Readers additionally
+	// (GetStory*/GetJsonPath/ResolveLabel/BuildVoiceIDClues) hold RLock; refreshes
+	// build and validate a complete generation before swapping every field under
+	// one short Lock. File I/O and heavy builds stay outside the lock, so an update
+	// never blocks readers for more than a pointer swap. Readers additionally
 	// snapshot each slice into a local before any length-check-then-index so a
 	// single method always sees one consistent slice header.
 	mu sync.RWMutex
@@ -36,12 +34,15 @@ type ListManager struct {
 	Greets     []GreetEntry
 	Specials   []SpecialEntry
 	Catalog    map[string]interface{}
+	generation uint64
 
 	// voiceClues maps every inferred voice prefix -> event array index. Unlike
 	// the per-event InferredVoiceIDs.prefix (single value), this allows one
 	// event to be reachable by multiple voice prefixes (e.g. a WL event known
 	// both as wl_shuffle_03 via area talks and wl_3rd_group3 via its assetName).
-	voiceClues map[string]int
+	voiceClues  map[string]int
+	flashbackMu sync.Mutex
+	flashbacks  map[*FlashbackAnalyzer]struct{}
 
 	catalogDir string
 	DBurl      string
@@ -84,18 +85,18 @@ type FestivalEntry struct {
 
 // CardEntry mirrors cards.json structure.
 type CardEntry struct {
-	ID          int  `json:"id"`
-	CharacterID int  `json:"characterId"`
+	ID          int    `json:"id"`
+	CharacterID int    `json:"characterId"`
 	CardNo      string `json:"cardNo"`
-	Birthday    bool `json:"birthday"`
-	LevelUp     bool `json:"levelup,omitempty"`
+	Birthday    bool   `json:"birthday"`
+	LevelUp     bool   `json:"levelup,omitempty"`
 }
 
 // MainStoryEntry mirrors mainStory.json structure.
 type MainStoryEntry struct {
-	Unit      string              `json:"unit"`
-	AssetName string              `json:"assetName"`
-	Chapters  []EventChapter      `json:"chapters"`
+	Unit      string         `json:"unit"`
+	AssetName string         `json:"assetName"`
+	Chapters  []EventChapter `json:"chapters"`
 }
 
 // AreaTalkEntry mirrors areatalks.json structure.
@@ -112,9 +113,9 @@ type AreaTalkEntry struct {
 
 // GreetEntry mirrors greets.json structure.
 type GreetEntry struct {
-	Theme  GreetTheme    `json:"theme"`
-	Year   int           `json:"year"`
-	Greets []GreetItem   `json:"greets"`
+	Theme  GreetTheme  `json:"theme"`
+	Year   int         `json:"year"`
+	Greets []GreetItem `json:"greets"`
 }
 
 // GreetTheme represents a greet theme.
@@ -146,10 +147,10 @@ type AreaTalkTimeEntry struct {
 
 // ChapterScenarioEntry stores resolved scenario info for a chapter.
 type ChapterScenarioEntry struct {
-	ID         int    `json:"id"`
-	ScenarioID string `json:"scenarioId"`
-	TalkID     string `json:"talkid"`
-	IsSeparator bool  `json:"isSeparator,omitempty"`
+	ID          int    `json:"id"`
+	ScenarioID  string `json:"scenarioId"`
+	TalkID      string `json:"talkid"`
+	IsSeparator bool   `json:"isSeparator,omitempty"`
 }
 
 // NewListManager creates and loads metadata from the setting directory.
@@ -158,16 +159,37 @@ func NewListManager(catalogDir string) *ListManager {
 		catalogDir: catalogDir,
 		Catalog:    make(map[string]interface{}),
 		baseUrls: map[string]string{
-			"best":         "https://storage.sekai.best/sekai-jp-assets/",
-			"uni":          "https://assets.unipjsk.com/",
-			"haruki":       "https://production-sekai-assets.neo.bot.haruki.seiunx.com/jp-assets/",
-			"moesekai-jp":  "https://storage.exmeaning.com/sekai-jp-assets/",
-			"moesekai-cn":  "https://storage.exmeaning.com/sekai-cn-assets/",
+			"best":        "https://storage.sekai.best/sekai-jp-assets/",
+			"uni":         "https://assets.unipjsk.com/",
+			"haruki":      "https://production-sekai-assets.neo.bot.haruki.seiunx.com/jp-assets/",
+			"moesekai-jp": "https://storage.exmeaning.com/sekai-jp-assets/",
+			"moesekai-cn": "https://storage.exmeaning.com/sekai-cn-assets/",
 		},
 	}
 	lm.loadCatalog()
 	lm.loadAll()
 	return lm
+}
+
+func (lm *ListManager) registerFlashbackAnalyzer(fb *FlashbackAnalyzer) {
+	lm.flashbackMu.Lock()
+	if lm.flashbacks == nil {
+		lm.flashbacks = make(map[*FlashbackAnalyzer]struct{})
+	}
+	lm.flashbacks[fb] = struct{}{}
+	lm.flashbackMu.Unlock()
+}
+
+func (lm *ListManager) refreshFlashbackAnalyzers() {
+	lm.flashbackMu.Lock()
+	analyzers := make([]*FlashbackAnalyzer, 0, len(lm.flashbacks))
+	for fb := range lm.flashbacks {
+		analyzers = append(analyzers, fb)
+	}
+	lm.flashbackMu.Unlock()
+	for _, fb := range analyzers {
+		fb.refreshIndexes()
+	}
 }
 
 func (lm *ListManager) loadCatalog() {
@@ -179,6 +201,21 @@ func (lm *ListManager) loadCatalog() {
 }
 
 func (lm *ListManager) loadAll() {
+	if catalog, generation, err := loadCatalogGeneration(lm.catalogDir); err == nil {
+		lm.mu.Lock()
+		lm.Events = catalog.Events
+		lm.Festivals = catalog.Festivals
+		lm.Cards = catalog.Cards
+		lm.MainStory = catalog.MainStory
+		lm.AreaTalks = catalog.AreaTalks
+		lm.Greets = catalog.Greets
+		lm.Specials = catalog.Specials
+		lm.generation = generation
+		lm.mu.Unlock()
+		log.Printf("All metadata loaded (generation %d)", generation)
+		return
+	}
+
 	// Read every file into a local first, then publish all slices under the write
 	// lock in one short critical section, so a concurrent reader (RLock) can never
 	// observe a half-swapped metadata set (and file I/O never runs under the lock).
@@ -198,6 +235,7 @@ func (lm *ListManager) loadAll() {
 	lm.AreaTalks = areaTalks
 	lm.Greets = greets
 	lm.Specials = specials
+	lm.generation = 0
 	lm.mu.Unlock()
 	log.Println("All metadata loaded")
 }
@@ -219,17 +257,17 @@ func loadJSONFile[T any](dir, fileName string) T {
 
 // --- Story Type constants (Chinese labels) ---
 const (
-	StoryLabelEvent       = "活动剧情"
-	StoryLabelMainStory   = "主线剧情"
-	StoryLabelCardEvent   = "活动卡面"
-	StoryLabelCardSpecial = "特殊卡面"
-	StoryLabelCardInit    = "初始卡面"
-	StoryLabelCardUpgrade = "升级卡面"
-	StoryLabelAreaTalkInit = "初始地图对话"
+	StoryLabelEvent           = "活动剧情"
+	StoryLabelMainStory       = "主线剧情"
+	StoryLabelCardEvent       = "活动卡面"
+	StoryLabelCardSpecial     = "特殊卡面"
+	StoryLabelCardInit        = "初始卡面"
+	StoryLabelCardUpgrade     = "升级卡面"
+	StoryLabelAreaTalkInit    = "初始地图对话"
 	StoryLabelAreaTalkUpgrade = "升级地图对话"
-	StoryLabelAreaTalkExtra = "追加地图对话"
-	StoryLabelGreet       = "主界面语音"
-	StoryLabelSpecial     = "特殊剧情"
+	StoryLabelAreaTalkExtra   = "追加地图对话"
+	StoryLabelGreet           = "主界面语音"
+	StoryLabelSpecial         = "特殊剧情"
 )
 
 // GetStoryTypes returns available story type names (Chinese labels).
@@ -597,7 +635,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		unit := mainStory[unitIdx]
 		ch := unit.Chapters
 		if unitIdx == 0 {
-			chapterIdx = (chapterIdx+1)*4/5
+			chapterIdx = (chapterIdx + 1) * 4 / 5
 		}
 		if chapterIdx < 0 || chapterIdx >= len(ch) {
 			return model.JsonPathResult{}
@@ -932,6 +970,7 @@ func padZero(n int) string {
 func padZero3(n int) string {
 	return strconv.Itoa(1000 + n)[1:]
 }
+
 // eventReverseIndex returns the 1-based position of an event in the list (oldest=1, newest=N).
 func (lm *ListManager) eventReverseIndex(ev *EventEntry) int {
 	for i := range lm.Events {
@@ -1057,7 +1096,6 @@ func fesSaveTitle(f FestivalEntry, charName string) string {
 	return "fes" + strconv.Itoa(year) + padZero(month) + "-" + charName
 }
 
-
 func (lm *ListManager) findEventByID(id int) *EventEntry {
 	for i := range lm.Events {
 		if lm.Events[i].ID == id {
@@ -1076,7 +1114,10 @@ func (lm *ListManager) findEventByID(id int) *EventEntry {
 func (lm *ListManager) BuildVoiceIDClues() map[string]EventEntry {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
+	return lm.buildVoiceIDCluesLocked()
+}
 
+func (lm *ListManager) buildVoiceIDCluesLocked() map[string]EventEntry {
 	events := lm.Events
 	clues := make(map[string]EventEntry)
 	for prefix, ei := range lm.voiceClues {
@@ -1096,11 +1137,25 @@ func (lm *ListManager) BuildVoiceIDClues() map[string]EventEntry {
 	return clues
 }
 
+func (lm *ListManager) flashbackIndexes() (map[string]EventEntry, map[string]MainStoryEntry) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	clues := lm.buildVoiceIDCluesLocked()
+	mainstory := make(map[string]MainStoryEntry, len(lm.MainStory))
+	for _, ms := range lm.MainStory {
+		mainstory[ms.Unit] = ms
+	}
+	return clues, mainstory
+}
+
 // InferVoiceEventID infers voice event IDs from area talks and stores them in events.
 func (lm *ListManager) InferVoiceEventID() {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
+	lm.inferVoiceEventIDLocked()
+}
 
+func (lm *ListManager) inferVoiceEventIDLocked() {
 	eventsByID := make(map[int]int)
 	for ei, ev := range lm.Events {
 		eventsByID[ev.ID] = ei

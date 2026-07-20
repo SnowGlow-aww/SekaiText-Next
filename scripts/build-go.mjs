@@ -1,5 +1,6 @@
-import { execSync } from 'child_process'
-import { existsSync, mkdirSync, statSync, readdirSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
+import { existsSync, mkdirSync, statSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { platform, arch } from 'os'
 import { join } from 'path'
 
@@ -38,6 +39,45 @@ const binariesDir = join(import.meta.dirname, '..', 'src-tauri', 'binaries')
 const outPath = join(binariesDir, binaryName)
 const backendDir = join(import.meta.dirname, '..', 'backend')
 
+// Build-time trust root. The value is a JSON object of keyId -> standard-base64
+// raw Ed25519 public key. It is linked into the sidecar, never read from the
+// runtime environment. Empty is an intentional fail-closed staging state.
+function validatedPublicKeys(raw, name) {
+  const value = (raw || '').trim()
+  if (!value) return ''
+  let keys
+  try {
+    keys = JSON.parse(value)
+  } catch {
+    throw new Error(`${name} must be a JSON object`)
+  }
+  if (!keys || Array.isArray(keys) || typeof keys !== 'object') {
+    throw new Error(`${name} must be a JSON object`)
+  }
+  for (const [keyId, encoded] of Object.entries(keys)) {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(keyId)) {
+      throw new Error(`${name} contains an invalid keyId: ${keyId}`)
+    }
+    if (typeof encoded !== 'string') {
+      throw new Error(`public key ${keyId} must be standard Base64`)
+    }
+    const decoded = Buffer.from(encoded, 'base64')
+    if (decoded.length !== 32 || decoded.toString('base64') !== encoded) {
+      throw new Error(`public key ${keyId} must be a 32-byte standard-Base64 Ed25519 key`)
+    }
+  }
+  return JSON.stringify(keys)
+}
+
+const pluginPublicKeysJSON = validatedPublicKeys(process.env.SEKAITEXT_PLUGIN_PUBLIC_KEYS, 'SEKAITEXT_PLUGIN_PUBLIC_KEYS')
+const appUpdatePublicKeysJSON = validatedPublicKeys(process.env.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS, 'SEKAITEXT_APP_UPDATE_PUBLIC_KEYS')
+const keyFingerprint = createHash('sha256')
+  .update(pluginPublicKeysJSON)
+  .update('\0')
+  .update(appUpdatePublicKeysJSON)
+  .digest('hex')
+const keyStatePath = `${outPath}.trust-keys.sha256`
+
 // Rebuild only when the binary is missing or older than any backend source
 // file. (Previously this skipped whenever the binary merely existed, which
 // silently shipped a stale backend after source changes.)
@@ -55,26 +95,31 @@ function newestMtime(dir) {
   return newest
 }
 
-if (existsSync(outPath) && statSync(outPath).mtimeMs >= newestMtime(backendDir)) {
+const keyStateMatches = existsSync(keyStatePath) && readFileSync(keyStatePath, 'utf8').trim() === keyFingerprint
+if (existsSync(outPath) && statSync(outPath).mtimeMs >= newestMtime(backendDir) && keyStateMatches) {
   console.log(`[build-go] ${binaryName} is up to date, skipping. (Delete it to force rebuild.)`)
   process.exit(0)
 }
 
 mkdirSync(binariesDir, { recursive: true })
 
-const ldFlags = target.includes('windows')
+let ldFlags = target.includes('windows')
   ? '-s -w -H windowsgui'
   : '-s -w'
+if (pluginPublicKeysJSON) {
+  ldFlags += ` -X 'sekaitext/backend/internal/service.OfficialPluginPublicKeysJSON=${pluginPublicKeysJSON}'`
+}
+if (appUpdatePublicKeysJSON) {
+  ldFlags += ` -X 'sekaitext/backend/internal/service.OfficialAppUpdatePublicKeysJSON=${appUpdatePublicKeysJSON}'`
+}
 
 console.log(`[build-go] Compiling Go backend for ${target} (${info.goos}/${info.goarch})...`)
 
-execSync(
-  `go build -ldflags="${ldFlags}" -o "${outPath}" ./cmd/sekaitext/`,
-  {
-    cwd: backendDir,
-    env: { ...process.env, GOOS: info.goos, GOARCH: info.goarch, CGO_ENABLED: '0' },
-    stdio: 'inherit',
-  },
-)
+execFileSync('go', ['build', `-ldflags=${ldFlags}`, '-o', outPath, './cmd/sekaitext/'], {
+  cwd: backendDir,
+  env: { ...process.env, GOOS: info.goos, GOARCH: info.goarch, CGO_ENABLED: '0' },
+  stdio: 'inherit',
+})
+writeFileSync(keyStatePath, `${keyFingerprint}\n`, { mode: 0o644 })
 
 console.log(`[build-go] -> ${outPath}`)

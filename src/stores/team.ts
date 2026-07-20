@@ -40,10 +40,10 @@ export const useTeamStore = defineStore('team', () => {
     return s
   }
 
-  async function login(url: string, username: string, password: string) {
+  async function login(url: string, username: string, password: string, fingerprint: string) {
     loading.value = true
     try {
-      const r = await api.teamLogin(url, username, password)
+      const r = await api.teamLogin(url, username, password, fingerprint)
       user.value = r.user
       serverUrl.value = url
       connected.value = true
@@ -64,10 +64,10 @@ export const useTeamStore = defineStore('team', () => {
   }
 
   // connect: enter no-login readonly mode against a server URL.
-  async function connect(url: string) {
+  async function connect(url: string, fingerprint: string) {
     loading.value = true
     try {
-      await api.teamConnect(url)
+      await api.teamConnect(url, fingerprint)
       serverUrl.value = url
       connected.value = true
       user.value = null

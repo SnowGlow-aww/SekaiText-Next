@@ -101,18 +101,16 @@ type JsonPathResult struct {
 
 // Settings represents application settings.
 type Settings struct {
-	FontSize                    int    `json:"fontSize"`
-	UIFontSize                  int    `json:"uiFontSize"`
-	DownloadSource              string `json:"downloadSource"`
-	SaveLineBreakN              bool   `json:"saveN"`
-	SaveVoice                   bool   `json:"saveVoice"`
+	FontSize       int  `json:"fontSize"`
+	UIFontSize     int  `json:"uiFontSize"`
+	SaveLineBreakN bool `json:"saveN"`
+	// Deprecated: retained only so existing settings JSON remains compatible.
+	// Network clients always verify TLS regardless of this value.
 	DisableSSL                  bool   `json:"disableSSL"`
-	VoiceOutputDir              string `json:"voiceOutputDir,omitempty"`
 	JsonDownloadDir             string `json:"jsonDownloadDir,omitempty"`
 	SaveBaseDir                 string `json:"saveBaseDir,omitempty"`
 	DebugEnabled                bool   `json:"debugEnabled"`
 	IndexOrder                  string `json:"indexOrder"`
-	PreserveStoryOnModeSwitch   bool   `json:"preserveStoryOnModeSwitch"`
 	UndoDepth                   int    `json:"undoDepth"`
 	KeepHighlightWhenCompareOff bool   `json:"keepHighlightWhenCompareOff"`
 
@@ -167,13 +165,10 @@ func DefaultSettings() Settings {
 	return Settings{
 		FontSize:                    18,
 		UIFontSize:                  16,
-		DownloadSource:              "best",
 		SaveLineBreakN:              true,
-		SaveVoice:                   false,
 		DisableSSL:                  false,
 		DebugEnabled:                false,
 		IndexOrder:                  "asc",
-		PreserveStoryOnModeSwitch:   true,
 		UndoDepth:                   20,
 		KeepHighlightWhenCompareOff: true,
 		Live2DPosition:              "right",
@@ -347,13 +342,18 @@ type JsonDownloadRequest struct {
 // Mu guards the mutable fields below, which are written by the download
 // goroutine and read concurrently by the progress HTTP handler.
 type DownloadTaskProgress struct {
-	Mu       sync.Mutex `json:"-"`
-	TaskID   string     `json:"taskId"`
-	Status   string     `json:"status"` // downloading, done, error
-	Read     int64      `json:"read"`
-	Total    int64      `json:"total"`
-	FilePath string     `json:"filePath,omitempty"`
-	Error    string     `json:"error,omitempty"`
+	Mu                sync.Mutex `json:"-"`
+	TaskID            string     `json:"taskId"`
+	Status            string     `json:"status"` // downloading, done, error
+	Read              int64      `json:"read"`
+	Total             int64      `json:"total"`
+	FilePath          string     `json:"filePath,omitempty"`
+	Error             string     `json:"error,omitempty"`
+	Purpose           string     `json:"-"`
+	Digest            string     `json:"-"`
+	ExpectedSize      int64      `json:"-"`
+	IntegrityVerified bool       `json:"-"`
+	FinishedAt        int64      `json:"-"` // UnixNano; terminal-task GC grace starts here
 }
 
 // Live2DSyncProgress tracks an async Live2D online-asset sync (download the
@@ -363,18 +363,23 @@ type DownloadTaskProgress struct {
 type Live2DSyncProgress struct {
 	Mu           sync.Mutex `json:"-"`
 	TaskID       string     `json:"taskId"`
-	Status       string     `json:"status"`  // checking|downloading|done|error
+	Status       string     `json:"status"`  // checking|downloading|done|error|canceled
 	Total        int        `json:"total"`   // number of missing models to download
 	Current      int        `json:"current"` // models processed so far
 	CurrentModel string     `json:"currentModel"`
-	Files        int        `json:"files"` // files written so far
-	Bytes        int64      `json:"bytes"` // bytes written so far
+	Files        int        `json:"files"`  // files written so far
+	Bytes        int64      `json:"bytes"`  // bytes written so far
 	Failed       int        `json:"failed"` // models still incomplete after download (asset missing upstream)
 	Error        string     `json:"error,omitempty"`
 }
 
 // RecoveryData is the autosave recovery payload stored on disk.
 type RecoveryData struct {
+	Version    int                `json:"version,omitempty"`
+	ActiveMode int                `json:"activeMode,omitempty"`
+	Modes      []RecoveryModeData `json:"modes,omitempty"`
+	// Legacy active-mode mirror. Kept so old single-mode autosave.json files load
+	// unchanged and older frontends can still offer a V2 recovery.
 	Content      string `json:"content"`
 	FilePath     string `json:"filePath"`
 	EditorMode   int    `json:"editorMode"`
@@ -386,17 +391,52 @@ type RecoveryData struct {
 	StorySource  string `json:"storySource,omitempty"`
 }
 
+type RecoveryDocMeta struct {
+	SaveTitle    string `json:"saveTitle"`
+	ChapterTitle string `json:"chapterTitle"`
+	StoryType    string `json:"type"`
+	Sort         string `json:"sort"`
+	Index        string `json:"index"`
+	IndexLabel   string `json:"indexLabel"`
+	Chapter      int    `json:"chapter"`
+	Source       string `json:"source"`
+	ScenarioID   string `json:"scenarioId"`
+}
+
+type RecoveryModeData struct {
+	Content           string           `json:"content"`
+	FilePath          string           `json:"filePath"`
+	EditorMode        int              `json:"editorMode"`
+	TitleOverride     string           `json:"titleOverride,omitempty"`
+	HasUnsavedChanges bool             `json:"hasUnsavedChanges"`
+	SourceTalks       []SourceTalk     `json:"sourceTalks,omitempty"`
+	DocMeta           *RecoveryDocMeta `json:"docMeta,omitempty"`
+}
+
+type RecoveryModeSaveRequest struct {
+	Talks             []DstTalk        `json:"talks"`
+	FilePath          string           `json:"filePath"`
+	EditorMode        int              `json:"editorMode"`
+	TitleOverride     string           `json:"titleOverride,omitempty"`
+	HasUnsavedChanges bool             `json:"hasUnsavedChanges"`
+	SourceTalks       []SourceTalk     `json:"sourceTalks,omitempty"`
+	DocMeta           *RecoveryDocMeta `json:"docMeta,omitempty"`
+}
+
 // RecoverySaveRequest saves editor state for crash recovery.
 type RecoverySaveRequest struct {
-	Talks        []DstTalk `json:"talks"`
-	SaveN        bool      `json:"saveN"`
-	FilePath     string    `json:"filePath"`
-	EditorMode   int       `json:"editorMode"`
-	StoryType    string    `json:"storyType,omitempty"`
-	StorySort    string    `json:"storySort,omitempty"`
-	StoryIndex   string    `json:"storyIndex,omitempty"`
-	StoryChapter int       `json:"storyChapter,omitempty"`
-	StorySource  string    `json:"storySource,omitempty"`
+	Version      int                       `json:"version,omitempty"`
+	ActiveMode   int                       `json:"activeMode,omitempty"`
+	Modes        []RecoveryModeSaveRequest `json:"modes,omitempty"`
+	Talks        []DstTalk                 `json:"talks"`
+	SaveN        bool                      `json:"saveN"`
+	FilePath     string                    `json:"filePath"`
+	EditorMode   int                       `json:"editorMode"`
+	StoryType    string                    `json:"storyType,omitempty"`
+	StorySort    string                    `json:"storySort,omitempty"`
+	StoryIndex   string                    `json:"storyIndex,omitempty"`
+	StoryChapter int                       `json:"storyChapter,omitempty"`
+	StorySource  string                    `json:"storySource,omitempty"`
 }
 
 // SaveMetadata is embedded in save files so the app can auto-navigate on open.

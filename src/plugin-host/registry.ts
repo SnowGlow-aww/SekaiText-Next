@@ -2,6 +2,12 @@ import { defineStore } from 'pinia'
 import { ref, computed, markRaw } from 'vue'
 import type { PluginSidebarItem, PluginSettingsSection, PluginDockPanel } from './types'
 
+interface PluginRouteRegistration {
+  paths: string[]
+  name: string | symbol
+  dispose: () => void
+}
+
 // Tracks plugin contributions at runtime so the sidebar/router reflect them
 // reactively, and so unloading a plugin can reverse exactly what it added.
 export const usePluginRegistry = defineStore('plugin-registry', () => {
@@ -11,8 +17,9 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
   const settingsByPlugin = ref<Record<string, PluginSettingsSection[]>>({})
   // pluginId -> contributed dock panels (e.g. the Live2D player)
   const dockPanelsByPlugin = ref<Record<string, PluginDockPanel[]>>({})
-  // pluginId -> route paths it added (for removeRoute on unload)
-  const routesByPlugin = ref<Record<string, string[]>>({})
+  // pluginId -> exact successful router registrations. Keeping addRoute's
+  // disposer avoids guessing ownership later from a path or plugin-supplied name.
+  const routeRegistrationsByPlugin = ref<Record<string, PluginRouteRegistration[]>>({})
   // ids of plugins whose setup() has run
   const loaded = ref<string[]>([])
 
@@ -46,35 +53,76 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
       .filter((p) => !!p && typeof p === 'object' && !!p.component),
   )
 
-  function addSidebarItem(pluginId: string, item: PluginSidebarItem) {
+  // Compatibility/read-only view used by app navigation to map a path back to
+  // its plugin. Ownership and cleanup use routeRegistrationsByPlugin instead.
+  const routesByPlugin = computed<Record<string, string[]>>(() =>
+    Object.fromEntries(
+      Object.entries(routeRegistrationsByPlugin.value).map(([pluginId, registrations]) => [
+        pluginId,
+        registrations.flatMap((registration) => registration.paths),
+      ]),
+    ),
+  )
+
+  function addSidebarItem(pluginId: string, item: PluginSidebarItem): boolean {
     const list = sidebarByPlugin.value[pluginId] ?? []
-    if (!list.some((i) => i.id === item.id)) {
-      sidebarByPlugin.value = { ...sidebarByPlugin.value, [pluginId]: [...list, item] }
-    }
+    if (list.some((i) => i.id === item.id)) return false
+    sidebarByPlugin.value = { ...sidebarByPlugin.value, [pluginId]: [...list, item] }
+    return true
   }
 
   // markRaw the component so pinia/Vue never makes the component definition
   // reactive (would warn and waste cycles proxying an inert object).
-  function addSettingsSection(pluginId: string, section: PluginSettingsSection) {
+  function addSettingsSection(pluginId: string, section: PluginSettingsSection): boolean {
     const list = settingsByPlugin.value[pluginId] ?? []
-    if (!list.some((s) => s.id === section.id)) {
-      const safe = { ...section, component: markRaw(section.component) }
-      settingsByPlugin.value = { ...settingsByPlugin.value, [pluginId]: [...list, safe] }
-    }
+    if (list.some((s) => s.id === section.id)) return false
+    const safe = { ...section, component: markRaw(section.component) }
+    settingsByPlugin.value = { ...settingsByPlugin.value, [pluginId]: [...list, safe] }
+    return true
   }
 
-  function addDockPanel(pluginId: string, panel: PluginDockPanel) {
+  function addDockPanel(pluginId: string, panel: PluginDockPanel): boolean {
     const list = dockPanelsByPlugin.value[pluginId] ?? []
-    if (!list.some((p) => p.id === panel.id)) {
-      const safe = { ...panel, component: markRaw(panel.component) }
-      dockPanelsByPlugin.value = { ...dockPanelsByPlugin.value, [pluginId]: [...list, safe] }
-    }
+    if (list.some((p) => p.id === panel.id)) return false
+    const safe = { ...panel, component: markRaw(panel.component) }
+    dockPanelsByPlugin.value = { ...dockPanelsByPlugin.value, [pluginId]: [...list, safe] }
+    return true
   }
 
-  function trackRoute(pluginId: string, path: string) {
-    const list = routesByPlugin.value[pluginId] ?? []
-    if (!list.includes(path)) {
-      routesByPlugin.value = { ...routesByPlugin.value, [pluginId]: [...list, path] }
+  function trackRoute(pluginId: string, paths: string[], name: string | symbol, dispose: () => void): () => void {
+    const list = routeRegistrationsByPlugin.value[pluginId] ?? []
+    let disposed = false
+    const ownedDispose = markRaw(() => {
+      if (disposed) return
+      disposed = true
+      try {
+        dispose()
+      } finally {
+        const current = routeRegistrationsByPlugin.value[pluginId] ?? []
+        const next = current.filter((registration) => registration.dispose !== ownedDispose)
+        if (next.length > 0) {
+          routeRegistrationsByPlugin.value = { ...routeRegistrationsByPlugin.value, [pluginId]: next }
+        } else {
+          const { [pluginId]: _removed, ...rest } = routeRegistrationsByPlugin.value
+          routeRegistrationsByPlugin.value = rest
+        }
+      }
+    })
+    routeRegistrationsByPlugin.value = {
+      ...routeRegistrationsByPlugin.value,
+      [pluginId]: [...list, markRaw({ paths, name, dispose: ownedDispose })],
+    }
+    return ownedDispose
+  }
+
+  function disposeRoutes(pluginId: string) {
+    const registrations = [...(routeRegistrationsByPlugin.value[pluginId] ?? [])].reverse()
+    for (const registration of registrations) {
+      try {
+        registration.dispose()
+      } catch (e) {
+        console.error(`[plugin] ${pluginId} 路由 ${String(registration.name)} 清理失败`, e)
+      }
     }
   }
 
@@ -86,8 +134,7 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
     return loaded.value.includes(pluginId)
   }
 
-  // Forget everything a plugin contributed (the loader handles router.removeRoute
-  // using the tracked paths before calling this).
+  // Forget everything a plugin contributed. The loader calls disposeRoutes first.
   function forget(pluginId: string) {
     const { [pluginId]: _s, ...restS } = sidebarByPlugin.value
     sidebarByPlugin.value = restS
@@ -95,18 +142,16 @@ export const usePluginRegistry = defineStore('plugin-registry', () => {
     settingsByPlugin.value = restSet
     const { [pluginId]: _d, ...restD } = dockPanelsByPlugin.value
     dockPanelsByPlugin.value = restD
-    const { [pluginId]: _r, ...restR } = routesByPlugin.value
-    routesByPlugin.value = restR
+    const { [pluginId]: _r, ...restR } = routeRegistrationsByPlugin.value
+    routeRegistrationsByPlugin.value = restR
     loaded.value = loaded.value.filter((id) => id !== pluginId)
   }
 
-  function routePaths(pluginId: string): string[] {
-    return routesByPlugin.value[pluginId] ?? []
-  }
-
   return {
-    sidebarByPlugin, settingsByPlugin, dockPanelsByPlugin, routesByPlugin, loaded,
+    sidebarByPlugin, settingsByPlugin, dockPanelsByPlugin, routesByPlugin,
+    routeRegistrationsByPlugin, loaded,
     sidebarItems, settingsSections, dockPanels,
-    addSidebarItem, addSettingsSection, addDockPanel, trackRoute, markLoaded, isLoaded, forget, routePaths,
+    addSidebarItem, addSettingsSection, addDockPanel, trackRoute, disposeRoutes,
+    markLoaded, isLoaded, forget,
   }
 })

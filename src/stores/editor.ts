@@ -18,15 +18,28 @@ export interface DocMeta {
   scenarioId: string
 }
 
-interface ModeState {
+export interface ModeState {
   talks: DstTalk[]
   dstTalks: DstTalk[]
   referTalks: DstTalk[]
+  sourceTalks: SourceTalk[]
   currentFilePath: string
   titleOverride: string
   hasUnsavedChanges: boolean
+  recoveryPending: boolean
   majorClue: string | null
   docMeta: DocMeta | null
+  mutationSeq: number
+}
+
+export interface EditorModeState extends ModeState {
+  mode: EditorMode
+}
+
+export interface EditorSaveVersion {
+  mode: EditorMode
+  documentRevision: number
+  mutationSeq: number
 }
 
 function emptyModeState(): ModeState {
@@ -34,11 +47,14 @@ function emptyModeState(): ModeState {
     talks: [],
     dstTalks: [],
     referTalks: [],
+    sourceTalks: [],
     currentFilePath: '',
     titleOverride: '',
     hasUnsavedChanges: false,
+    recoveryPending: false,
     majorClue: null,
     docMeta: null,
+    mutationSeq: 0,
   }
 }
 
@@ -47,6 +63,47 @@ function cloneTalks<T>(arr: T[]): T[] {
   // would leave those shared between modeCache and live talks, so an in-place
   // nested mutation in one mode would leak across modes. Matches useUndo.
   return JSON.parse(JSON.stringify(arr)) as T[]
+}
+
+function defaultCaseInsensitivePath(root: string): boolean {
+  if (/^[a-z]:[/\\]/i.test(root) || /^[/\\]{2}/.test(root)) return true
+  return typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+}
+
+// Rebind only an exact root or a descendant separated by a path boundary. A
+// plain startsWith would incorrectly move /drafts-old when the root is /drafts.
+export function rebindContainedPath(
+  path: string,
+  oldRoot: string,
+  newRoot: string,
+  skipRel: string[] = [],
+  caseInsensitive = defaultCaseInsensitivePath(oldRoot),
+): string {
+  if (!path || !oldRoot || !newRoot) return path
+  const normalize = (value: string) => {
+    const slash = value.replace(/\\/g, '/')
+    return slash.replace(/\/+$/, '') || '/'
+  }
+  const normalizedPath = normalize(path)
+  const normalizedOld = normalize(oldRoot)
+  const compare = (value: string) => caseInsensitive ? value.toLocaleLowerCase('en-US') : value
+  const comparablePath = compare(normalizedPath)
+  const comparableOld = compare(normalizedOld)
+  const contained = comparablePath === comparableOld
+    || (normalizedOld === '/' ? comparablePath.startsWith('/') : comparablePath.startsWith(comparableOld + '/'))
+  if (!contained) return path
+
+  const relative = normalizedOld === '/'
+    ? normalizedPath.slice(1)
+    : normalizedPath.slice(normalizedOld.length).replace(/^\/+/, '')
+  const skipped = new Set(skipRel.map(value => compare(normalize(value).replace(/^\/+/, ''))))
+  if (skipped.has(compare(relative))) return path
+
+  const separator = newRoot.includes('\\') && !newRoot.includes('/') ? '\\' : '/'
+  const targetRoot = newRoot.replace(/[/\\]+$/, '') || separator
+  if (!relative) return targetRoot
+  const targetRelative = relative.replace(/\//g, separator)
+  return targetRoot.endsWith(separator) ? targetRoot + targetRelative : targetRoot + separator + targetRelative
 }
 
 export const useEditorStore = defineStore('editor', () => {
@@ -85,11 +142,17 @@ export const useEditorStore = defineStore('editor', () => {
   const documentRevision = ref(0)
   let documentOperationSeq = 0
 
-  function beginDocumentOperation(): number | null {
+  function beginDocumentOperation(advanceRevision = true): number | null {
     if (documentBusy.value) return null
     documentBusy.value = true
-    documentRevision.value++
+    if (advanceRevision) documentRevision.value++
     return ++documentOperationSeq
+  }
+
+  function advanceDocumentOperation(token: number): boolean {
+    if (!isCurrentDocumentOperation(token)) return false
+    documentRevision.value++
+    return true
   }
 
   function isCurrentDocumentOperation(token: number): boolean {
@@ -117,10 +180,20 @@ export const useEditorStore = defineStore('editor', () => {
   // remove, undo/redo, replace-all …). hasUnsavedChanges flips once and stays,
   // so per-edit consumers (the autosave.txt writer) watch this instead.
   const mutationSeq = ref(0)
+  const modeMutationSeq = ref(0)
+  const recoveryPending = ref(false)
 
   function markUnsaved() {
+    recoveryPending.value = false
     hasUnsavedChanges.value = true
     mutationSeq.value++
+    modeMutationSeq.value = mutationSeq.value
+  }
+
+  function updateTitle(title: string) {
+    if (titleOverride.value === title) return
+    titleOverride.value = title
+    markUnsaved()
   }
 
   // Dirty check across ALL modes: hasUnsavedChanges only reflects the current
@@ -136,6 +209,35 @@ export const useEditorStore = defineStore('editor', () => {
 
   function markSaved() {
     hasUnsavedChanges.value = false
+    recoveryPending.value = false
+  }
+
+  function markRecovered() {
+    hasUnsavedChanges.value = true
+    recoveryPending.value = true
+  }
+
+  function captureSaveVersion(): EditorSaveVersion {
+    return {
+      mode: currentMode.value,
+      documentRevision: documentRevision.value,
+      mutationSeq: modeMutationSeq.value,
+    }
+  }
+
+  function markSavedIfUnchanged(version: EditorSaveVersion): boolean {
+    if (documentRevision.value !== version.documentRevision) return false
+    if (currentMode.value === version.mode) {
+      if (modeMutationSeq.value !== version.mutationSeq) return false
+      hasUnsavedChanges.value = false
+      recoveryPending.value = false
+      return true
+    }
+    const state = modeCache.get(version.mode)
+    if (!state || state.mutationSeq !== version.mutationSeq) return false
+    state.hasUnsavedChanges = false
+    state.recoveryPending = false
+    return true
   }
 
   function clearAll() {
@@ -148,20 +250,69 @@ export const useEditorStore = defineStore('editor', () => {
     hasUnsavedChanges.value = false
     majorClue.value = null
     docMeta.value = null
+    modeMutationSeq.value = mutationSeq.value
+    recoveryPending.value = false
     modeCache.clear()
   }
 
-  function saveModeState(mode: EditorMode) {
-    modeCache.set(mode, {
+  function currentModeState(): ModeState {
+    return {
       talks: cloneTalks(talks.value),
       dstTalks: cloneTalks(dstTalks.value),
       referTalks: cloneTalks(referTalks.value),
+      sourceTalks: cloneTalks(sourceTalks.value),
       currentFilePath: currentFilePath.value,
       titleOverride: titleOverride.value,
       hasUnsavedChanges: hasUnsavedChanges.value,
+      recoveryPending: recoveryPending.value,
       majorClue: majorClue.value,
       docMeta: docMeta.value ? { ...docMeta.value } : null,
-    })
+      mutationSeq: modeMutationSeq.value,
+    }
+  }
+
+  function captureModeStates(): EditorModeState[] {
+    const states = new Map<EditorMode, ModeState>()
+    for (const [mode, state] of modeCache) {
+      states.set(mode, {
+        ...state,
+        talks: cloneTalks(state.talks),
+        dstTalks: cloneTalks(state.dstTalks),
+        referTalks: cloneTalks(state.referTalks),
+        sourceTalks: cloneTalks(state.sourceTalks),
+        docMeta: state.docMeta ? { ...state.docMeta } : null,
+      })
+    }
+    states.set(currentMode.value, currentModeState())
+    return Array.from(states, ([mode, state]) => ({ mode, ...state }))
+      .sort((a, b) => a.mode - b.mode)
+  }
+
+  function restoreModeStates(states: EditorModeState[], activeMode: EditorMode) {
+    modeCache.clear()
+    for (const recovered of states) {
+      const state: ModeState = {
+        talks: cloneTalks(recovered.talks),
+        dstTalks: cloneTalks(recovered.dstTalks),
+        referTalks: cloneTalks(recovered.referTalks),
+        sourceTalks: cloneTalks(recovered.sourceTalks),
+        currentFilePath: recovered.currentFilePath,
+        titleOverride: recovered.titleOverride,
+        hasUnsavedChanges: recovered.hasUnsavedChanges,
+        recoveryPending: recovered.hasUnsavedChanges,
+        majorClue: recovered.majorClue,
+        docMeta: recovered.docMeta ? { ...recovered.docMeta } : null,
+        mutationSeq: mutationSeq.value,
+      }
+      modeCache.set(recovered.mode, state)
+    }
+    currentMode.value = modeCache.has(activeMode) ? activeMode : (states[0]?.mode ?? 0)
+    loadModeState(currentMode.value)
+    documentRevision.value++
+  }
+
+  function saveModeState(mode: EditorMode) {
+    modeCache.set(mode, currentModeState())
   }
 
   function loadModeState(mode: EditorMode) {
@@ -169,11 +320,14 @@ export const useEditorStore = defineStore('editor', () => {
     talks.value = cloneTalks(state.talks)
     dstTalks.value = cloneTalks(state.dstTalks)
     referTalks.value = cloneTalks(state.referTalks)
+    sourceTalks.value = cloneTalks(state.sourceTalks)
     currentFilePath.value = state.currentFilePath
     titleOverride.value = state.titleOverride
     hasUnsavedChanges.value = state.hasUnsavedChanges
+    recoveryPending.value = state.recoveryPending
     majorClue.value = state.majorClue
     docMeta.value = state.docMeta ? { ...state.docMeta } : null
+    modeMutationSeq.value = state.mutationSeq
   }
 
   // Switch between editor modes. Each mode owns a fully independent, deep-copied
@@ -188,13 +342,7 @@ export const useEditorStore = defineStore('editor', () => {
   // 自动保存会覆盖它、丢掉原稿）——译文数据安全高于一切。
   function rebindPaths(oldRoot: string, newRoot: string, skipRel?: string[]) {
     if (!oldRoot || oldRoot === newRoot) return
-    const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\/+/, '')
-    const skip = new Set((skipRel || []).map(norm))
-    const rewrite = (p: string) => {
-      if (!p || !p.startsWith(oldRoot)) return p
-      if (skip.has(norm(p.slice(oldRoot.length)))) return p // 留在旧目录原文件
-      return newRoot + p.slice(oldRoot.length)
-    }
+    const rewrite = (p: string) => rebindContainedPath(p, oldRoot, newRoot, skipRel)
     currentFilePath.value = rewrite(currentFilePath.value)
     for (const state of modeCache.values()) state.currentFilePath = rewrite(state.currentFilePath)
   }
@@ -208,10 +356,11 @@ export const useEditorStore = defineStore('editor', () => {
 
   return {
     talks, dstTalks, referTalks, sourceTalks,
-    currentFilePath, titleOverride, hasUnsavedChanges, majorClue, docMeta, mutationSeq,
+    currentFilePath, titleOverride, hasUnsavedChanges, majorClue, docMeta, mutationSeq, recoveryPending,
     currentMode, documentBusy, documentRevision,
-    setSourceTalks, setTalks, markUnsaved, markSaved, hasAnyUnsaved, clearAll,
+    setSourceTalks, setTalks, markUnsaved, markSaved, markRecovered, markSavedIfUnchanged, hasAnyUnsaved, clearAll,
+    updateTitle, captureSaveVersion, captureModeStates, restoreModeStates,
     saveModeState, loadModeState, switchMode, rebindPaths, syncTitleFromPath,
-    beginDocumentOperation, isCurrentDocumentOperation, finishDocumentOperation,
+    beginDocumentOperation, advanceDocumentOperation, isCurrentDocumentOperation, finishDocumentOperation,
   }
 })

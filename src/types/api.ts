@@ -1,16 +1,11 @@
 export interface Settings {
   fontSize: number
   uiFontSize: number
-  downloadSource: string
   saveN: boolean
-  saveVoice: boolean
-  disableSSL: boolean
   debugEnabled: boolean
   indexOrder: 'asc' | 'desc'
-  voiceOutputDir?: string
   jsonDownloadDir?: string
   saveBaseDir?: string
-  preserveStoryOnModeSwitch: boolean
   undoDepth: number
   keepHighlightWhenCompareOff: boolean
   shortcuts?: Record<string, string>

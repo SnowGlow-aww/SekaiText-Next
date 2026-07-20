@@ -1,11 +1,12 @@
 name: Release Manifest
 
 # Generates app-release.json (consumed by the in-app self-updater) from a GitHub
-# Release's installer assets — version from the tag, download URLs from the
-# release's .dmg/.exe.
+# Release's installer assets — version from the tag, download URLs plus GitHub's
+# sha256 digest and byte size from the release's .dmg/.exe.
 #
 # release.yml calls this workflow after installer assets have been attached. The
-# manual trigger remains available for repairing or republishing an older release.
+# manual trigger remains available when a release has not yet advanced the live
+# manifest. Published versions are immutable and cannot replace the same/older version.
 # NOTE: deliberately NOT triggered by `on: release` — a release created with
 # GITHUB_TOKEN does not fire release events (GitHub anti-recursion), so there is no
 # independent release-event trigger here.
@@ -25,6 +26,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: app-release-publication-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   manifest:
     runs-on: ubuntu-latest
@@ -32,10 +37,11 @@ jobs:
       # secrets.* cannot be used in step `if:` directly; surface presence as env.
       HAS_MANIFEST_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN != '' }}
       HAS_OSS_CREDENTIALS: ${{ secrets.OSS_ACCESS_KEY_ID != '' && secrets.OSS_ACCESS_KEY_SECRET != '' }}
+      HAS_APP_UPDATE_SIGNING_KEY: ${{ secrets.APP_UPDATE_SIGNING_PRIVATE_KEY != '' }}
       # owner/repo of the manifest repo (where the in-app default URL points).
       MANIFEST_REPO: snowglow-aww/sekaitext-plugins
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Resolve tag + version
         id: tag
@@ -53,38 +59,73 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          notes="$(gh release view "$TAG" --repo "$REPO" --json body -q '.body // ""')"
-          pub="$(date -u +%Y-%m-%d)"
+          release="$(gh release view "$TAG" --repo "$REPO" --json body,publishedAt,assets)"
+          notes="$(jq -r '.body // ""' <<<"$release")"
+          pub="$(jq -r '.publishedAt[0:10]' <<<"$release")"
           # Map each installer asset to a CurrentPlatform() key by filename.
           # Match the installers release.yml actually publishes (.dmg + NSIS .exe),
           # one per arch → unique platform keys (from_entries stays deterministic).
-          downloads="$(gh release view "$TAG" --repo "$REPO" --json assets -q '
+          assets="$(jq '
             [ .assets[]
               | select(.name | test("\\.(dmg|exe)$"; "i"))
               | { key:
                     ( if (.name | test("\\.dmg$"; "i")) then "darwin-aarch64"
                       else "windows-amd64" end ),
-                  value: .url } ]
-            | from_entries')"
-          # from_entries on an empty match already yields {}, so downloads is valid
-          # JSON; default only if the gh query produced nothing. (Do NOT inline a
-          # ${downloads:-{}} default — bash mis-parses the braces and appends a
-          # stray } that corrupts the JSON when there ARE assets.)
-          [ -n "$downloads" ] || downloads='{}'
+                  value: {url: .url, digest: .digest, size: .size} } ]' <<<"$release")"
+          if ! jq -e '
+            length == 2 and
+            ([.[].key] | unique | length) == 2 and
+            all(.[].value;
+              ((.digest | type) == "string") and
+              (.digest | test("^sha256:[0-9a-fA-F]{64}$")) and
+              ((.size | type) == "number") and
+              (.size > 0))
+          ' <<<"$assets" >/dev/null; then
+            echo "::error::release must contain exactly one .dmg and one .exe with valid GitHub sha256 digest/size"
+            exit 1
+          fi
+          downloads="$(jq 'map({key, value: .value.url}) | from_entries' <<<"$assets")"
+          artifacts="$(jq 'map({key, value: {digest: .value.digest, size: .value.size}}) | from_entries' <<<"$assets")"
           jq -n \
-            --arg v "$VERSION" --arg n "$notes" --arg p "$pub" --argjson d "$downloads" \
-            '{version: $v, notes: $n, pubDate: $p, downloads: $d}' > app-release.json
+            --arg v "$VERSION" --arg n "$notes" --arg p "$pub" \
+            --argjson d "$downloads" --argjson a "$artifacts" \
+            '{version: $v, notes: $n, pubDate: $p, downloads: $d, artifacts: $a}' > app-release.json
           echo "----- app-release.json -----"
           cat app-release.json
-          if [ "$(jq '.downloads | length' app-release.json)" -eq 0 ]; then
-            echo "::warning::no .dmg/.exe/.msi assets on $TAG — manifest has empty downloads"
-          fi
 
       - name: Require OSS/CDN credentials
         if: env.HAS_OSS_CREDENTIALS != 'true'
         run: |
           echo "::error::OSS_ACCESS_KEY_ID and OSS_ACCESS_KEY_SECRET are required for the public download channel"
           exit 1
+
+      - name: Require app update signing key
+        if: env.HAS_APP_UPDATE_SIGNING_KEY != 'true'
+        run: |
+          echo "::error::APP_UPDATE_SIGNING_PRIVATE_KEY is required to authenticate app-release.json"
+          exit 1
+
+      - name: Verify app update signing-key correspondence
+        env:
+          APP_UPDATE_SIGNING_KEY_ID: ${{ vars.APP_UPDATE_SIGNING_KEY_ID }}
+          APP_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.APP_UPDATE_SIGNING_PRIVATE_KEY }}
+          SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createPrivateKey, createPublicKey } from 'node:crypto'
+          const keyId = process.env.APP_UPDATE_SIGNING_KEY_ID
+          const privateValue = process.env.APP_UPDATE_SIGNING_PRIVATE_KEY
+          let keys
+          try { keys = JSON.parse(process.env.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS || '') }
+          catch { throw new Error('SEKAITEXT_APP_UPDATE_PUBLIC_KEYS must be valid JSON') }
+          if (!keyId || !privateValue || !keys || typeof keys !== 'object' || Array.isArray(keys)) {
+            throw new Error('app update signing configuration is incomplete')
+          }
+          const privateKey = createPrivateKey({ key: Buffer.from(privateValue, 'base64'), format: 'der', type: 'pkcs8' })
+          if (privateKey.asymmetricKeyType !== 'ed25519') throw new Error('app update signing key is not Ed25519')
+          const publicValue = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+          if (keys[keyId] !== publicValue) throw new Error(`app update key ${keyId} does not match the embedded trust root`)
+          NODE
 
       - name: Install pinned ossutil
         if: env.HAS_OSS_CREDENTIALS == 'true'
@@ -108,12 +149,33 @@ jobs:
           OSS_REGION: cn-shanghai
           OSS_BUCKET: sakimizuki
           CDN_ORIGIN: https://sakimizuki.accr.cc
+          APP_UPDATE_SIGNING_KEY_ID: ${{ vars.APP_UPDATE_SIGNING_KEY_ID }}
+          APP_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.APP_UPDATE_SIGNING_PRIVATE_KEY }}
+          SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
         run: node scripts/publish-release-cdn.mjs
 
-      - name: Attach app-release.json to the release
+      - name: Attach and verify app-release.json on GitHub
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.tag }}" app-release.json --repo "${{ github.repository }}" --clobber
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          repo="${{ github.repository }}"
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          asset_names="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
+          if grep -Fxq app-release.json <<<"$asset_names"; then
+            gh release download "$tag" --repo "$repo" --pattern app-release.json --dir "$verify_dir"
+            if ! cmp -s app-release.json "$verify_dir/app-release.json"; then
+              echo "::error::published app-release.json is immutable and differs from the generated bytes"
+              exit 1
+            fi
+          else
+            gh release upload "$tag" app-release.json --repo "$repo"
+          fi
+          rm -f "$verify_dir/app-release.json"
+          gh release download "$tag" --repo "$repo" --pattern app-release.json --dir "$verify_dir"
+          cmp -s app-release.json "$verify_dir/app-release.json"
 
       - name: Publish app-release.json to the manifest repo
         if: env.HAS_MANIFEST_TOKEN == 'true'
@@ -127,5 +189,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add app-release.json
-          git commit -m "chore: app-release.json ${{ steps.tag.outputs.version }}" || { echo "no manifest change"; exit 0; }
+          if git diff --cached --quiet; then
+            echo "no manifest change"
+            exit 0
+          fi
+          git commit -m "chore: app-release.json ${{ steps.tag.outputs.version }}"
           git push

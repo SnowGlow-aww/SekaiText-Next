@@ -126,14 +126,12 @@ function hideBackground() {
 }
 
 export const useAppStore = defineStore('app', () => {
-  const fontSize = ref(18)
   const editorMode = ref<0 | 1 | 2>(0)
   const showFlashback = ref(true)
   // showGlossary: when on, source text in the editor highlights matched glossary
   // terms and hovering shows the translation + appellation suggestion. Default
   // on, and persisted (user can turn it off via the toolbar checkbox).
   const showGlossary = useLocalStorage('sekaitext-show-glossary', true)
-  const syncScroll = ref(true)
   // showCompare: when on (校对/合意 only), each edited line shows a baseline row
   // (read-only, original/校对 text, removals in red) above the edit row (green
   // additions). Diff highlighting itself is always-on; this toggles the baseline row.
@@ -257,11 +255,9 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    fontSize,
     editorMode,
     showFlashback,
     showGlossary,
-    syncScroll,
     showCompare,
     saveN,
     searchOpen,

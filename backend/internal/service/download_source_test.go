@@ -10,6 +10,8 @@ func TestRouteDownloadURL(t *testing.T) {
 	ghPkg := "https://raw.githubusercontent.com/SnowGlow-aww/sekaitext-plugins/main/plugins/live2d-1.1.3.sekplugin"
 	cdnDmg := "https://sakimizuki.accr.cc/sekaitext-releases/v5.2.0/SekaiText.Next_5.2.0_aarch64.dmg"
 	ghDmg := "https://github.com/SnowGlow-aww/SekaiText-Next/releases/download/v5.2.0/SekaiText.Next_5.2.0_aarch64.dmg"
+	cdnManifest := "https://sakimizuki.accr.cc/sekaitext-plugins/app-release.json"
+	ghManifest := "https://raw.githubusercontent.com/SnowGlow-aww/sekaitext-plugins/main/app-release.json"
 	other := "https://example.com/custom-index.json"
 
 	cases := []struct {
@@ -21,11 +23,15 @@ func TestRouteDownloadURL(t *testing.T) {
 		{"", ghPkg, []string{cdnPkg, ghPkg}},
 		{"cdn", ghPkg, []string{cdnPkg, ghPkg}},
 		{"cdn", ghDmg, []string{cdnDmg, ghDmg}},
-		{"cdn", cdnPkg, []string{cdnPkg}},
+		{"cdn", cdnPkg, []string{cdnPkg, ghPkg}},
+		{"cdn", cdnDmg, []string{cdnDmg, ghDmg}},
+		{"cdn", cdnManifest, []string{cdnManifest, ghManifest}},
 		// GitHub 直连：CDN 地址改写回 GitHub，GitHub 地址原样。
 		{"github", cdnPkg, []string{ghPkg, cdnPkg}},
 		{"github", cdnDmg, []string{ghDmg, cdnDmg}},
-		{"github", ghPkg, []string{ghPkg}},
+		{"github", ghPkg, []string{ghPkg, cdnPkg}},
+		{"github", ghDmg, []string{ghDmg, cdnDmg}},
+		{"github", ghManifest, []string{ghManifest, cdnManifest}},
 		// 与两个源无关的 URL 不动。
 		{"cdn", other, []string{other}},
 		{"github", other, []string{other}},

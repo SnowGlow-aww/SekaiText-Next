@@ -80,8 +80,14 @@ export const useGlossaryStore = defineStore('glossary', () => {
     speakers.value = await api.glossaryAppellationSpeakers()
   }
 
+  let targetsSeq = 0
   async function loadTargets(speaker: string) {
-    targets.value = speaker ? await api.glossaryAppellationTargets(speaker) : []
+    const seq = ++targetsSeq
+    // Never show the previous speaker's choices while the new request is in
+    // flight (or if it fails). The sequence guard still blocks late responses.
+    targets.value = []
+    const next = speaker ? await api.glossaryAppellationTargets(speaker) : []
+    if (seq === targetsSeq) targets.value = next
   }
 
   async function lookupAppellation(speaker: string, target: string): Promise<AppellationResult> {

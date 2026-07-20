@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import router from './router'
 import { useDebugLog } from './composables/useDebugLog'
 import { installHostBridge } from './plugin-host/bridge'
-import { autoLoadPlugins } from './plugin-host/autoload'
+import { startPluginStartup } from './plugin-host/autoload'
 import './style.css'
 import App from './App.vue'
 
@@ -25,7 +25,8 @@ app.use(router)
 // resolves to no match (blank page). After autoload, if the current route never
 // matched, re-resolve it so the freshly-registered plugin route takes effect.
 const host = installHostBridge(router, pinia)
-void autoLoadPlugins(host).then(async () => {
+const hostVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
+void startPluginStartup(host, hostVersion).then(async () => {
   await router.isReady()
   const cur = router.currentRoute.value
   if (cur.matched.length === 0) {

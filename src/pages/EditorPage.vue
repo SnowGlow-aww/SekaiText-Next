@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { useEditorStore } from '../stores/editor'
 import { useStoryStore } from '../stores/story'
@@ -14,7 +15,7 @@ import { useUndo } from '../composables/useUndo'
 import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
 import { api } from '../api/client'
 import { Users, AlertTriangle, Info,
-  FolderOpen, Save, Eraser, Eye, Languages, Link2, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
+  FolderOpen, Save, Eraser, Eye, Languages, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -23,6 +24,8 @@ import { useLive2dDockStore } from '../stores/live2dDock'
 import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
+import { commitDocumentMutation } from '../editor/documentMutation'
+import { saveDirectoryCoordinator } from '../editor/saveDirectoryCoordinator'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -31,10 +34,18 @@ const settings = useSettingsStore()
 const toast = useToast()
 const { confirm } = useConfirm()
 const fileDialog = useFileDialog()
-const autoSave = useAutoSave()
 const undo = useUndo()
 const pluginRegistry = usePluginRegistry()
 const live2dDock = useLive2dDockStore()
+
+// Template ref to EditorWorkspace so every file/recovery snapshot can first
+// materialize text that still lives in the focused contenteditable.
+const workspace = ref<{
+  cancelPendingEdit: () => void
+  flushPendingEdit: () => Promise<void>
+  flushPendingEditForDeactivation: () => Promise<void>
+} | null>(null)
+const autoSave = useAutoSave(30000, () => workspace.value?.flushPendingEdit())
 
 // Which edge (if any) the Live2D dock occupies around the workspace. Shown only
 // when the user picked a docked placement (not 独立窗口), the panel is toggled
@@ -52,11 +63,6 @@ const dockSide = computed<'top' | 'right' | 'bottom' | null>(() => {
 })
 
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
-
-// Template ref to EditorWorkspace so structural mutations here can cancel its
-// pending debounced edit first (the timer captured a row index that these
-// reorder, so letting it fire would corrupt a shifted row).
-const workspace = ref<{ cancelPendingEdit: () => void; flushPendingEdit: () => Promise<void> } | null>(null)
 
 function doUndo() {
   workspace.value?.cancelPendingEdit()
@@ -80,21 +86,28 @@ const canRedo = undo.canRedo
 // 当前文档。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
 let txtAutosaveTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleTxtAutosave() {
+  if (editor.recoveryPending || !editor.hasUnsavedChanges) return
   if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
   txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
 }
 // 所有 txt 落盘（防抖自动保存/切模式冲写/手动保存前的排空）走同一条串行链：
 // 「就地改名(A→B)+写入」不是原子操作，两路并发时输家的 rename 失败会回落重建
 // 旧名文件——标题改名丢失、还多出一份孤儿档。
-let txtSaveChain: Promise<void> = Promise.resolve()
+const txtSaveCoordinator = saveDirectoryCoordinator
 function writeTxtAutosave(): Promise<void> {
-  const next = txtSaveChain.then(doWriteTxtAutosave, doWriteTxtAutosave)
-  txtSaveChain = next
-  return next
+  return txtSaveCoordinator.run(async () => {
+    // Materialize both debounced rows and the currently focused contenteditable
+    // before any save snapshot/version is captured. Keeping this inside the save
+    // queue prevents manual save or mode switch from overtaking the flush.
+    if (editor.recoveryPending) return
+    await workspace.value?.flushPendingEdit()
+    if (editor.recoveryPending) return
+    await doWriteTxtAutosave()
+  })
 }
 watch(() => editor.mutationSeq, scheduleTxtAutosave)
-// 标题译文只改文件名、不 bump mutationSeq，单独监听：已绑定的文档走同一条
-// 防抖去就地改名（见 resolveBoundTarget）；未绑定文档不因改标题而建档。
+// Programmatic title changes (open/import/path sync) do not necessarily bump the
+// mutation sequence, so a bound managed document still watches the title itself.
 watch(() => editor.titleOverride, () => {
   if (editor.currentFilePath) scheduleTxtAutosave()
 })
@@ -172,8 +185,9 @@ async function doWriteTxtAutosave() {
   // 定时器可能在切模式后才触发：进入 await 前把本槽位的一切快照下来，写完回来
   // 若槽位已换人（loadModeState 换掉了整套状态），不得把路径/脏标记写进新模式。
   const mode = editor.currentMode
-  const dstTalks = editor.dstTalks
+  const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
   const meta = buildSaveMeta()
+  const saveVersion = editor.captureSaveVersion()
   let target = resolveBoundTarget()
   let binding = false
   if (!target) {
@@ -189,7 +203,9 @@ async function doWriteTxtAutosave() {
     if (target.renameFrom) {
       try {
         await api.renameFile(target.renameFrom, target.path)
-        if (editor.currentMode === mode) editor.currentFilePath = target.path
+        if (editor.currentMode === mode && editor.documentRevision === saveVersion.documentRevision) {
+          editor.currentFilePath = target.path
+        }
       } catch (e) {
         // 目标被占用等：保持原名原路径写入，名字不动但内容绝不丢。
         console.warn('[Autosave] 就地改名失败，保持原名', target, e)
@@ -198,13 +214,12 @@ async function doWriteTxtAutosave() {
     }
     if (binding) await api.ensureDir(target.path)
     await api.translationSave(target.path, dstTalks, app.saveN, meta)
-    if (editor.currentMode !== mode) return
+    if (editor.currentMode !== mode || editor.documentRevision !== saveVersion.documentRevision) return
     if (binding) editor.currentFilePath = target.path
-    if (editor.mutationSeq === seq) {
-      editor.markSaved()
+    if (editor.mutationSeq === seq && editor.markSavedIfUnchanged(saveVersion)) {
       // 正式文件已是最新，作废恢复快照——否则启动时会把这份陈旧快照当作未保存
       // 更改恢复，盖回真实文件丢译文。只在写成功且内容未过期时清。
-      await api.recoveryClear().catch(() => {})
+      await autoSave.syncNow().catch(() => {})
     }
   } catch (e) {
     console.warn('[Autosave] 自动保存写入失败', target.path, e) // 静默失败，不打扰编辑
@@ -257,10 +272,53 @@ function activate() {
   window.addEventListener('resize', measureSearchAlign)
   nextTick(measureSearchAlign)
 }
+let leaveRecoverySync: Promise<void> | null = null
+
+function syncRecoveryBeforeDeactivation(): Promise<void> {
+  autoSave.stop()
+  if (!leaveRecoverySync) {
+    leaveRecoverySync = autoSave
+      .syncNow(() => workspace.value?.flushPendingEditForDeactivation())
+      .finally(() => { leaveRecoverySync = null })
+  }
+  return leaveRecoverySync
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('recovery sync timed out')), timeoutMs)
+    promise.then(
+      value => { clearTimeout(timeout); resolve(value) },
+      error => { clearTimeout(timeout); reject(error) },
+    )
+  })
+}
+
+onBeforeRouteLeave(async () => {
+  if (!editor.hasAnyUnsaved()) return true
+  try {
+    // The local backend normally finishes in milliseconds. Bound the wait so a
+    // broken transport cancels navigation with feedback instead of hanging it.
+    await withTimeout(syncRecoveryBeforeDeactivation(), 5_000)
+    // If a later router guard cancels this navigation, recovery scheduling must
+    // remain active; the actual deactivation below stops it again immediately.
+    autoSave.start()
+    return true
+  } catch (error) {
+    autoSave.start()
+    toast.show('自动恢复快照写入失败，已留在编辑器，请重试', 'error')
+    console.error('[Recovery] route-leave sync failed', error)
+    return false
+  }
+})
+
 function deactivate() {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('resize', measureSearchAlign)
-  autoSave.stop()
+  // Fallback for non-router deactivation: keep navigation non-blocking while the
+  // kept-alive editor finishes its durable snapshot in the background. Router
+  // leaves already have one durable snapshot; this closes the final detach gap.
+  void autoSave.stopAndSync(() => workspace.value?.flushPendingEditForDeactivation()).catch(() => {})
 }
 
 onMounted(async () => {
@@ -291,13 +349,14 @@ onDeactivated(deactivate)
 async function handleCloseSave() {
   try {
     await handleSave()
-    if (!editor.hasUnsavedChanges) {
+    if (!editor.hasAnyUnsaved()) {
       showCloseConfirm.value = false
       forceClose.value = true
       await closeWindow()
+    } else {
+      toast.show('其他模式仍有未保存的更改，请逐一保存后再退出', 'warn')
     }
   } catch { /* Save failed */ }
-  showCloseConfirm.value = false
 }
 
 async function handleCloseDiscard() {
@@ -345,26 +404,38 @@ watch(() => app.searchOpen, (open) => {
 async function setMode(key: number) {
   const changed = key !== editor.currentMode
   if (changed && editor.documentBusy) return
-  const operation = changed ? editor.beginDocumentOperation() : null
+  // Lock immediately, but advance the document revision only after the old
+  // mode's save has finished. Otherwise a successful in-flight rename cannot
+  // publish its new binding before saveModeState snapshots the old path.
+  const operation = changed ? editor.beginDocumentOperation(false) : null
   if (changed && operation === null) return
   if (changed) story.loading = true
   try {
-  // Drop any pending debounced edit BEFORE swapping mode state: its timer
-  // captured a row index for the old mode's arrays, so letting it fire against
-  // the new mode's talks would write the old mode's text into an unrelated row.
-  // (onBlur already committed the text to both arrays, so nothing is lost.)
-  if (changed) workspace.value?.cancelPendingEdit()
+  // Flush pending row edits before swapping mode state. changeText may be the
+  // only operation that materializes a missing dstTalks row, so cancelling here
+  // can make visible text impossible to save even though onBlur updated talks.
+  if (changed) await workspace.value?.flushPendingEdit()
   // 冲洗（不是丢弃）待写的 txt 自动保存：那个定时器属于旧模式的编辑，火在切换
   // 之后会按新模式的槽位落盘——旧模式的最后一笔就滞留缓存、新模式凭空建档。
   // 必须 await：writeTxtAutosave 里的就地改名是异步的，改名后才把 currentFilePath
   // 更新为新路径；不等它就 switchMode，saveModeState 会把已被改走的旧路径快照进
   // modeCache，切回该模式即 409 回落重建同名孤儿文件。
-  if (changed && txtAutosaveTimer) {
-    clearTimeout(txtAutosaveTimer)
+  if (changed) {
+    if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
     txtAutosaveTimer = null
-    await writeTxtAutosave().catch(() => {})
+    // Recovered rows are only a proposed recovery state. Switching tabs is not
+    // edit/save intent, so do not write an untouched recovered slot over its
+    // original file. recoveryPending is restored independently for every mode.
+    if (editor.hasUnsavedChanges && !editor.recoveryPending) await writeTxtAutosave().catch(() => {})
+    else await txtSaveCoordinator.wait()
   }
+  if (operation !== null && !editor.advanceDocumentOperation(operation)) return
   editor.switchMode(key as 0 | 1 | 2)
+  story.sourceTalks = JSON.parse(JSON.stringify(editor.sourceTalks))
+  story.scenarioId = editor.docMeta?.scenarioId || ''
+  story.saveTitle = editor.docMeta?.saveTitle || ''
+  story.chapterTitle = editor.docMeta?.chapterTitle || ''
+  if (editor.docMeta?.source) story.selectedSource = editor.docMeta.source
   app.setEditorMode(key as 0 | 1 | 2)
   // The undo/redo stacks are a module-level singleton shared across all modes,
   // but switchMode swaps the live talks for a different mode's content. Replaying
@@ -412,6 +483,7 @@ async function handleOpen() {
     if (!result) return
     if (!editor.isCurrentDocumentOperation(operation)) return
     workspace.value?.cancelPendingEdit()
+    editor.clearAll()
     console.log('[Open] loaded file', { path: result.filePath || result.fileName, talkCount: result.talks.length, hasMeta: !!result.meta, mode: app.editorMode, fileMode: result.meta?.mode })
     // Baseline fallback: in 校对/合意 modes, seed every row's baseline to its
     // current text up front. The .txt format does not persist baseline, and the
@@ -424,6 +496,8 @@ async function handleOpen() {
       for (const t of result.talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
     }
     editor.setTalks(result.talks, result.talks, [])
+    editor.setSourceTalks([])
+    story.clearLoadedStory()
     // Pre-fill the 译文 header title input from the filename. The name looks like
     // "【翻译】3rd-group3-01 思いがけない出会い.txt": strip the 【…】 prefix and
     // .txt, the first token is the label (story id), the rest is the (already
@@ -451,6 +525,7 @@ async function handleOpen() {
     // 留着旧快照会让这个文件保存时套上一个剧情的名字/目录。
     editor.docMeta = null
     editor.markSaved()
+    await autoSave.syncNow().catch(() => {})
     undo.clear()
 
     // Auto-load the source scenario from the filename label (see above). Resolve
@@ -494,6 +569,7 @@ async function handleOpen() {
             }
           }
           story.applyStory(loadedStory)
+          editor.setSourceTalks(loadedStory.sourceTalks)
           editor.docMeta = story.snapshotDocMeta()
         }
       } catch { /* keep manual selection */ }
@@ -509,15 +585,40 @@ async function handleOpen() {
 async function handleSave(saveAs = false) {
   if (editor.documentBusy) return
   if (editor.talks.length === 0) return
-  // Flush (not cancel) the pending debounced edit so the file is serialized
-  // from a dstTalks that carries the last blurred edit in its fully processed
-  // form. Clicking 保存 within 300ms of leaving a field used to race this.
-  try { await workspace.value?.flushPendingEdit() } catch { /* raw commit already in arrays */ }
-  // 拆掉在途的自动保存防抖并等已排队的写盘落定：800ms 防抖若在下面的 await 间隙
-  // 触发，会与本次保存并发执行同一个 rename(A→B)——输家回落重建旧名孤儿文件、
-  // 标题改名丢失（setMode 切模式时防的是同一隐患）。
-  if (txtAutosaveTimer) { clearTimeout(txtAutosaveTimer); txtAutosaveTimer = null }
-  await txtSaveChain.catch(() => {})
+  // Lock the document before enqueueing the ENTIRE flush + save transaction.
+  // Otherwise a mode switch can enter the queue while flushPendingEdit is still
+  // materializing rows and overtake the actual manual save.
+  const operation = editor.beginDocumentOperation(false)
+  if (operation === null) return
+  try {
+    await txtSaveCoordinator.run(async () => {
+      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
+      txtAutosaveTimer = null
+      await workspace.value?.flushPendingEdit()
+      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
+      txtAutosaveTimer = null
+      await saveCurrentMode(saveAs)
+    })
+  } finally {
+    editor.finishDocumentOperation(operation)
+  }
+}
+
+async function finishCurrentSave(version: ReturnType<typeof editor.captureSaveVersion>) {
+  if (!editor.markSavedIfUnchanged(version)) return
+  // A save can clean only one mode. Rewrite immediately so a now-clean slot is
+  // removed from Recovery V2 instead of waiting for the next interval.
+  await autoSave.syncNow().catch(() => {})
+}
+
+function isCurrentSaveDocument(version: ReturnType<typeof editor.captureSaveVersion>): boolean {
+  return editor.currentMode === version.mode && editor.documentRevision === version.documentRevision
+}
+
+async function saveCurrentMode(saveAs: boolean) {
+  if (editor.talks.length === 0) return
+  const version = editor.captureSaveVersion()
+  const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
   const meta = buildSaveMeta()
   // 保存 = 直接写当前文档本体（已打开/已保存过的文件），不再弹对话框重建文件。
   // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。
@@ -529,15 +630,14 @@ async function handleSave(saveAs = false) {
       if (target.renameFrom) {
         try {
           await api.renameFile(target.renameFrom, target.path)
-          editor.currentFilePath = target.path
+          if (isCurrentSaveDocument(version)) editor.currentFilePath = target.path
         } catch (e: any) {
           console.warn('[Save] 就地改名失败，保持原名', { target, error: e?.message || String(e) })
           target = { path: target.renameFrom }
         }
       }
-      await api.translationSave(target.path, editor.dstTalks, app.saveN, meta)
-      editor.markSaved()
-      await api.recoveryClear().catch(() => {})
+      await api.translationSave(target.path, dstTalks, app.saveN, meta)
+      await finishCurrentSave(version)
       console.log('[Save] saved in place', { path: target.path })
       toast.show('已保存', 'success')
       return
@@ -551,10 +651,9 @@ async function handleSave(saveAs = false) {
     if (canonical) {
       try {
         await api.ensureDir(canonical)
-        await api.translationSave(canonical, editor.dstTalks, app.saveN, meta)
-        editor.currentFilePath = canonical
-        editor.markSaved()
-        await api.recoveryClear().catch(() => {})
+        await api.translationSave(canonical, dstTalks, app.saveN, meta)
+        if (isCurrentSaveDocument(version)) editor.currentFilePath = canonical
+        await finishCurrentSave(version)
         console.log('[Save] auto-bound canonical path', { path: canonical })
         toast.show('已保存', 'success')
         return
@@ -571,17 +670,16 @@ async function handleSave(saveAs = false) {
   const defaultName = canonicalSavePath() || canonicalFileName()
   console.log('[Save] starting save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri: isTauri })
   try {
-    const path = await fileDialog.saveTranslation(defaultName, editor.dstTalks, app.saveN, meta)
+    const path = await fileDialog.saveTranslation(defaultName, dstTalks, app.saveN, meta)
     if (!path) { console.log('[Save] cancelled by user'); return }
-    editor.currentFilePath = path
+    if (isCurrentSaveDocument(version)) editor.currentFilePath = path
     // 用户在对话框里改过标题段的话，同步回 titleOverride——否则下一次保存按
     // 旧标题重算规范名，把文件名又改回去。
-    editor.syncTitleFromPath(path)
-    editor.markSaved()
+    if (isCurrentSaveDocument(version)) editor.syncTitleFromPath(path)
+    await finishCurrentSave(version)
     // Awaited: 保存并退出 destroys the window right after handleSave returns, so a
     // fire-and-forget clear could be cut off — leaving a STALE autosave that the
     // next launch offers as "recovery" over the newer just-saved file.
-    await api.recoveryClear().catch(() => {})
     console.log('[Save] saved successfully', { path })
     toast.show('已保存', 'success')
   } catch (e: any) {
@@ -603,6 +701,7 @@ async function handleClear() {
     editor.clearAll()
     story.clearLoadedStory()
     undo.clear()
+    await autoSave.syncNow().catch(() => {})
     toast.show('已清空', 'info')
   } finally {
     editor.finishDocumentOperation(operation)
@@ -616,42 +715,48 @@ async function handleClear() {
 async function handleImportBaseline() {
   if (editor.documentBusy) return
   if (editor.talks.length === 0) { toast.show('请先载入翻译稿', 'warn'); return }
+  const operation = editor.beginDocumentOperation(false)
+  if (operation === null) return
   try {
+    await workspace.value?.flushPendingEdit()
     const result = await fileDialog.openTranslation()
     if (!result) return
     undo.pushSnapshot(editor.talks, editor.dstTalks)
-    // Align the imported 校对稿 to the source story BEFORE comparing. The current
-    // 翻译稿 rows were aligned to the source on open (idx = source line). A freshly
-    // parsed .txt instead carries positional idx, so when the two files differ in
-    // line count (e.g. the 校对稿 has an extra intro line) every row pairs against
-    // the wrong counterpart — the whole compare view shifts by one. Re-aligning the
-    // imported file to the same source restores a stable idx. Fall back to raw
-    // talks only if no source is loaded.
-    let checkTalks = result.talks
-    if (story.sourceTalks.length > 0) {
-      checkTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
-    } else {
-      toast.show('未加载原文，对比可能错位，请先选择剧情', 'warn')
-    }
-    // Baseline (yellow) = 翻译稿 (current editor.talks); editable (green) = 校对稿.
-    const compared = await api.compareText({
-      referTalks: editor.talks,
-      checkTalks,
-      editorMode: 2,
-    })
-    editor.setTalks(compared.talks, compared.dstTalks, editor.referTalks)
-    app.showCompare = true
-    // Adopt the imported 校对稿's title as the displayed 译文 title: in 合意 the
-    // agreed text derives from the proofread draft, so its title is the relevant
-    // version. Parse it from the filename (strip 【…】 prefix + .txt + label).
-    const impName = (result.filePath || result.fileName || '').split(/[/\\]/).pop() || ''
-    const impBase = impName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
-    const impTitle = impBase.slice((impBase.split(/\s+/)[0] || '').length).trim()
-    if (impTitle) editor.titleOverride = impTitle
-    editor.markUnsaved()
-    toast.show('已导入校对稿', 'success')
+    const committed = await commitDocumentMutation(
+      () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+      async () => {
+        // Align the imported 校对稿 to the source story before comparing. A
+        // freshly parsed txt has positional indices, while the current rows are
+        // aligned to source indices.
+        let checkTalks = result.talks
+        if (story.sourceTalks.length > 0) {
+          checkTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
+        } else {
+          toast.show('未加载原文，对比可能错位，请先选择剧情', 'warn')
+        }
+        const compared = await api.compareText({
+          referTalks: editor.talks,
+          checkTalks,
+          editorMode: 2,
+        })
+        return { compared, imported: result }
+      },
+      ({ compared, imported }) => {
+        editor.advanceDocumentOperation(operation)
+        editor.setTalks(compared.talks, compared.dstTalks, editor.referTalks)
+        app.showCompare = true
+        const impName = (imported.filePath || imported.fileName || '').split(/[/\\]/).pop() || ''
+        const impBase = impName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
+        const impTitle = impBase.slice((impBase.split(/\s+/)[0] || '').length).trim()
+        if (impTitle) editor.titleOverride = impTitle
+        editor.markUnsaved()
+      },
+    )
+    if (committed) toast.show('已导入校对稿', 'success')
   } catch (e: any) {
     toast.show('导入校对稿失败: ' + (e.message || '未知错误'), 'error')
+  } finally {
+    editor.finishDocumentOperation(operation)
   }
 }
 
@@ -671,35 +776,53 @@ function searchPrev() {
 }
 
 async function handleReplaceAll() {
+  if (editor.documentBusy) return
   const q = app.searchQuery.trim()
   if (!q) return
-  // Drop any pending debounced edit before re-routing rows through changeText:
-  // its captured row index could land on a row this loop has already rewritten.
-  workspace.value?.cancelPendingEdit()
+  // Commit pending edits before taking the full-document snapshot. Cancelling can
+  // drop a backend-materialized dstTalks row from the replacement input.
+  await workspace.value?.flushPendingEdit()
   const repl = app.searchReplace
   let changed = 0
+  const hasMatch = editor.talks.some(t => t.text && t.text.includes(q) && t.save)
+  if (!hasMatch) { toast.show('没有可替换的译文', 'warn'); return }
   undo.pushSnapshot(editor.talks, editor.dstTalks)
-  // Replace only in dest text (source & speaker are read-only). Route each
-  // affected row through the backend so diff/baseline stay consistent.
-  for (let i = 0; i < editor.talks.length; i++) {
-    const t = editor.talks[i]
-    if (t.text && t.text.includes(q) && t.save) {
-      const newText = t.text.split(q).join(repl)
-      try {
-        const result = await api.changeText({
-          row: i, text: newText, editorMode: app.editorMode,
-          talks: editor.talks, dstTalks: editor.dstTalks, referTalks: editor.referTalks,
-        })
-        editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
-        changed++
-      } catch { /* skip row */ }
-    }
-  }
-  if (changed > 0) { editor.markUnsaved(); toast.show(`已替换 ${changed} 行`, 'success') }
+  // Invalidate an already-dispatched line edit before its full-table response
+  // can land over this replacement. The replacement requests begin below.
+  editor.markUnsaved()
+  const committed = await commitDocumentMutation(
+    () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
+    async () => {
+      let talks = JSON.parse(JSON.stringify(editor.talks)) as typeof editor.talks
+      let dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
+      const referTalks = JSON.parse(JSON.stringify(editor.referTalks)) as typeof editor.referTalks
+      // Route each affected row through the backend, but keep intermediate full-
+      // table responses local. Only the final snapshot may commit to the store.
+      for (let i = 0; i < talks.length; i++) {
+        const talk = talks[i]
+        if (talk.text && talk.text.includes(q) && talk.save) {
+          const newText = talk.text.split(q).join(repl)
+          try {
+            const result = await api.changeText({
+              row: i, text: newText, editorMode: app.editorMode,
+              talks, dstTalks, referTalks,
+            })
+            talks = result.talks
+            dstTalks = result.dstTalks
+            changed++
+          } catch { /* skip row */ }
+        }
+      }
+      return { talks, dstTalks }
+    },
+    result => editor.setTalks(result.talks, result.dstTalks, editor.referTalks),
+  )
+  if (committed && changed > 0) { editor.markUnsaved(); toast.show(`已替换 ${changed} 行`, 'success') }
   else toast.show('没有可替换的译文', 'warn')
 }
 
 function handleSpeakerBatchSave(speakers: { japanese: string; chinese: string }[]) {
+  if (editor.documentBusy) return
   undo.pushSnapshot(editor.talks, editor.dstTalks)
   const map = new Map<string, string>()
   for (const s of speakers) {
@@ -759,7 +882,6 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
             <div class="w-px h-5 bg-[var(--color-border)] mx-1" />
             <button class="tbar-toggle" :aria-pressed="app.showFlashback" @click="app.showFlashback = !app.showFlashback"><Eye :size="15" />闪回</button>
             <button class="tbar-toggle" :aria-pressed="app.showGlossary" @click="app.showGlossary = !app.showGlossary"><Languages :size="15" />术语</button>
-            <button class="tbar-toggle" :aria-pressed="app.syncScroll" @click="app.syncScroll = !app.syncScroll"><Link2 :size="15" />同步</button>
             <button class="tbar-toggle" :aria-pressed="app.searchOpen" @click="app.searchOpen = !app.searchOpen"><Search :size="15" />搜索</button>
             <div ref="toolbarSearchSep" class="w-px h-5 bg-[var(--color-border)] mx-1" />
             <button @click="showSpeakerCheck = true" class="btn btn-sm btn-ghost gap-1.5"><Users :size="15" />说话人</button>

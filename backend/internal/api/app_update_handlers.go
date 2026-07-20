@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"sekaitext/backend/internal/fsutil"
 	"sekaitext/backend/internal/model"
 	"sekaitext/backend/internal/service"
 )
@@ -43,16 +45,9 @@ func (h *Handler) appUpdateURL() string {
 	return s.AppUpdateURL // empty → service falls back to default
 }
 
-// downloadsDir is where installers are saved — the user's Downloads folder when
-// available, else the app data dir.
+// downloadsDir is private app storage, not the user-writable Downloads folder.
 func (h *Handler) downloadsDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		d := filepath.Join(home, "Downloads")
-		if info, err := os.Stat(d); err == nil && info.IsDir() {
-			return d
-		}
-	}
-	return h.cfg.DataDir
+	return filepath.Join(h.cfg.DataDir, "updates")
 }
 
 // AppUpdateCheck reports whether a newer app version is available for this
@@ -76,6 +71,25 @@ func (h *Handler) AppUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		Current string `json:"current"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	h.appUpdateMu.Lock()
+	defer h.appUpdateMu.Unlock()
+	var activeTaskID string
+	h.downloadTasks.Range(func(_, value interface{}) bool {
+		task, ok := value.(*model.DownloadTaskProgress)
+		if !ok {
+			return true
+		}
+		task.Mu.Lock()
+		if task.Purpose == "app-update" && task.Status == "downloading" {
+			activeTaskID = task.TaskID
+		}
+		task.Mu.Unlock()
+		return activeTaskID == ""
+	})
+	if activeTaskID != "" {
+		writeJSON(w, http.StatusOK, map[string]string{"taskId": activeTaskID})
+		return
+	}
 	info, err := h.appUpdate.CheckUpdate(h.appUpdateURL(), req.Current)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -87,12 +101,19 @@ func (h *Handler) AppUpdateDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID := strconv.FormatInt(time.Now().UnixNano(), 36)
-	task := &model.DownloadTaskProgress{TaskID: taskID, Status: "downloading"}
+	task := &model.DownloadTaskProgress{
+		TaskID:       taskID,
+		Status:       "downloading",
+		Total:        info.Size,
+		Purpose:      "app-update",
+		Digest:       info.Digest,
+		ExpectedSize: info.Size,
+	}
 	h.downloadTasks.Store(taskID, task)
 
 	dest := h.downloadsDir()
-	go func(url string) {
-		path, err := h.appUpdate.DownloadUpdate(url, dest, func(read, total int64) {
+	go func(url, digest string, size int64) {
+		path, err := h.appUpdate.DownloadUpdate(url, digest, size, dest, func(read, total int64) {
 			task.Mu.Lock()
 			task.Read = read
 			task.Total = total
@@ -105,16 +126,18 @@ func (h *Handler) AppUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		} else {
 			task.Status = "done"
 			task.FilePath = path
+			task.IntegrityVerified = true
 		}
+		task.FinishedAt = time.Now().UnixNano()
 		task.Mu.Unlock()
-	}(info.DownloadURL)
+	}(info.DownloadURL, info.Digest, info.Size)
 
 	writeJSON(w, http.StatusOK, map[string]string{"taskId": taskID})
 }
 
 // AppUpdateOpen opens a downloaded installer (mounts the .dmg / launches the
-// installer). Body: {"path": string}. The path must be inside the Downloads/data
-// dir we wrote to, so this can't be used to open arbitrary files.
+// installer). Body: {"path": string}. The path must exactly match a completed,
+// integrity-verified app-update task and is reverified immediately before launch.
 func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
@@ -128,11 +151,38 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
-	// Resolve symlinks BEFORE the containment check so a symlink planted inside
-	// Downloads can't point `open` at a target outside it.
-	if real, e := filepath.EvalSymlinks(p); e == nil {
-		p = real
+	var artifactTask *model.DownloadTaskProgress
+	h.downloadTasks.Range(func(_, value interface{}) bool {
+		task, ok := value.(*model.DownloadTaskProgress)
+		if !ok {
+			return true
+		}
+		task.Mu.Lock()
+		matches := task.Purpose == "app-update" && task.Status == "done" &&
+			task.IntegrityVerified && sameUpdatePath(task.FilePath, p)
+		task.Mu.Unlock()
+		if matches {
+			artifactTask = task
+			return false
+		}
+		return true
+	})
+	if artifactTask == nil {
+		writeError(w, http.StatusForbidden, "只允许打开当前已校验完成的更新安装包")
+		return
 	}
+	artifactTask.Mu.Lock()
+	digest := artifactTask.Digest
+	size := artifactTask.ExpectedSize
+	artifactTask.Mu.Unlock()
+	// Reject unresolved links instead of falling back to the client-controlled
+	// spelling when path resolution fails.
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		writeError(w, http.StatusConflict, "无法解析安装包真实路径，已拒绝打开")
+		return
+	}
+	p = real
 	// Only ever launch an installer file type, never an arbitrary executable that
 	// merely happens to sit under Downloads.
 	switch strings.ToLower(filepath.Ext(p)) {
@@ -141,42 +191,99 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "只允许打开安装包文件（.dmg/.pkg/.exe/.msi）")
 		return
 	}
-	allowed := false
-	for _, base := range []string{h.downloadsDir(), h.cfg.DataDir} {
-		b, e := filepath.Abs(base)
-		if e != nil {
-			continue
-		}
-		if real, e := filepath.EvalSymlinks(b); e == nil {
-			b = real
-		}
-		if p == b || strings.HasPrefix(p, b+string(filepath.Separator)) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		writeError(w, http.StatusForbidden, "path not allowed")
+	if err := service.VerifyUpdateFile(p, digest, size); err != nil {
+		artifactTask.Mu.Lock()
+		artifactTask.IntegrityVerified = false
+		artifactTask.Status = "error"
+		artifactTask.Error = "安装包完整性复检失败: " + err.Error()
+		artifactTask.Mu.Unlock()
+		writeError(w, http.StatusConflict, "安装包完整性复检失败，已拒绝打开")
 		return
 	}
-	if info, err := os.Stat(p); err != nil || info.IsDir() {
-		writeError(w, http.StatusNotFound, "文件不存在")
+	launchPath, err := h.stageUpdateForLaunch(r.Context(), p, digest, size)
+	if err != nil {
+		writeError(w, http.StatusConflict, "安装包安全暂存失败，已拒绝打开: "+err.Error())
 		return
 	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", p)
+		cmd = exec.Command("open", launchPath)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", p)
-		service.HideConsoleWindow(cmd)
+		cmd = exec.Command("cmd", "/c", "start", "", launchPath)
 	default:
-		cmd = exec.Command("xdg-open", p)
+		cmd = exec.Command("xdg-open", launchPath)
 	}
+	service.DetachInstallerProcess(cmd)
 	if err := cmd.Start(); err != nil {
+		os.RemoveAll(filepath.Dir(launchPath))
 		writeError(w, http.StatusInternalServerError, "打开失败: "+err.Error())
 		return
 	}
-	go func() { _ = cmd.Wait() }() // reap the launcher so it doesn't linger as a zombie
-	writeJSON(w, http.StatusOK, map[string]string{"opened": p})
+	go func() {
+		_ = cmd.Wait()
+		timer := time.NewTimer(24 * time.Hour)
+		defer timer.Stop()
+		<-timer.C
+		_ = os.RemoveAll(filepath.Dir(launchPath))
+	}()
+	writeJSON(w, http.StatusOK, map[string]string{"opened": launchPath})
+}
+
+func (h *Handler) stageUpdateForLaunch(ctx context.Context, source, digest string, size int64) (string, error) {
+	root := filepath.Join(h.cfg.DataDir, "update-launch")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(root, "launch-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	dest := filepath.Join(dir, filepath.Base(source))
+	if err := fsutil.CopyFileAtomic(ctx, source, dest, 0o600); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	if err := service.VerifyUpdateFile(dest, digest, size); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return dest, nil
+}
+
+func (h *Handler) cleanupUpdateLaunchDirs() {
+	root := filepath.Join(h.cfg.DataDir, "update-launch")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		}
+	}
+}
+
+func sameUpdatePath(a, b string) bool {
+	a, errA := filepath.Abs(strings.TrimSpace(a))
+	b, errB := filepath.Abs(strings.TrimSpace(b))
+	if errA != nil || errB != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }

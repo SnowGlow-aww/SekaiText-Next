@@ -11,14 +11,16 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
+
+	"sekaitext/backend/internal/fsutil"
 )
 
 const (
-	harukiNeoMasterURL = "https://sekai-master-direct.haruki.seiunx.com/haruki-sekai-master/master/%s.json"
+	harukiNeoMasterURL  = "https://sekai-master-direct.haruki.seiunx.com/haruki-sekai-master/master/%s.json"
+	maxMasterTableBytes = 128 << 20
 	// 元数据加速镜像：accr.cc 侧把整域名 sekai-master-direct.haruki.accr.cc
 	// 反代到上面的源站（路径不变，仅换 host）走 CDN。数据不定时更新，绝不能吃
 	// 到过期副本——fetchCDN 先 HEAD 源站拿当前 ETag（几百字节的探针），镜像响应
@@ -52,17 +54,35 @@ var masterTables = []string{
 	"actionSets", "character2ds", "specialStories", "systemLive2ds",
 }
 
-// prefetched 是本轮刷新的表级内存缓存：UpdateAllFromCDN 起始并发预取填入，
-// 各 update 步骤经 fetchCDN 消费（LoadAndDelete 用完即释放 ~42MB）。
-var prefetched sync.Map
+// tableBatch owns one refresh's prefetched tables. Keeping this state local to
+// UpdateAllFromCDN prevents an unrelated lazy lookup or overlapping refresh from
+// consuming another generation's bytes.
+type tableBatch struct {
+	data map[string][]byte
+}
 
-// probeMirrorTrust 记录本轮刷新起始的锚点交叉校验结论（镜像探针是否可信）。
-// prefetchTables 已按此值决定探针路径；fetchCDN 遇预取缓存缺失回退到 fetchTable
-// 时必须复用同一结论——否则会无条件借道镜像探针，绕过 probeMirrorTrusted 的判定，
-// 边缘缓存键失配时可能采信过期镜像。UpdateAllFromCDN 起始（预取前）赋值，其后仅在
-// 同一 goroutine 的顺序步骤中被 fetchCDN 读取；VoiceURL 侧亦会并发触发 fetchCDN，
-// 故以 atomic 同步读写。
-var probeMirrorTrust atomic.Bool
+// catalogData is one complete, immutable metadata generation. Refreshes build
+// this value off to the side and publish every field under one ListManager lock.
+type catalogData struct {
+	Events    []EventEntry
+	Festivals []FestivalEntry
+	Cards     []CardEntry
+	MainStory []MainStoryEntry
+	AreaTalks []AreaTalkEntry
+	Greets    []GreetEntry
+	Specials  []SpecialEntry
+}
+
+type catalogManifest struct {
+	Version    int    `json:"version"`
+	Generation uint64 `json:"generation"`
+	Dir        string `json:"dir"`
+}
+
+const (
+	catalogManifestFile  = "catalog-current.json"
+	catalogGenerationDir = ".catalog-generations"
+)
 
 func headETag(url string, timeout time.Duration) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -108,20 +128,34 @@ func probeMirrorTrusted() bool {
 
 // prefetchTables 并发拉齐全部表：此前每表「探针+下载」串行共 18 次网络往返，
 // 到源站的慢路由会把整轮拖到分钟级；并发后整轮 ≈ 最慢一张表的耗时。
-func prefetchTables(probeMirror bool) {
-	var wg sync.WaitGroup
+func prefetchTables(probeMirror bool) (*tableBatch, error) {
+	type result struct {
+		table string
+		data  []byte
+		err   error
+	}
+	results := make(chan result, len(masterTables))
 	for _, t := range masterTables {
-		wg.Add(1)
 		go func(table string) {
-			defer wg.Done()
-			if data, err := fetchTable(table, probeMirror); err == nil {
-				prefetched.Store(table, data)
-			} else {
-				log.Printf("[update] prefetch %s failed: %v", table, err)
-			}
+			data, err := fetchTable(table, probeMirror)
+			results <- result{table: table, data: data, err: err}
 		}(t)
 	}
-	wg.Wait()
+	batch := &tableBatch{data: make(map[string][]byte, len(masterTables))}
+	var failures []string
+	for range masterTables {
+		result := <-results
+		if result.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", result.table, result.err))
+			continue
+		}
+		batch.data[result.table] = result.data
+	}
+	if len(failures) != 0 {
+		sort.Strings(failures)
+		return nil, fmt.Errorf("prefetch failed: %s", strings.Join(failures, "; "))
+	}
+	return batch, nil
 }
 
 func fetchURL(url string) ([]byte, string, error) {
@@ -134,15 +168,17 @@ func fetchURL(url string) ([]byte, string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
-	return data, resp.Header.Get("ETag"), err
-}
-
-func fetchCDN(table string) ([]byte, error) {
-	if v, ok := prefetched.LoadAndDelete(table); ok {
-		return v.([]byte), nil
+	if resp.ContentLength > maxMasterTableBytes {
+		return nil, "", fmt.Errorf("response exceeds %d byte limit", maxMasterTableBytes)
 	}
-	return fetchTable(table, probeMirrorTrust.Load())
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMasterTableBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 || len(data) > maxMasterTableBytes || !json.Valid(data) {
+		return nil, "", fmt.Errorf("response is empty, oversized, or not JSON")
+	}
+	return data, resp.Header.Get("ETag"), nil
 }
 
 func fetchTable(table string, probeMirror bool) ([]byte, error) {
@@ -195,10 +231,23 @@ func fetchTable(table string, probeMirror bool) ([]byte, error) {
 }
 
 func fetchCDNJSON(table string, target interface{}) error {
-	data, err := fetchCDN(table)
+	data, err := fetchTable(table, probeMirrorTrusted())
 	if err != nil {
 		return err
 	}
+	return decodeCDNJSON(data, target)
+}
+
+func (batch *tableBatch) fetchJSON(table string, target interface{}) error {
+	data, ok := batch.data[table]
+	if !ok {
+		return fmt.Errorf("table %s was not prefetched", table)
+	}
+	delete(batch.data, table)
+	return decodeCDNJSON(data, target)
+}
+
+func decodeCDNJSON(data []byte, target interface{}) error {
 	// Some CDN responses wrap in {"data": [...]}
 	var enveloped struct {
 		Data json.RawMessage `json:"data"`
@@ -207,15 +256,6 @@ func fetchCDNJSON(table string, target interface{}) error {
 		return json.Unmarshal(enveloped.Data, target)
 	}
 	return json.Unmarshal(data, target)
-}
-
-func saveJSON(dir, filename string, v interface{}) error {
-	path := filepath.Join(dir, filename)
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
 }
 
 // --- Raw CDN types ---
@@ -227,7 +267,7 @@ type cdnEvent struct {
 }
 
 type cdnEventStory struct {
-	ID                int                `json:"id"`
+	ID                 int               `json:"id"`
 	EventStoryEpisodes []cdnEventEpisode `json:"eventStoryEpisodes"`
 }
 
@@ -261,12 +301,12 @@ type cdnUnitChapter struct {
 }
 
 type cdnActionSet struct {
-	ID                int    `json:"id"`
-	AreaID            int    `json:"areaId"`
-	CharacterIDs      []int  `json:"characterIds"`
-	ScenarioID        string `json:"scenarioId"`
-	ActionSetType     string `json:"actionSetType"`
-	ReleaseConditionID int   `json:"releaseConditionId"`
+	ID                 int    `json:"id"`
+	AreaID             int    `json:"areaId"`
+	CharacterIDs       []int  `json:"characterIds"`
+	ScenarioID         string `json:"scenarioId"`
+	ActionSetType      string `json:"actionSetType"`
+	ReleaseConditionID int    `json:"releaseConditionId"`
 }
 
 type cdnCharacter2D struct {
@@ -285,26 +325,37 @@ type cdnSystemLive2D struct {
 }
 
 type cdnSpecialStory struct {
-	ID              int                `json:"id"`
-	Title           string             `json:"title"`
-	AssetbundleName string             `json:"assetbundleName"`
+	ID              int               `json:"id"`
+	Title           string            `json:"title"`
+	AssetbundleName string            `json:"assetbundleName"`
 	Episodes        []cdnEventEpisode `json:"episodes"`
 }
 
-// --- Update functions ---
+// --- Catalog builders ---
 
-func (lm *ListManager) updateEvents(dir string) error {
-	var events []cdnEvent
-	if err := fetchCDNJSON("events", &events); err != nil {
-		return err
+func fetchBatchSlice[T any](batch *tableBatch, table string) ([]T, error) {
+	var values []T
+	if err := batch.fetchJSON(table, &values); err != nil {
+		return nil, err
 	}
-	var stories []cdnEventStory
-	if err := fetchCDNJSON("eventStories", &stories); err != nil {
-		return err
+	if len(values) == 0 {
+		return nil, fmt.Errorf("table %s is empty", table)
 	}
-	var eventCards []cdnEventCard
-	if err := fetchCDNJSON("eventCards", &eventCards); err != nil {
-		return err
+	return values, nil
+}
+
+func buildEvents(batch *tableBatch) ([]EventEntry, error) {
+	events, err := fetchBatchSlice[cdnEvent](batch, "events")
+	if err != nil {
+		return nil, err
+	}
+	stories, err := fetchBatchSlice[cdnEventStory](batch, "eventStories")
+	if err != nil {
+		return nil, err
+	}
+	eventCards, err := fetchBatchSlice[cdnEventCard](batch, "eventCards")
+	if err != nil {
+		return nil, err
 	}
 
 	// Build all_events map
@@ -318,22 +369,26 @@ func (lm *ListManager) updateEvents(dir string) error {
 	}
 	allEvents := make(map[int]*eventBuilder)
 
-	cardIdx := 0
-	for _, e := range events {
-		ec := []int{}
-		for cardIdx < len(eventCards) && eventCards[cardIdx].EventID < e.ID {
-			cardIdx++
+	eventCardIDs := make(map[int][]int)
+	for _, card := range eventCards {
+		if card.EventID <= 0 || card.CardID <= 0 {
+			return nil, fmt.Errorf("eventCards contains invalid ids: event=%d card=%d", card.EventID, card.CardID)
 		}
-		for cardIdx < len(eventCards) && eventCards[cardIdx].EventID == e.ID {
-			ec = append(ec, eventCards[cardIdx].CardID)
-			cardIdx++
+		eventCardIDs[card.EventID] = append(eventCardIDs[card.EventID], card.CardID)
+	}
+	for _, e := range events {
+		if e.ID <= 0 {
+			return nil, fmt.Errorf("events contains invalid id %d", e.ID)
+		}
+		if _, exists := allEvents[e.ID]; exists {
+			return nil, fmt.Errorf("events contains duplicate id %d", e.ID)
 		}
 		allEvents[e.ID] = &eventBuilder{
 			KdyicrID: e.ID,
 			ID:       -1,
 			Title:    e.Name,
 			Name:     e.AssetbundleName,
-			Cards:    ec,
+			Cards:    append([]int(nil), eventCardIDs[e.ID]...),
 		}
 	}
 
@@ -371,33 +426,37 @@ func (lm *ListManager) updateEvents(dir string) error {
 			Cards:    ev.Cards,
 		})
 	}
-	// Publish the freshly built slice under a short write lock so request
-	// goroutines reading lm.Events (under RLock) can't observe a torn header from
-	// an in-place rebuild. The build and file I/O stay outside the lock.
-	lm.mu.Lock()
-	lm.Events = newEvents
-	lm.mu.Unlock()
-	return saveJSON(dir, "events.json", newEvents)
+	if len(newEvents) == 0 {
+		return nil, fmt.Errorf("events produced no usable stories")
+	}
+	return newEvents, nil
 }
 
-func (lm *ListManager) updateCards(dir string) error {
-	var cards []cdnCard
-	if err := fetchCDNJSON("cards", &cards); err != nil {
-		return err
+func buildCards(batch *tableBatch) ([]CardEntry, error) {
+	cards, err := fetchBatchSlice[cdnCard](batch, "cards")
+	if err != nil {
+		return nil, err
 	}
 
-	var newCards []CardEntry
-	cardCount := 1 // 1-based filling
+	maxID := 0
+	seen := make(map[int]struct{}, len(cards))
 	for _, c := range cards {
-		for cardCount < c.ID {
-			newCards = append(newCards, CardEntry{
-				ID:          cardCount,
-				CharacterID: -1,
-				CardNo:      "000",
-				Birthday:    false,
-			})
-			cardCount++
+		if c.ID <= 0 || c.ID > 1_000_000 {
+			return nil, fmt.Errorf("cards contains invalid id %d", c.ID)
 		}
+		if _, exists := seen[c.ID]; exists {
+			return nil, fmt.Errorf("cards contains duplicate id %d", c.ID)
+		}
+		seen[c.ID] = struct{}{}
+		if c.ID > maxID {
+			maxID = c.ID
+		}
+	}
+	newCards := make([]CardEntry, maxID)
+	for i := range newCards {
+		newCards[i] = CardEntry{ID: i + 1, CharacterID: -1, CardNo: "000"}
+	}
+	for _, c := range cards {
 		assetName := c.AssetbundleName
 		cardNo := "000"
 		if len(assetName) >= 3 {
@@ -413,28 +472,17 @@ func (lm *ListManager) updateCards(dir string) error {
 		if c.ID >= 724 && c.ID <= 759 {
 			entry.LevelUp = true
 		}
-		newCards = append(newCards, entry)
-		cardCount = c.ID + 1
+		newCards[c.ID-1] = entry
 	}
-	// Short-lock swap; readers hold RLock (see updateEvents).
-	lm.mu.Lock()
-	lm.Cards = newCards
-	lm.mu.Unlock()
-	return saveJSON(dir, "cards.json", newCards)
+	return newCards, nil
 }
 
-func (lm *ListManager) updateFestivals(dir string) error {
-	// Build into a local, then publish under a short lock (see updateEvents). Reads
-	// of lm.Events/lm.Cards are safe unlocked here: they were written earlier in
-	// this same update goroutine and no other goroutine writes them concurrently.
+func buildFestivals(events []EventEntry, cards []CardEntry) ([]FestivalEntry, error) {
 	var newFestivals []FestivalEntry
-	publish := func() { lm.mu.Lock(); lm.Festivals = newFestivals; lm.mu.Unlock() }
-	if len(lm.Events) == 0 || len(lm.Cards) == 0 {
-		publish()
-		return saveJSON(dir, "festivals.json", newFestivals)
+	if len(events) == 0 || len(cards) == 0 {
+		return nil, fmt.Errorf("cannot build festivals without events and cards")
 	}
 
-	eventIdx := 0
 	specialCards := []int{}
 	birthdayCards := []int{}
 	fesIdx := 1
@@ -444,37 +492,39 @@ func (lm *ListManager) updateFestivals(dir string) error {
 	// KdyicrID with chapters) is not guaranteed to have any cards, so do not
 	// blindly index [0][0].
 	firstCardID := 0
-	for _, ev := range lm.Events {
+	eventCardSet := make(map[int]struct{})
+	for _, ev := range events {
 		for _, c := range ev.Cards {
+			if c < 1 || c > len(cards) {
+				return nil, fmt.Errorf("event %d references invalid card id %d", ev.ID, c)
+			}
+			eventCardSet[c] = struct{}{}
 			if firstCardID == 0 || c < firstCardID {
 				firstCardID = c
 			}
 		}
 	}
 	if firstCardID == 0 {
-		// No event owns any card; nothing to scan for festivals.
-		publish()
-		return saveJSON(dir, "festivals.json", newFestivals)
+		return newFestivals, nil
 	}
-	lastCardID := lm.Cards[len(lm.Cards)-1].ID
+	lastCardID := cards[len(cards)-1].ID
 
 	i := firstCardID
 	for i <= lastCardID {
-		// Skip cards that belong to events
-		for eventIdx < len(lm.Events) && containsInt(lm.Events[eventIdx].Cards, i) {
-			for i <= lastCardID && containsInt(lm.Events[eventIdx].Cards, i) {
-				i++
-			}
-			eventIdx++
+		// Event ownership is a set membership relation. The upstream eventCards
+		// table is not guaranteed to be grouped by event or card id.
+		if _, isEventCard := eventCardSet[i]; isEventCard {
+			i++
+			continue
 		}
 		if i > lastCardID {
 			break
 		}
 
-		if lm.Cards[i-1].Birthday {
+		if cards[i-1].Birthday {
 			birthdayCards = append(birthdayCards, i)
 			// Flush birthday group for specific characters
-			if containsInt(birthdayCards, i) && containsInt([]int{7, 16, 14, 23}, lm.Cards[i-1].CharacterID) || len(birthdayCards) >= 26 {
+			if containsInt(birthdayCards, i) && containsInt([]int{7, 16, 14, 23}, cards[i-1].CharacterID) || len(birthdayCards) >= 26 {
 				newFestivals = append(newFestivals, FestivalEntry{
 					ID:         birthdayIdx,
 					IsBirthday: true,
@@ -489,10 +539,9 @@ func (lm *ListManager) updateFestivals(dir string) error {
 
 		// Collect non-event, non-birthday cards
 		for i <= lastCardID {
-			if eventIdx < len(lm.Events) {
-				if containsInt(lm.Events[eventIdx].Cards, i) || lm.Cards[i-1].Birthday {
-					break
-				}
+			_, isEventCard := eventCardSet[i]
+			if isEventCard || cards[i-1].Birthday {
+				break
 			}
 			specialCards = append(specialCards, i)
 			i++
@@ -535,8 +584,7 @@ func (lm *ListManager) updateFestivals(dir string) error {
 		newFestivals = append(newFestivals, FestivalEntry{ID: birthdayIdx, IsBirthday: true, Cards: birthdayCards})
 	}
 
-	publish()
-	return saveJSON(dir, "festivals.json", newFestivals)
+	return newFestivals, nil
 }
 
 func containsInt(slice []int, val int) bool {
@@ -548,10 +596,10 @@ func containsInt(slice []int, val int) bool {
 	return false
 }
 
-func (lm *ListManager) updateMainStory(dir string) error {
-	var stories []cdnUnitStory
-	if err := fetchCDNJSON("unitStories", &stories); err != nil {
-		return err
+func buildMainStory(batch *tableBatch) ([]MainStoryEntry, error) {
+	stories, err := fetchBatchSlice[cdnUnitStory](batch, "unitStories")
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Slice(stories, func(i, j int) bool { return stories[i].Seq < stories[j].Seq })
@@ -570,39 +618,34 @@ func (lm *ListManager) updateMainStory(dir string) error {
 			})
 		}
 	}
-	// Short-lock swap; readers hold RLock (see updateEvents).
-	lm.mu.Lock()
-	lm.MainStory = newMainStory
-	lm.mu.Unlock()
-	return saveJSON(dir, "mainStory.json", newMainStory)
+	if len(newMainStory) == 0 {
+		return nil, fmt.Errorf("unitStories produced no chapters")
+	}
+	return newMainStory, nil
 }
 
-func (lm *ListManager) updateAreaTalks(dir string) error {
-	var actions []cdnActionSet
-	if err := fetchCDNJSON("actionSets", &actions); err != nil {
-		return err
+func buildAreaTalks(batch *tableBatch, events []EventEntry) ([]AreaTalkEntry, map[int]cdnCharacter2D, error) {
+	actions, err := fetchBatchSlice[cdnActionSet](batch, "actionSets")
+	if err != nil {
+		return nil, nil, err
 	}
-	var char2ds []cdnCharacter2D
-	if err := fetchCDNJSON("character2ds", &char2ds); err != nil {
-		return err
+	char2ds, err := fetchBatchSlice[cdnCharacter2D](batch, "character2ds")
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// Build character2D lookup (fill gaps)
-	char2DLookup := make([]cdnCharacter2D, 0)
-	count := 0
+	char2DLookup := make(map[int]cdnCharacter2D, len(char2ds))
 	for _, c := range char2ds {
-		for count < c.ID {
-			char2DLookup = append(char2DLookup, cdnCharacter2D{
-				ID: count, CharacterType: "none", CharacterID: 0, Unit: "none", AssetName: "none",
-			})
-			count++
+		if c.ID < 0 {
+			return nil, nil, fmt.Errorf("character2ds contains invalid id %d", c.ID)
 		}
-		char2DLookup = append(char2DLookup, c)
-		count = c.ID + 1
+		if _, exists := char2DLookup[c.ID]; exists {
+			return nil, nil, fmt.Errorf("character2ds contains duplicate id %d", c.ID)
+		}
+		char2DLookup[c.ID] = c
 	}
 
 	var newAreaTalks []AreaTalkEntry
-	lm.AreaTalkByTime = nil // vestigial field, read by nobody; harmless unlocked write
 	actionCount := 0
 	areatalkCount := 0
 	specialAreatalkCount := 0
@@ -610,11 +653,14 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 
 	// Build event lookup: kdyicr_id → output id
 	eventIDMap := make(map[int]int)
-	for _, ev := range lm.Events {
+	for _, ev := range events {
 		eventIDMap[ev.KdyicrID] = ev.ID
 	}
 
 	for _, action := range actions {
+		if action.ID <= actionCount {
+			return nil, nil, fmt.Errorf("actionSets ids are not strictly increasing at %d", action.ID)
+		}
 		actionCount++
 		for actionCount < action.ID {
 			newAreaTalks = append(newAreaTalks, AreaTalkEntry{
@@ -643,8 +689,8 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 
 		charIDs := make([]int, 0)
 		for _, cid := range action.CharacterIDs {
-			if cid >= 0 && cid < len(char2DLookup) {
-				charIDs = append(charIDs, char2DLookup[cid].CharacterID)
+			if c, ok := char2DLookup[cid]; ok {
+				charIDs = append(charIDs, c.CharacterID)
 			}
 		}
 
@@ -662,7 +708,7 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 			AreaID:         action.AreaID,
 			CharacterIDs:   charIDs,
 			ScenarioID:     scenarioID,
-			Type:            actionType,
+			Type:           actionType,
 			AddEventID:     addEventID,
 			ReleaseEventID: releaseEventID,
 		}
@@ -683,17 +729,16 @@ func (lm *ListManager) updateAreaTalks(dir string) error {
 		newAreaTalks = append(newAreaTalks, entry)
 	}
 
-	// Short-lock swap; readers hold RLock (see updateEvents).
-	lm.mu.Lock()
-	lm.AreaTalks = newAreaTalks
-	lm.mu.Unlock()
-	return saveJSON(dir, "areatalks.json", newAreaTalks)
+	if len(newAreaTalks) == 0 {
+		return nil, nil, fmt.Errorf("actionSets produced no area talks")
+	}
+	return newAreaTalks, char2DLookup, nil
 }
 
-func (lm *ListManager) updateSpecials(dir string) error {
-	var stories []cdnSpecialStory
-	if err := fetchCDNJSON("specialStories", &stories); err != nil {
-		return err
+func buildSpecials(batch *tableBatch) ([]SpecialEntry, error) {
+	stories, err := fetchBatchSlice[cdnSpecialStory](batch, "specialStories")
+	if err != nil {
+		return nil, err
 	}
 
 	var newSpecials []SpecialEntry
@@ -708,72 +753,378 @@ func (lm *ListManager) updateSpecials(dir string) error {
 			FileName: ep.ScenarioID,
 		})
 	}
-	// Short-lock swap; readers hold RLock (see updateEvents).
-	lm.mu.Lock()
-	lm.Specials = newSpecials
-	lm.mu.Unlock()
-	return saveJSON(dir, "specials.json", newSpecials)
+	if len(newSpecials) == 0 {
+		return nil, fmt.Errorf("specialStories produced no episodes")
+	}
+	return newSpecials, nil
 }
 
-func (lm *ListManager) updateGreets(dir string) error {
-	var greets []cdnSystemLive2D
-	if err := fetchCDNJSON("systemLive2ds", &greets); err != nil {
-		return err
+func buildGreets(batch *tableBatch, previous []GreetEntry) ([]GreetEntry, error) {
+	if _, err := fetchBatchSlice[cdnSystemLive2D](batch, "systemLive2ds"); err != nil {
+		return nil, err
 	}
-	_ = greets
 	// Greet processing is extremely complex (hundreds of lines in Python).
-	// For now, keep the existing greets.json if it exists.
-	path := filepath.Join(dir, "greets.json")
-	if _, err := os.Stat(path); err == nil {
-		newGreets := loadJSONFile[[]GreetEntry](dir, "greets.json")
-		// Short-lock swap; readers hold RLock (see updateEvents).
-		lm.mu.Lock()
-		lm.Greets = newGreets
-		lm.mu.Unlock()
-		return nil
-	}
-	var newGreets []GreetEntry
-	lm.mu.Lock()
-	lm.Greets = newGreets
-	lm.mu.Unlock()
-	return saveJSON(dir, "greets.json", newGreets)
+	// Until it is ported, carry the current validated generation forward.
+	return append([]GreetEntry(nil), previous...), nil
 }
 
-// UpdateAllFromCDN downloads and processes all metadata from the haruki neo CDN.
-func (lm *ListManager) UpdateAllFromCDN(dir string, pt *ProgressTracker) {
-	steps := []struct {
-		name string
-		fn   func(string) error
-	}{
-		{"events", lm.updateEvents},
-		{"cards", lm.updateCards},
-		{"festivals", lm.updateFestivals},
-		{"mainStory", lm.updateMainStory},
-		{"areaTalks", lm.updateAreaTalks},
-		{"specials", lm.updateSpecials},
-		{"greets", lm.updateGreets},
+func buildCatalog(batch *tableBatch, previousGreets []GreetEntry, advance func(string)) (*catalogData, map[int]cdnCharacter2D, error) {
+	catalog := &catalogData{}
+	var err error
+	advance("events")
+	if catalog.Events, err = buildEvents(batch); err != nil {
+		return nil, nil, fmt.Errorf("build events: %w", err)
 	}
+	advance("cards")
+	if catalog.Cards, err = buildCards(batch); err != nil {
+		return nil, nil, fmt.Errorf("build cards: %w", err)
+	}
+	advance("festivals")
+	if catalog.Festivals, err = buildFestivals(catalog.Events, catalog.Cards); err != nil {
+		return nil, nil, fmt.Errorf("build festivals: %w", err)
+	}
+	advance("mainStory")
+	if catalog.MainStory, err = buildMainStory(batch); err != nil {
+		return nil, nil, fmt.Errorf("build mainStory: %w", err)
+	}
+	advance("areaTalks")
+	var char2ds map[int]cdnCharacter2D
+	if catalog.AreaTalks, char2ds, err = buildAreaTalks(batch, catalog.Events); err != nil {
+		return nil, nil, fmt.Errorf("build areaTalks: %w", err)
+	}
+	advance("specials")
+	if catalog.Specials, err = buildSpecials(batch); err != nil {
+		return nil, nil, fmt.Errorf("build specials: %w", err)
+	}
+	advance("greets")
+	if catalog.Greets, err = buildGreets(batch, previousGreets); err != nil {
+		return nil, nil, fmt.Errorf("build greets: %w", err)
+	}
+	if err := validateCatalog(catalog); err != nil {
+		return nil, nil, err
+	}
+	return catalog, char2ds, nil
+}
 
-	pt.SetTotal(len(steps) + 1)
-
-	// 并发预取全部表（探针可信度先做一次锚点交叉校验），后续步骤直接吃缓存。
-	// 校验结论存入 probeMirrorTrust，供 fetchCDN 缓存缺失回退时复用同一判定。
-	pt.Advance("并发下载元数据...")
-	trust := probeMirrorTrusted()
-	probeMirrorTrust.Store(trust)
-	prefetchTables(trust)
-
-	for _, step := range steps {
-		pt.Advance("正在更新 " + step.name + "...")
-		if err := step.fn(dir); err != nil {
-			log.Printf("[update] %s failed: %v", step.name, err)
-		} else {
-			log.Printf("[update] %s updated", step.name)
+func validateCatalog(catalog *catalogData) error {
+	if catalog == nil || len(catalog.Events) == 0 || len(catalog.Cards) == 0 ||
+		len(catalog.MainStory) == 0 || len(catalog.AreaTalks) == 0 || len(catalog.Specials) == 0 {
+		return fmt.Errorf("catalog validation failed: required output is empty")
+	}
+	for i, card := range catalog.Cards {
+		if card.ID != i+1 {
+			return fmt.Errorf("catalog validation failed: card slot %d has id %d", i+1, card.ID)
 		}
 	}
+	return nil
+}
 
-	// Reload from files
-	lm.loadAll()
+func marshalCatalog(catalog *catalogData) (map[string][]byte, error) {
+	values := map[string]interface{}{
+		"events.json":    catalog.Events,
+		"festivals.json": catalog.Festivals,
+		"cards.json":     catalog.Cards,
+		"mainStory.json": catalog.MainStory,
+		"areatalks.json": catalog.AreaTalks,
+		"greets.json":    catalog.Greets,
+		"specials.json":  catalog.Specials,
+	}
+	files := make(map[string][]byte, len(values))
+	for name, value := range values {
+		data, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", name, err)
+		}
+		files[name] = data
+	}
+	return files, nil
+}
+
+func loadCatalogDataStrict(dir string) (*catalogData, error) {
+	catalog := &catalogData{}
+	files := []struct {
+		name   string
+		target interface{}
+	}{
+		{"events.json", &catalog.Events},
+		{"festivals.json", &catalog.Festivals},
+		{"cards.json", &catalog.Cards},
+		{"mainStory.json", &catalog.MainStory},
+		{"areatalks.json", &catalog.AreaTalks},
+		{"greets.json", &catalog.Greets},
+		{"specials.json", &catalog.Specials},
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(dir, file.name))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", file.name, err)
+		}
+		if err := json.Unmarshal(data, file.target); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", file.name, err)
+		}
+	}
+	if err := validateCatalog(catalog); err != nil {
+		return nil, err
+	}
+	return catalog, nil
+}
+
+func readCatalogManifest(dir string) (catalogManifest, error) {
+	var manifest catalogManifest
+	data, err := os.ReadFile(filepath.Join(dir, catalogManifestFile))
+	if err != nil {
+		return manifest, err
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return manifest, err
+	}
+	if manifest.Version != 1 || manifest.Generation == 0 || manifest.Dir == "" ||
+		manifest.Dir != filepath.Base(manifest.Dir) || !strings.HasPrefix(manifest.Dir, "generation-") {
+		return catalogManifest{}, fmt.Errorf("invalid catalog generation manifest")
+	}
+	if generation, ok := parseCatalogGenerationName(manifest.Dir); !ok || generation != manifest.Generation {
+		return catalogManifest{}, fmt.Errorf("catalog manifest generation does not match directory")
+	}
+	return manifest, nil
+}
+
+func loadCatalogGeneration(dir string) (*catalogData, uint64, error) {
+	manifest, err := readCatalogManifest(dir)
+	if err == nil {
+		catalog, loadErr := loadCatalogDataStrict(filepath.Join(dir, catalogGenerationDir, manifest.Dir))
+		if loadErr == nil {
+			return catalog, manifest.Generation, nil
+		}
+		err = loadErr
+	}
+	catalog, recovered, recoverErr := recoverCatalogGeneration(dir, manifest.Dir)
+	if recoverErr != nil {
+		return nil, 0, err
+	}
+	if writeErr := writeCatalogManifest(dir, recovered); writeErr != nil {
+		log.Printf("[update] recovered catalog generation %d but could not repair manifest: %v", recovered.Generation, writeErr)
+	} else {
+		log.Printf("[update] recovered previous catalog generation %d", recovered.Generation)
+	}
+	return catalog, recovered.Generation, nil
+}
+
+func recoverCatalogGeneration(dir, exclude string) (*catalogData, catalogManifest, error) {
+	root := filepath.Join(dir, catalogGenerationDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, catalogManifest{}, err
+	}
+	type candidate struct {
+		name       string
+		generation uint64
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == exclude {
+			continue
+		}
+		generation, ok := parseCatalogGenerationName(entry.Name())
+		if ok {
+			candidates = append(candidates, candidate{name: entry.Name(), generation: generation})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].generation == candidates[j].generation {
+			return candidates[i].name > candidates[j].name
+		}
+		return candidates[i].generation > candidates[j].generation
+	})
+	for _, candidate := range candidates {
+		catalog, err := loadCatalogDataStrict(filepath.Join(root, candidate.name))
+		if err == nil {
+			manifest := catalogManifest{Version: 1, Generation: candidate.generation, Dir: candidate.name}
+			return catalog, manifest, nil
+		}
+	}
+	return nil, catalogManifest{}, fmt.Errorf("no valid retained catalog generation")
+}
+
+func parseCatalogGenerationName(name string) (uint64, bool) {
+	rest, ok := strings.CutPrefix(name, "generation-")
+	if !ok {
+		return 0, false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) != 2 || len(parts[0]) != 20 {
+		return 0, false
+	}
+	generation, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || generation == 0 {
+		return 0, false
+	}
+	if _, err := strconv.ParseInt(parts[1], 10, 64); err != nil {
+		return 0, false
+	}
+	return generation, true
+}
+
+func writeCatalogManifest(dir string, manifest catalogManifest) error {
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(filepath.Join(dir, catalogManifestFile), data, 0o644)
+}
+
+func commitCatalogManifest(dir, root, finalDir string, manifest catalogManifest, write func(string, catalogManifest) error) error {
+	err := write(dir, manifest)
+	if err == nil {
+		return nil
+	}
+	// WriteFileAtomic can fail while syncing the parent after its rename already
+	// committed. Never delete a generation that the visible manifest references.
+	committed := fsutil.IsWriteCommitted(err)
+	if !committed {
+		if current, readErr := readCatalogManifest(dir); readErr == nil && current == manifest {
+			committed = true
+		}
+	}
+	if !committed {
+		_ = os.RemoveAll(finalDir)
+		_ = fsutil.SyncDir(root)
+	}
+	return fmt.Errorf("switch catalog generation: %w", err)
+}
+
+func persistCatalogGeneration(dir string, generation uint64, catalog *catalogData) (catalogManifest, error) {
+	files, err := marshalCatalog(catalog)
+	if err != nil {
+		return catalogManifest{}, err
+	}
+	root := filepath.Join(dir, catalogGenerationDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return catalogManifest{}, err
+	}
+	if err := fsutil.SyncDir(dir); err != nil {
+		return catalogManifest{}, fmt.Errorf("sync catalog directory: %w", err)
+	}
+	tmp, err := os.MkdirTemp(root, ".building-*")
+	if err != nil {
+		return catalogManifest{}, err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+	for name, data := range files {
+		if err := fsutil.WriteFileAtomic(filepath.Join(tmp, name), data, 0o644); err != nil {
+			return catalogManifest{}, fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	if _, err := loadCatalogDataStrict(tmp); err != nil {
+		return catalogManifest{}, fmt.Errorf("verify staged catalog: %w", err)
+	}
+	if err := fsutil.SyncDir(tmp); err != nil {
+		return catalogManifest{}, fmt.Errorf("sync staged catalog: %w", err)
+	}
+
+	name := fmt.Sprintf("generation-%020d-%d", generation, time.Now().UnixNano())
+	finalDir := filepath.Join(root, name)
+	if err := os.Rename(tmp, finalDir); err != nil {
+		return catalogManifest{}, fmt.Errorf("publish generation directory: %w", err)
+	}
+	cleanup = false
+	if err := fsutil.SyncDir(root); err != nil {
+		return catalogManifest{}, fmt.Errorf("sync generation directory: %w", err)
+	}
+	previous, _ := readCatalogManifest(dir)
+	manifest := catalogManifest{Version: 1, Generation: generation, Dir: name}
+	if err := commitCatalogManifest(dir, root, finalDir, manifest, writeCatalogManifest); err != nil {
+		return catalogManifest{}, err
+	}
+	cleanupCatalogGenerations(root, name, previous.Dir)
+	return manifest, nil
+}
+
+func cleanupCatalogGenerations(root string, keep ...string) {
+	kept := make(map[string]struct{}, len(keep))
+	for _, name := range keep {
+		if name != "" {
+			kept[name] = struct{}{}
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "generation-") {
+			continue
+		}
+		if _, ok := kept[entry.Name()]; !ok {
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		}
+	}
+}
+
+func (lm *ListManager) publishCatalog(catalog *catalogData, generation uint64, char2ds map[int]cdnCharacter2D) {
+	lm.mu.Lock()
+	lm.Events = catalog.Events
+	lm.Festivals = catalog.Festivals
+	lm.Cards = catalog.Cards
+	lm.MainStory = catalog.MainStory
+	lm.AreaTalks = catalog.AreaTalks
+	lm.Greets = catalog.Greets
+	lm.Specials = catalog.Specials
+	lm.AreaTalkByTime = nil
+	lm.generation = generation
+	// Keep derived voice lookup state in the same atomic generation swap. Readers
+	// can never observe new Events/AreaTalks paired with old voice-clue indexes.
+	lm.inferVoiceEventIDLocked()
+	lm.mu.Unlock()
+
+	char2dMu.Lock()
+	char2dMap = char2ds
+	char2dMu.Unlock()
+
+	lm.refreshFlashbackAnalyzers()
+}
+
+func (pt *ProgressTracker) fail(message string) {
+	pt.mu.Lock()
+	pt.done = true
+	pt.message = message
+	pt.mu.Unlock()
+}
+
+// UpdateAllFromCDN downloads, builds, validates, and persists one complete
+// generation. Any failure leaves both the current manifest and memory untouched.
+func (lm *ListManager) UpdateAllFromCDN(dir string, pt *ProgressTracker) error {
+	pt.SetTotal(9)
+	pt.Advance("并发下载元数据...")
+	batch, err := prefetchTables(probeMirrorTrusted())
+	if err != nil {
+		pt.fail("元数据下载失败: " + err.Error())
+		return err
+	}
+
+	lm.mu.RLock()
+	previousGreets := append([]GreetEntry(nil), lm.Greets...)
+	generation := lm.generation + 1
+	lm.mu.RUnlock()
+	catalog, char2ds, err := buildCatalog(batch, previousGreets, func(name string) {
+		pt.Advance("正在构建 " + name + "...")
+	})
+	if err != nil {
+		pt.fail("元数据校验失败: " + err.Error())
+		return err
+	}
+	pt.Advance("正在发布元数据...")
+	manifest, err := persistCatalogGeneration(dir, generation, catalog)
+	if err != nil {
+		pt.fail("元数据发布失败: " + err.Error())
+		return err
+	}
+	lm.publishCatalog(catalog, manifest.Generation, char2ds)
 	pt.Done()
-	log.Println("[update] metadata refresh complete")
+	log.Printf("[update] metadata refresh complete (generation %d)", manifest.Generation)
+	return nil
 }

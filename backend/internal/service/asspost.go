@@ -6,24 +6,30 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"sekaitext/backend/internal/fsutil"
 )
 
 // ASS 导出后处理：把字幕组导出后必跑的 Aegisub 宏（tools.lua）内建进导出流程，
 // 并可在 Effect 字段埋入 st:N 行标识，作为与 Aegisub 双向同步的键。
 //
 // tools.lua 语义（逐条对齐）：
-//   cln: 对话行按引擎样式名改名（Line1→1行 Line2→2行 Line3→3行；1920×1440 视频加
-//        " - 1920*1440" 后缀，2560×1600 无后缀）。与 tools.lua 不同的两点（均为用户反馈）：
-//        ① 行数以原文为准而非数译文 \N——引擎的 LineN 就是剧本原文的换行数，而
-//           译文没手动断行（2行原文配单行中文）或三行长台词被分隔切成两半后，
-//           \N 数会低于原文行数，按 \N 数套样式会把译文压到日文行上；
-//        ② 保留文本里的 \N——分行是译者手动断的句，删掉后多行文本只剩一行长条。
-//        地点横幅同理改名 BannerMask→遮罩、BannerText→地点名称（团队成品口径：
-//        事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
-//   dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
+//
+//	cln: 对话行按引擎样式名改名（Line1→1行 Line2→2行 Line3→3行；1920×1440 视频加
+//	     " - 1920*1440" 后缀，2560×1600 无后缀）。与 tools.lua 不同的两点（均为用户反馈）：
+//	     ① 行数以原文为准而非数译文 \N——引擎的 LineN 就是剧本原文的换行数，而
+//	        译文没手动断行（2行原文配单行中文）或三行长台词被分隔切成两半后，
+//	        \N 数会低于原文行数，按 \N 数套样式会把译文压到日文行上；
+//	     ② 保留文本里的 \N——分行是译者手动断的句，删掉后多行文本只剩一行长条。
+//	     地点横幅同理改名 BannerMask→遮罩、BannerText→地点名称（团队成品口径：
+//	     事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
+//	dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
 type AssPostOptions struct {
-	Clean         bool   `json:"clean"`
-	SyncTags      bool   `json:"syncTags"`
+	Clean    bool `json:"clean"`
+	SyncTags bool `json:"syncTags"`
+	// DocumentID scopes sync tags to one immutable timing document. Empty keeps
+	// the legacy st:N form for explicitly gated compatibility paths only.
+	DocumentID    string `json:"documentId,omitempty"`
 	StyleTemplate string `json:"styleTemplate,omitempty"` // 团队样式模板 .ass 路径，提供 1行/2行/3行 等定义
 	// StyleTemplateContent 是模板的整段文本（插件内置模板走这里，随插件分发、
 	// 开箱即用不落盘）。StyleTemplate 路径非空时优先，便于用户自定义覆盖。
@@ -46,13 +52,18 @@ type StaffInfo struct {
 	Suppressor string `json:"suppressor"` // 轴校&压制
 }
 
+func sanitizeStaffField(value string) string {
+	value = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\N`, " ", `\n`, " ").Replace(value)
+	return strings.TrimSpace(value)
+}
+
 // buildStaffText 组装 staff 行文本；无任何内容时返回 ""。
 func buildStaffText(s StaffInfo) string {
 	var parts []string
-	if g := strings.TrimSpace(s.Group); g != "" {
+	if g := sanitizeStaffField(s.Group); g != "" {
 		parts = append(parts, "字幕制作 by "+g)
 	}
-	ep, ti := strings.TrimSpace(s.Episode), strings.TrimSpace(s.Title)
+	ep, ti := sanitizeStaffField(s.Episode), sanitizeStaffField(s.Title)
 	switch {
 	case ep != "" && ti != "":
 		parts = append(parts, ep+"："+ti)
@@ -62,14 +73,14 @@ func buildStaffText(s StaffInfo) string {
 		parts = append(parts, ti)
 	}
 	add := func(label, v string) {
-		if v = strings.TrimSpace(v); v != "" {
+		if v = sanitizeStaffField(v); v != "" {
 			parts = append(parts, label+"："+v)
 		}
 	}
 	add("录制", s.Recorder)
 	add("翻译", s.Translator)
 	add("校对", s.Proofread)
-	timer, sup := strings.TrimSpace(s.Timer), strings.TrimSpace(s.Suppressor)
+	timer, sup := sanitizeStaffField(s.Timer), sanitizeStaffField(s.Suppressor)
 	if timer != "" && timer == sup {
 		parts = append(parts, "时轴&轴校&压制："+timer)
 	} else {
@@ -114,6 +125,86 @@ type AssPostResult struct {
 
 // 引擎在每条对话前后输出的 Screen 注释标记，如 "-----  012  -----  Start"。
 var dialogMarkerRe = regexp.MustCompile(`^-+\s+(\d+)\s+-+\s+(.+)$`)
+
+var syncDocumentIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+// SyncTag is the document-scoped identity encoded in an ASS Effect field.
+// Legacy tags have an empty DocumentID and are accepted only when the caller
+// has independently established that the ASS is the unique legacy document.
+type SyncTag struct {
+	DocumentID string
+	Line       int
+	Legacy     bool
+}
+
+func FormatSyncTag(documentID string, line int) string {
+	if documentID == "" {
+		return "st:" + strconv.Itoa(line)
+	}
+	return "st:" + documentID + ":" + strconv.Itoa(line)
+}
+
+func ParseSyncTag(value string) (SyncTag, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "st:") {
+		return SyncTag{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(value, "st:"), ":")
+	if len(parts) == 1 {
+		line, err := strconv.Atoi(parts[0])
+		if err != nil || line <= 0 {
+			return SyncTag{}, false
+		}
+		return SyncTag{Line: line, Legacy: true}, true
+	}
+	if len(parts) != 2 || !syncDocumentIDRe.MatchString(parts[0]) {
+		return SyncTag{}, false
+	}
+	line, err := strconv.Atoi(parts[1])
+	if err != nil || line <= 0 {
+		return SyncTag{}, false
+	}
+	return SyncTag{DocumentID: parts[0], Line: line}, true
+}
+
+// ValidateSyncGroups rejects cross-document and mixed legacy/current payloads.
+// allowLegacy must only be true after the caller proves directory-level
+// uniqueness; the tag alone cannot identify its source document.
+func ValidateSyncGroups(groups map[string][]SyncedEvent, expectedDocumentID string, allowLegacy bool) error {
+	if len(groups) == 0 {
+		return fmt.Errorf("ASS 中没有 SekaiText 同步标识")
+	}
+	documentID := ""
+	hasLegacy := false
+	for raw := range groups {
+		tag, ok := ParseSyncTag(raw)
+		if !ok {
+			return fmt.Errorf("ASS 含有无法识别的同步标识 %q", raw)
+		}
+		if tag.Legacy {
+			hasLegacy = true
+			continue
+		}
+		if documentID == "" {
+			documentID = tag.DocumentID
+		} else if documentID != tag.DocumentID {
+			return fmt.Errorf("ASS 混有多个 document ID（%s / %s）", documentID, tag.DocumentID)
+		}
+	}
+	if hasLegacy && documentID != "" {
+		return fmt.Errorf("ASS 混用了旧 st:N 与带 document ID 的同步标识")
+	}
+	if hasLegacy {
+		if !allowLegacy {
+			return fmt.Errorf("旧 st:N 无法确认文档身份")
+		}
+		return nil
+	}
+	if documentID != expectedDocumentID {
+		return fmt.Errorf("document ID 不匹配：ASS=%s，任务=%s", documentID, expectedDocumentID)
+	}
+	return nil
+}
 
 // 地点横幅样式改名映射（团队成品口径，见文件头 cln 注释）。引擎事件的覆写标签
 // （\fad\blur\an7\p1 + 左右 clip 展开 + \fshp 位移 + \an5\fs\move）与团队成品
@@ -194,6 +285,47 @@ func renameStyleLine(line, newName string) string {
 	return "Style: " + newName
 }
 
+var standardAssStyleFormat = []string{
+	"Name", "Fontname", "Fontsize", "PrimaryColour", "SecondaryColour", "OutlineColour", "BackColour",
+	"Bold", "Italic", "Underline", "StrikeOut", "ScaleX", "ScaleY", "Spacing", "Angle", "BorderStyle",
+	"Outline", "Shadow", "Alignment", "MarginL", "MarginR", "MarginV", "Encoding",
+}
+
+func defaultStaffStyleLine(format []string) string {
+	fields := make([]string, len(format))
+	for i, field := range format {
+		switch field {
+		case "Name":
+			fields[i] = "staff"
+		case "Fontname":
+			fields[i] = "Arial"
+		case "Fontsize":
+			fields[i] = "60"
+		case "PrimaryColour":
+			fields[i] = "&H00FFFFFF"
+		case "SecondaryColour":
+			fields[i] = "&H000000FF"
+		case "OutlineColour", "BackColour":
+			fields[i] = "&H00000000"
+		case "ScaleX", "ScaleY":
+			fields[i] = "100"
+		case "BorderStyle":
+			fields[i] = "1"
+		case "Outline":
+			fields[i] = "2"
+		case "Alignment":
+			fields[i] = "2"
+		case "MarginL", "MarginR", "MarginV":
+			fields[i] = "10"
+		case "Encoding":
+			fields[i] = "1"
+		default:
+			fields[i] = "0"
+		}
+	}
+	return "Style: " + strings.Join(fields, ",")
+}
+
 // findFormat 在 [Events]/[V4+ Styles] 小节里找 Format 行并返回字段名列表。
 func findFormat(lines []string) []string {
 	for _, ln := range lines {
@@ -246,6 +378,9 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		res.Content = content
 		return res, nil
 	}
+	if opts.SyncTags && opts.DocumentID != "" && !syncDocumentIDRe.MatchString(opts.DocumentID) {
+		return nil, fmt.Errorf("无效的同步 document ID %q", opts.DocumentID)
+	}
 
 	sections := splitSections(content)
 
@@ -287,8 +422,9 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 
 	usedStyles := map[string]bool{}
 	newStyles := map[string]bool{} // 清理改名产生的新样式名
-	currentTag := ""               // 当前所属对话组的 st:N；不在组内为空
+	currentTag := ""               // 当前所属对话组的同步标识；不在组内为空
 	var outLines []string
+	staffAdded := false
 
 	for _, ln := range sections[eventsIdx].Lines {
 		ev := parseEventLine(ln, len(evFormat))
@@ -305,7 +441,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 				n, _ := strconv.Atoi(m[1])
 				switch strings.TrimSpace(m[2]) {
 				case "Start":
-					currentTag = "st:" + strconv.Itoa(n)
+					currentTag = FormatSyncTag(opts.DocumentID, n)
 				case "End":
 					if opts.SyncTags && currentTag != "" {
 						ev.Fields[effectI] = currentTag
@@ -338,7 +474,8 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 
 		usedStyles[strings.TrimSpace(ev.Fields[styleI])] = true
 		line := ev.String()
-		if tag := strings.TrimSpace(ev.Fields[effectI]); strings.HasPrefix(tag, "st:") {
+		tag := strings.TrimSpace(ev.Fields[effectI])
+		if _, validTag := ParseSyncTag(tag); validTag {
 			if _, ok := res.Groups[tag]; !ok {
 				res.Order = append(res.Order, tag)
 			}
@@ -363,13 +500,28 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 				outLines = append([]string{staffLine}, outLines...)
 			}
 			usedStyles["staff"] = true
+			staffAdded = true
 		}
 	}
 	sections[eventsIdx].Lines = outLines
+	if staffAdded && stylesIdx < 0 {
+		styleSection := assSection{
+			Header: "[V4+ Styles]",
+			Lines: []string{
+				"Format: " + strings.Join(standardAssStyleFormat, ", "),
+				defaultStaffStyleLine(standardAssStyleFormat),
+			},
+		}
+		sections = append(sections, assSection{})
+		copy(sections[eventsIdx+1:], sections[eventsIdx:])
+		sections[eventsIdx] = styleSection
+		stylesIdx = eventsIdx
+		eventsIdx++
+	}
 
 	// 样式表：清理模式下删掉不再使用的引擎样式、补上 1行/2行/3行 的定义
 	// （优先取团队样式模板，没有模板就克隆引擎 LineN 的定义并告警）。
-	if opts.Clean && stylesIdx >= 0 {
+	if (opts.Clean || staffAdded) && stylesIdx >= 0 {
 		var tmplStyles map[string]string
 		var tmplOrder []string
 		if opts.StyleTemplate != "" {
@@ -387,6 +539,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		}
 
 		engineDefs := map[string]string{}
+		firstEngineDef := ""
 		var kept []string
 		for _, ln := range sections[stylesIdx].Lines {
 			name := styleName(ln)
@@ -395,14 +548,19 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 				continue
 			}
 			engineDefs[name] = ln
-			switch name {
-			case "Line1", "Line2", "Line3", "Character", "Screen", "BannerMask", "BannerText":
-				if !usedStyles[name] {
-					continue // 已无事件引用，删定义
-				}
+			if firstEngineDef == "" {
+				firstEngineDef = ln
 			}
-			if tmpl, ok := tmplStyles[name]; ok {
-				ln = tmpl // 同名以团队模板为准
+			if opts.Clean {
+				switch name {
+				case "Line1", "Line2", "Line3", "Character", "Screen", "BannerMask", "BannerText":
+					if !usedStyles[name] {
+						continue // 已无事件引用，删定义
+					}
+				}
+				if tmpl, ok := tmplStyles[name]; ok {
+					ln = tmpl // 同名以团队模板为准
+				}
 			}
 			kept = append(kept, ln)
 		}
@@ -423,6 +581,9 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		// 固定顺序追加（map 遍历顺序不定，别让导出产物的样式顺序抖动）
 		fills = append(fills, styleFill{"遮罩", "BannerMask"}, styleFill{"地点名称", "BannerText"})
 		for _, f := range fills {
+			if !opts.Clean {
+				break
+			}
 			if !newStyles[f.name] || present[f.name] {
 				continue
 			}
@@ -438,11 +599,29 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			present[f.name] = true
 		}
 		// 模板里其余样式一并带上（标题等），方便 Aegisub 内直接可用
-		for _, name := range tmplOrder {
-			if !present[name] {
-				kept = append(kept, tmplStyles[name])
-				present[name] = true
+		if opts.Clean {
+			for _, name := range tmplOrder {
+				if !present[name] {
+					kept = append(kept, tmplStyles[name])
+					present[name] = true
+				}
 			}
+		}
+		if staffAdded && !present["staff"] {
+			switch {
+			case tmplStyles["staff"] != "":
+				kept = append(kept, tmplStyles["staff"])
+			case firstEngineDef != "":
+				kept = append(kept, renameStyleLine(firstEngineDef, "staff"))
+			default:
+				styleFormat := findFormat(sections[stylesIdx].Lines)
+				if len(styleFormat) == 0 {
+					styleFormat = standardAssStyleFormat
+					kept = append([]string{"Format: " + strings.Join(styleFormat, ", ")}, kept...)
+				}
+				kept = append(kept, defaultStaffStyleLine(styleFormat))
+			}
+			present["staff"] = true
 		}
 		sections[stylesIdx].Lines = kept
 	}
@@ -528,6 +707,9 @@ func ExtractSyncGroups(content string) (map[string][]SyncedEvent, []string, erro
 			if !strings.HasPrefix(tag, "st:") {
 				continue
 			}
+			if _, ok := ParseSyncTag(tag); !ok {
+				return nil, nil, fmt.Errorf("ASS 含有无法识别的同步标识 %q", tag)
+			}
 			if _, ok := groups[tag]; !ok {
 				order = append(order, tag)
 			}
@@ -558,4 +740,10 @@ func AssTimeToSeconds(s string) float64 {
 		return -1
 	}
 	return float64(h)*3600 + float64(m)*60 + sec
+}
+
+// WriteFileAtomic keeps the ASS-facing service API local while sharing the
+// cross-platform unique-temp replacement implementation used by other data.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return fsutil.WriteFileAtomic(path, data, perm)
 }

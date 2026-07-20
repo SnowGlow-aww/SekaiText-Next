@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"os"
@@ -33,7 +34,9 @@ func (h *Handler) EngineTimingLines(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	job.DocumentMu.Lock()
 	raw, err := h.engine.TimingLines(job)
+	job.DocumentMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "获取行列表失败: "+err.Error())
 		return
@@ -78,6 +81,8 @@ func (h *Handler) EngineTimingLineSeparator(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "index 必填")
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	params := map[string]interface{}{"index": *body.Index}
 	if body.UseSeparator != nil {
 		params["useSeparator"] = *body.UseSeparator
@@ -112,6 +117,8 @@ func (h *Handler) EngineTimingLineTranslation(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "index 和 text 必填")
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	params := map[string]interface{}{"index": *body.Index, "text": *body.Text}
 	if body.UseSeparator != nil {
 		params["useSeparator"] = *body.UseSeparator
@@ -141,6 +148,8 @@ func (h *Handler) EngineTimingBannerTranslation(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "index 和 text 必填")
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	raw, err := h.engine.TimingLineCall(job, "subtitle.setBannerTranslation", map[string]interface{}{
 		"index": *body.Index,
 		"text":  *body.Text,
@@ -160,6 +169,8 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	var body struct {
 		OutputDir            string `json:"outputDir"`
 		Clean                bool   `json:"clean"`
@@ -180,6 +191,9 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 		StyleTemplate:        strings.TrimSpace(body.StyleTemplate),
 		StyleTemplateContent: body.StyleTemplateContent,
 	}
+	if opts.SyncTags {
+		opts.DocumentID = job.TaskID
+	}
 	if opts.Clean || opts.SyncTags {
 		// 后处理失败时保留原始内容——保险文件宁可裸也不能缺。
 		if post, perr := service.PostProcessAss(content, opts); perr == nil {
@@ -194,17 +208,21 @@ func (h *Handler) EngineTimingAutosave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "创建输出目录失败: "+err.Error())
 		return
 	}
-	// 并行多任务时各任务的保险文件不能互相覆盖：按剧本名区分。
+	// 剧本名相同的并行任务也必须有独立保险文件，document ID 不随重导出变化。
 	job.Mu.Lock()
 	scriptPath := job.ScriptPath
+	revision := job.SyncRevision
 	job.Mu.Unlock()
 	base := strings.TrimSuffix(assFileNameFor(scriptPath), ".ass")
-	assPath := filepath.Join(outDir, "autosave-"+base+".ass")
-	if err := os.WriteFile(assPath, []byte(content), 0644); err != nil {
+	assPath := filepath.Join(outDir, "autosave-"+base+"-"+job.TaskID+".ass")
+	if err := service.WriteFileAtomic(assPath, []byte(content), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "写入失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"assPath": assPath})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"assPath": assPath, "documentId": job.TaskID, "revision": revision,
+		"contentHash": contentSHA256([]byte(content)),
+	})
 }
 
 // EngineTimingLineEstimate 按打字速度估算给定文本分割点对应的换行帧（只算不落地）。
@@ -225,7 +243,9 @@ func (h *Handler) EngineTimingLineEstimate(w http.ResponseWriter, r *http.Reques
 	if body.SeparatorContentIndex != nil {
 		params["separatorContentIndex"] = *body.SeparatorContentIndex
 	}
+	job.DocumentMu.Lock()
 	raw, err := h.engine.TimingLineCall(job, "subtitle.estimateSeparator", params)
+	job.DocumentMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "估算失败: "+err.Error())
 		return
@@ -249,7 +269,9 @@ func (h *Handler) EngineTimingLineVoicePauses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	job.DocumentMu.Lock()
 	rawLines, err := h.engine.TimingLines(job)
+	job.DocumentMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "获取引擎行列表失败: "+err.Error())
 		return
@@ -394,7 +416,9 @@ func (h *Handler) EngineTimingFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maxWidth, _ := strconv.Atoi(r.URL.Query().Get("maxWidth"))
+	job.DocumentMu.Lock()
 	raw, rerr := h.engine.TimingFrame(job, frame, maxWidth)
+	job.DocumentMu.Unlock()
 	if rerr != nil {
 		writeError(w, http.StatusInternalServerError, "取帧失败: "+rerr.Error())
 		return
@@ -415,23 +439,41 @@ func (h *Handler) EngineTimingSyncStatus(w http.ResponseWriter, r *http.Request)
 	assPath := job.ExportAssPath
 	mt := job.ExportMTime
 	size := job.ExportSize
+	baselineHash := job.ExportHash
+	revision := job.SyncRevision
 	dirty := sortedDirty(job.DirtyLines)
 	syncTags := job.ExportOpts.SyncTags
+	syncDocumentID := job.ExportOpts.DocumentID
+	documentID := job.TaskID
 	job.Mu.Unlock()
 
 	if assPath == "" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"exported": false})
 		return
 	}
-	fi, err := os.Stat(assPath)
+	data, err := os.ReadFile(assPath)
+	currentHash := ""
+	changed := false
+	if err == nil {
+		currentHash = contentSHA256(data)
+		if baselineHash != "" {
+			changed = currentHash != baselineHash
+		} else if fi, statErr := os.Stat(assPath); statErr == nil {
+			changed = !fi.ModTime().Equal(mt) || fi.Size() != size
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"exported":      true,
 		"assPath":       assPath,
+		"documentId":    documentID,
+		"revision":      revision,
 		"syncTags":      syncTags,
 		"fileMissing":   err != nil,
-		"changedOnDisk": err == nil && (!fi.ModTime().Equal(mt) || fi.Size() != size),
+		"changedOnDisk": changed,
+		"contentHash":   currentHash,
+		"baselineHash":  baselineHash,
 		"dirtyLines":    dirty,
-		"syncFile":      assPath + ".sekaisync.txt",
+		"syncFile":      service.AegisubSyncPath(assPath, syncDocumentID),
 	})
 }
 
@@ -441,9 +483,17 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	job.Mu.Lock()
 	assPath := job.ExportAssPath
 	opts := job.ExportOpts
+	baselineHash := job.ExportHash
+	baselineMTime := job.ExportMTime
+	baselineSize := job.ExportSize
+	revision := job.SyncRevision
+	expectedRevision := job.ExportRevision
+	expectedSyncHash := job.ExportSyncHash
 	dirty := sortedDirty(job.DirtyLines)
 	job.Mu.Unlock()
 	if assPath == "" {
@@ -454,12 +504,54 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "导出时未启用同步标识，无法推送；请重新导出")
 		return
 	}
+	if opts.DocumentID == "" {
+		writeError(w, http.StatusConflict, "旧 st:N 不具备安全推送前置条件，请重新导出")
+		return
+	}
+	if opts.DocumentID != job.TaskID {
+		writeError(w, http.StatusConflict, "导出记录的 document ID 与任务不匹配")
+		return
+	}
+
+	// Never publish changes for a path now occupied by another document. Hash
+	// mismatch means Aegisub has unpulled edits; pushing first could overwrite
+	// those edits when the macro runs, so require a pull before proceeding.
+	diskData, err := os.ReadFile(assPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取导出文件失败: "+err.Error())
+		return
+	}
+	diskGroups, _, err := service.ExtractSyncGroups(string(diskData))
+	if err != nil {
+		writeError(w, http.StatusConflict, "无法确认导出文件身份: "+err.Error())
+		return
+	}
+	allowLegacy := opts.DocumentID == "" && legacySyncFileIsUnique(assPath)
+	if err := service.ValidateSyncGroups(diskGroups, job.TaskID, allowLegacy); err != nil {
+		writeError(w, http.StatusConflict, "拒绝推送: "+err.Error())
+		return
+	}
+	metadata, err := service.ParseAegisubSyncMetadata(string(diskData))
+	if err != nil || metadata.DocumentID != job.TaskID || metadata.Revision != expectedRevision || metadata.ContentHash != expectedSyncHash {
+		writeError(w, http.StatusConflict, "导出文件同步元数据与任务基线不匹配，请重新导出")
+		return
+	}
+	diskHash := contentSHA256(diskData)
+	if baselineHash != "" {
+		if diskHash != baselineHash {
+			writeError(w, http.StatusConflict, "Aegisub 文件有尚未回读的改动，请先拉取再推送")
+			return
+		}
+	} else if fi, statErr := os.Stat(assPath); statErr != nil || !fi.ModTime().Equal(baselineMTime) || fi.Size() != baselineSize {
+		writeError(w, http.StatusConflict, "Aegisub 文件有尚未回读的改动，请先拉取再推送")
+		return
+	}
 
 	var body struct {
 		Indices []int `json:"indices"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	indices := body.Indices
+	indices := uniqueSortedIndices(body.Indices)
 	if len(indices) == 0 {
 		indices = dirty
 	}
@@ -479,13 +571,20 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var expectedLines []string
 	var lines []string
 	var missing []int
-	sort.Ints(indices)
+	var pushed []int
 	for _, idx := range indices {
-		tag := "st:" + strconv.Itoa(idx+1) // 引擎标记 1-based
-		if evs, ok := post.Groups[tag]; ok {
-			lines = append(lines, evs...)
+		tag := service.FormatSyncTag(opts.DocumentID, idx+1) // 引擎标记 1-based
+		diskEvents, diskOK := diskGroups[tag]
+		newEvents, newOK := post.Groups[tag]
+		if diskOK && newOK {
+			for _, event := range diskEvents {
+				expectedLines = append(expectedLines, event.Raw)
+			}
+			lines = append(lines, newEvents...)
+			pushed = append(pushed, idx)
 		} else {
 			missing = append(missing, idx)
 		}
@@ -494,27 +593,50 @@ func (h *Handler) EngineTimingSyncPush(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "选中的行在导出内容里没有对应事件")
 		return
 	}
-	syncFile := assPath + ".sekaisync.txt"
-	payload := "; SekaiText sync v1 — 由 Aegisub 宏「SekaiText/从轴机拉取」消费\n" +
-		strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(syncFile, []byte(payload), 0644); err != nil {
+	syncFile := service.AegisubSyncPath(assPath, opts.DocumentID)
+	replacementHash := contentSHA256([]byte(post.Content))
+	payload, err := service.FormatAegisubSyncPayload(service.AegisubSyncPayload{
+		DocumentID:             opts.DocumentID,
+		ExpectedRevision:       expectedRevision,
+		ExpectedContentHash:    expectedSyncHash,
+		ReplacementRevision:    revision,
+		ReplacementContentHash: replacementHash,
+		ExpectedLines:          expectedLines,
+		ReplacementLines:       lines,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "生成同步文件失败: "+err.Error())
+		return
+	}
+	// Recheck immediately before publication: engine assembly and post-processing
+	// may have taken long enough for Aegisub to save again.
+	latestDisk, err := os.ReadFile(assPath)
+	if err != nil || contentSHA256(latestDisk) != diskHash {
+		writeError(w, http.StatusConflict, "Aegisub 文件在推送期间发生变化，请重新拉取")
+		return
+	}
+	if err := writeFileNoReplaceAtomic(syncFile, []byte(payload), 0644); errors.Is(err, os.ErrExist) {
+		writeError(w, http.StatusConflict, "已有尚未消费的 Aegisub 同步文件；请先在 Aegisub 中拉取或重新导出")
+		return
+	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "写同步文件失败: "+err.Error())
 		return
 	}
-	// 固定名副本：宏在缺 lfs 模块的 Aegisub 环境（个别 3.2.2 安装）无法扫目录
-	// 找最新 *.sekaisync.txt，回落读取这个固定名文件。每次推送覆盖。
-	_ = os.WriteFile(filepath.Join(filepath.Dir(assPath), "_sekaitext.sekaisync.txt"), []byte(payload), 0644)
 
 	job.Mu.Lock()
-	for _, idx := range indices {
+	for _, idx := range pushed {
 		delete(job.DirtyLines, idx)
 	}
 	job.Mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"syncFile": syncFile,
-		"groups":   len(indices) - len(missing),
-		"events":   len(lines),
-		"missing":  missing,
+		"syncFile":    syncFile,
+		"documentId":  job.TaskID,
+		"revision":    revision,
+		"contentHash": diskHash,
+		"payloadHash": contentSHA256([]byte(payload)),
+		"groups":      len(pushed),
+		"events":      len(lines),
+		"missing":     missing,
 	})
 }
 
@@ -552,11 +674,27 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	job.DocumentMu.Lock()
+	defer job.DocumentMu.Unlock()
 	job.Mu.Lock()
 	assPath := job.ExportAssPath
+	opts := job.ExportOpts
+	baselineHash := job.ExportHash
+	dirtyLines := make(map[int]bool, len(job.DirtyLines))
+	for index := range job.DirtyLines {
+		dirtyLines[index] = true
+	}
+	lineRevisions := make(map[int]uint64, len(job.LineRevisions))
+	for index, revision := range job.LineRevisions {
+		lineRevisions[index] = revision
+	}
 	job.Mu.Unlock()
 	if assPath == "" {
 		writeError(w, http.StatusConflict, "尚未导出，请先导出 ass")
+		return
+	}
+	if opts.DocumentID != "" && opts.DocumentID != job.TaskID {
+		writeError(w, http.StatusConflict, "导出记录的 document ID 与任务不匹配")
 		return
 	}
 	// 读盘前先记 mtime/size，作为"所读内容对应"的同步基线（下方处理完回写）。
@@ -573,6 +711,17 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "解析导出文件失败: "+err.Error())
 		return
 	}
+	allowLegacy := opts.DocumentID == "" && legacySyncFileIsUnique(assPath)
+	if err := service.ValidateSyncGroups(groups, job.TaskID, allowLegacy); err != nil {
+		writeError(w, http.StatusConflict, "拒绝回读: "+err.Error())
+		return
+	}
+	metadata, err := service.ParseAegisubSyncMetadata(string(data))
+	if err != nil || metadata.DocumentID != job.TaskID {
+		writeError(w, http.StatusConflict, "拒绝回读: ASS 缺少当前任务的有效同步 revision/hash，请重新导出")
+		return
+	}
+	readHash := contentSHA256(data)
 
 	rawLines, err := h.engine.TimingLines(job)
 	if err != nil {
@@ -600,13 +749,22 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 
 	applied, textApplied, checked := 0, 0, 0
 	var skipped []string
+	var conflicts []string
+	processed := map[string]bool{}
 	for _, ln := range engineState.Lines {
 		if ln.Type != "dialog" {
 			continue
 		}
-		tag := "st:" + strconv.Itoa(ln.Index+1)
+		tag := service.FormatSyncTag(opts.DocumentID, ln.Index+1)
+		processed[tag] = true
+		if timingPullLineConflicts(dirtyLines, lineRevisions, ln.Index, metadata.Revision) {
+			conflicts = appendUniqueString(conflicts, tag)
+			skipped = appendUniqueString(skipped, tag)
+			continue
+		}
 		evs, ok := groups[tag]
 		if !ok {
+			skipped = appendUniqueString(skipped, tag)
 			continue
 		}
 		// 只看正文 Dialogue（滤掉角色名/调试注释）。
@@ -618,6 +776,7 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 			bodies = append(bodies, ev)
 		}
 		if len(bodies) == 0 {
+			skipped = appendUniqueString(skipped, tag)
 			continue
 		}
 
@@ -643,15 +802,17 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 					"index": ln.Index, "text": newText, "useSeparator": ln.UseSeparator,
 				}
 				if _, err := h.engine.TimingLineCall(job, "subtitle.setTranslation", params); err != nil {
-					skipped = append(skipped, tag)
+					skipped = appendUniqueString(skipped, tag)
 				} else {
 					textApplied++
 					if len(bodies) == 2 && !strings.Contains(newText, "\n") {
 						// 无显式换行时 setTranslation 不动分割点；用户改写两半后
 						// 边界=前半长度（引擎 TrimAll 计数口径）。
 						h0 := normalizeAssText(assOverrideTagRe.ReplaceAllString(bodies[0].Text, ""))
-						_, _ = h.engine.TimingLineCall(job, "subtitle.setSeparator",
-							map[string]interface{}{"index": ln.Index, "separatorContentIndex": trimAllLen(h0)})
+						if _, err := h.engine.TimingLineCall(job, "subtitle.setSeparator",
+							map[string]interface{}{"index": ln.Index, "separatorContentIndex": trimAllLen(h0)}); err != nil {
+							skipped = appendUniqueString(skipped, tag)
+						}
 					}
 					// 来自 Aegisub 的值不标脏：推回去只会是空转
 				}
@@ -663,13 +824,13 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if len(bodies) != 2 {
-			skipped = append(skipped, tag)
+			skipped = appendUniqueString(skipped, tag)
 			continue
 		}
 		checked++
 		sec := service.AssTimeToSeconds(bodies[1].Start)
 		if sec < 0 {
-			skipped = append(skipped, tag)
+			skipped = appendUniqueString(skipped, tag)
 			continue
 		}
 		frame := int(math.Round(sec * engineState.Fps))
@@ -684,26 +845,86 @@ func (h *Handler) EngineTimingSyncPull(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := h.engine.TimingLineCall(job, "subtitle.setSeparator",
 			map[string]interface{}{"index": ln.Index, "separateFrame": frame}); err != nil {
-			skipped = append(skipped, tag)
+			skipped = appendUniqueString(skipped, tag)
 			continue
 		}
 		applied++
 	}
-
-	// 基线用"读盘那一刻"的 mtime/size（fi0），而非处理后再 Stat：处理期间若有
-	// 新保存，磁盘已领先 fi0，下次 status 判定不相等→自动再 pull，不丢那次改动。
-	if statErr == nil {
-		job.Mu.Lock()
-		job.ExportMTime = fi0.ModTime()
-		job.ExportSize = fi0.Size()
-		job.Mu.Unlock()
+	for tag := range groups {
+		if !processed[tag] {
+			skipped = appendUniqueString(skipped, tag)
+		}
 	}
+	if len(skipped) == 0 {
+		// Reassemble after applying all mutations and require every synchronized
+		// group to match the file. This catches fields/animation forms the pull
+		// mapper cannot represent instead of blessing them with a whole-file
+		// baseline advancement.
+		assembled, exportErr := h.engine.Export(job)
+		if exportErr != nil {
+			skipped = append(skipped, "verification")
+		} else if verified, postErr := service.PostProcessAss(assembled, opts); postErr != nil {
+			skipped = append(skipped, "verification")
+		} else {
+			for tag, diskEvents := range groups {
+				engineEvents, exists := verified.Groups[tag]
+				if !exists || !sameSyncedGroup(diskEvents, engineEvents) {
+					skipped = appendUniqueString(skipped, tag)
+				}
+			}
+			for tag := range verified.Groups {
+				if _, exists := groups[tag]; !exists {
+					skipped = appendUniqueString(skipped, tag)
+				}
+			}
+		}
+	}
+
+	// Only a complete import may advance the whole-file baseline. If one group or
+	// one IPC mutation failed, status must continue reporting the disk change so a
+	// retry cannot silently lose the unapplied portion.
+	complete := len(skipped) == 0
+	revision, baselineAdvanced := commitTimingPull(job, fi0, statErr, readHash, baselineHash, metadata,
+		complete, applied > 0 || textApplied > 0)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"applied":     applied,
-		"textApplied": textApplied,
-		"checked":     checked,
-		"skipped":     skipped,
+		"documentId":       job.TaskID,
+		"revision":         revision,
+		"contentHash":      readHash,
+		"applied":          applied,
+		"textApplied":      textApplied,
+		"checked":          checked,
+		"skipped":          skipped,
+		"conflicts":        conflicts,
+		"complete":         complete,
+		"baselineAdvanced": baselineAdvanced,
 	})
+}
+
+func commitTimingPull(job *service.EngineTimingJob, fi os.FileInfo, statErr error, readHash, baselineHash string,
+	metadata service.AegisubSyncMetadata, complete, engineChanged bool) (uint64, bool) {
+	job.Mu.Lock()
+	defer job.Mu.Unlock()
+	if complete {
+		if statErr == nil && fi != nil {
+			job.ExportMTime = fi.ModTime()
+			job.ExportSize = fi.Size()
+		}
+		job.ExportHash = readHash
+		job.ExportRevision = metadata.Revision
+		job.ExportSyncHash = metadata.ContentHash
+		for index, revision := range job.LineRevisions {
+			if revision <= metadata.Revision {
+				delete(job.LineRevisions, index)
+			}
+		}
+		if metadata.Revision > job.SyncRevision {
+			job.SyncRevision = metadata.Revision
+		}
+	}
+	if engineChanged || (complete && readHash != baselineHash) {
+		job.SyncRevision++
+	}
+	return job.SyncRevision, complete
 }
 
 func markDirtyLine(job *service.EngineTimingJob, index int) {
@@ -711,8 +932,17 @@ func markDirtyLine(job *service.EngineTimingJob, index int) {
 	if job.DirtyLines == nil {
 		job.DirtyLines = map[int]bool{}
 	}
+	job.SyncRevision++
 	job.DirtyLines[index] = true
+	if job.LineRevisions == nil {
+		job.LineRevisions = map[int]uint64{}
+	}
+	job.LineRevisions[index] = job.SyncRevision
 	job.Mu.Unlock()
+}
+
+func timingPullLineConflicts(dirty map[int]bool, revisions map[int]uint64, index int, assRevision uint64) bool {
+	return dirty[index] || revisions[index] > assRevision
 }
 
 // sortedDirty 在持有 job.Mu 时调用。
@@ -723,4 +953,76 @@ func sortedDirty(m map[int]bool) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+func uniqueSortedIndices(indices []int) []int {
+	out := append([]int(nil), indices...)
+	sort.Ints(out)
+	n := 0
+	for _, index := range out {
+		if n == 0 || out[n-1] != index {
+			out[n] = index
+			n++
+		}
+	}
+	return out[:n]
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func sameSyncedGroup(disk []service.SyncedEvent, engine []string) bool {
+	if len(disk) != len(engine) {
+		return false
+	}
+	for i := range disk {
+		if disk[i].Raw != engine[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// legacySyncFileIsUnique establishes the only safe compatibility case for
+// identity-less st:N tags: exactly one ASS in the directory contains legacy
+// tags, and it is the task's bound export path.
+func legacySyncFileIsUnique(assPath string) bool {
+	entries, err := os.ReadDir(filepath.Dir(assPath))
+	if err != nil {
+		return false
+	}
+	count := 0
+	solePath := ""
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".ass") {
+			continue
+		}
+		path := filepath.Join(filepath.Dir(assPath), entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		groups, _, err := service.ExtractSyncGroups(string(data))
+		if err != nil {
+			return false
+		}
+		hasLegacy := false
+		for raw := range groups {
+			if tag, ok := service.ParseSyncTag(raw); ok && tag.Legacy {
+				hasLegacy = true
+				break
+			}
+		}
+		if hasLegacy {
+			count++
+			solePath = path
+		}
+	}
+	return count == 1 && sameOutputPath(solePath, assPath)
 }

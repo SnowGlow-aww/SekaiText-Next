@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Palette, SlidersHorizontal, Download, Save, Wifi, Keyboard, FolderOpen, Puzzle, Blocks, Info, RotateCcw, FileUp, Store, Trash2, Globe, Github, Compass } from 'lucide-vue-next'
-import { useSettingsStore } from '../stores/settings'
+import { rebaseSettings, useSettingsStore } from '../stores/settings'
 import { useEditorStore } from '../stores/editor'
 import { useAppUpdateStore } from '../stores/appUpdate'
 import { useToast } from '../composables/useToast'
@@ -18,6 +18,7 @@ import { useTour } from '../onboarding/useTour'
 import { appWelcomeTour } from '../onboarding/tours'
 import { useFileDialog } from '../composables/useFileDialog'
 import AppPageHeader from '../components/ui/AppPageHeader.vue'
+import type { Settings } from '../types/api'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -30,6 +31,33 @@ const appUpdate = useAppUpdateStore()
 
 const appVersion = __APP_VERSION__
 const checking = ref(false)
+const saving = ref(false)
+const draft = ref<Settings>(settings.createDraft())
+const draftBase = ref<Settings>(settings.createDraft())
+
+function resetDraft() {
+  const latest = settings.createDraft()
+  draft.value = latest
+  draftBase.value = settings.createDraft()
+}
+
+function draftIsDirty(): boolean {
+  return JSON.stringify(draft.value) !== JSON.stringify(draftBase.value)
+}
+
+// App.vue loads persisted settings asynchronously. A cold navigation directly
+// to /settings mounts this page with defaults first; refresh the untouched draft
+// when that load completes so Save cannot overwrite persisted configuration.
+watch(() => settings.loading, (loading, wasLoading) => {
+  if (!wasLoading || loading) return
+  if (!draftIsDirty()) {
+    resetDraft()
+    return
+  }
+  const latest = settings.createDraft()
+  draft.value = rebaseSettings(draftBase.value, draft.value, latest)
+  draftBase.value = latest
+})
 
 const settingsSections = [
   { id: 'settings-appearance', label: '外观', icon: Palette },
@@ -132,12 +160,28 @@ async function checkUpdate() {
   }
 }
 
-// Load the installed-plugins listing for the management panel.
-onMounted(() => { plugins.refresh().catch(() => {}) })
+// Load the installed-plugins listing for the management panel and start each
+// settings visit from the last successfully persisted state.
+onMounted(() => {
+  resetDraft()
+  plugins.refresh().catch(() => {})
+})
 
-async function togglePlugin(id: string, enabled: boolean) {
+async function togglePlugin(id: string, local: boolean, event: Event) {
+  const input = event.target as HTMLInputElement
+  const enabled = input.checked
+  if (enabled && local && !(await confirm({
+    title: '启用本地插件？',
+    message: '本地插件未经过官方签名验证，将获得与应用相同的完整权限。',
+    detail: '它可以读取应用数据、访问文件和网络并执行任意代码。仅在你信任插件来源及作者时启用。',
+    tone: 'danger',
+    confirmText: '我了解风险，启用',
+  }))) {
+    input.checked = false
+    return
+  }
   try {
-    await plugins.setEnabled(id, enabled)
+    await plugins.setEnabled(id, enabled, enabled && local)
     toast.show(enabled ? '插件已启用' : '插件已禁用', 'success')
   } catch (e: any) {
     toast.show('操作失败: ' + (e?.message || '未知错误'), 'error')
@@ -166,12 +210,7 @@ const { pickDirectory } = useFileDialog()
 
 async function browseJsonDownloadDir() {
   const dir = await pickDirectory('选择下载页默认目录')
-  if (dir) settings.settings.jsonDownloadDir = dir
-}
-
-async function browseVoiceOutputDir() {
-  const dir = await pickDirectory('选择语音输出目录')
-  if (dir) settings.settings.voiceOutputDir = dir
+  if (dir) draft.value.jsonDownloadDir = dir
 }
 
 // 更换文稿保存位置：后端把旧根目录下已生成的内容整体迁移到新位置（同名文件
@@ -179,8 +218,8 @@ async function browseVoiceOutputDir() {
 // 否则 autosave 会把译文写回旧位置。还没生成过任何文稿时等价于纯切换。
 async function changeSaveBaseDir() {
   const dir = await pickDirectory('选择文稿保存位置')
-  if (!dir || dir === settings.settings.saveBaseDir) return
-  const from = settings.settings.saveBaseDir || '默认位置'
+  if (!dir || dir === draft.value.saveBaseDir) return
+  const from = draft.value.saveBaseDir || '默认位置'
   if (!(await confirm({
     title: '更换文稿保存位置',
     message: `将把现有文稿从「${from}」迁移到「${dir}」，之后的自动保存也会落在新位置。`,
@@ -189,11 +228,15 @@ async function changeSaveBaseDir() {
     confirmText: '迁移',
   }))) return
   try {
-    const res = await api.migrateSaveDir(dir)
-    settings.settings.saveBaseDir = res.newDir
-    // 被跳过（同名冲突）的文件仍在旧目录原处——把这些相对路径传给 rebindPaths，
-    // 让对应文档的绑定继续指向旧文件，别改到新根那个同名的陌生文件（数据安全）。
-    editor.rebindPaths(res.oldDir, res.newDir, res.skippedPaths)
+    const res = await settings.migrateSaveDir(dir, committed => {
+      // Keep draft publication and every open-document rebind inside the shared
+      // migration transaction; no queued autosave can observe a half-migrated UI.
+      draft.value.saveBaseDir = committed.newDir
+      draftBase.value.saveBaseDir = committed.newDir
+      // 被跳过（同名冲突）的文件仍在旧目录原处——把这些相对路径传给 rebindPaths，
+      // 让对应文档的绑定继续指向旧文件，别改到新根那个同名的陌生文件（数据安全）。
+      editor.rebindPaths(committed.oldDir, committed.newDir, committed.skippedPaths)
+    })
     toast.show(res.moved > 0 ? `已迁移 ${res.moved} 项到新位置` : '已切换保存位置', 'success')
     if (res.skipped > 0) toast.show(`${res.skipped} 项因目标已存在同名文件被跳过，仍保留在原位置`, 'warn')
   } catch (e: any) {
@@ -259,11 +302,11 @@ async function installPluginFromFile() {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const path = await open({
       title: '选择插件包',
-      filters: [{ name: '插件包', extensions: ['sekplugin', 'zip'] }],
+      filters: [{ name: 'SekaiText 插件包', extensions: ['sekplugin'] }],
     })
     if (!path) return
     const id = await plugins.installFromPath(path as string)
-    toast.show(`插件「${id}」安装成功`, 'success')
+    toast.show(`插件「${id}」已安装并保持禁用；请确认来源后手动启用`, 'success', 6000)
   } catch (e: any) {
     toast.show('安装失败: ' + (e?.message || '未知错误'), 'error')
   }
@@ -279,19 +322,29 @@ async function openDataDir() {
   }
 }
 
-function saveAndBack() {
-  settings.saveSettings().then(() => {
+async function saveAndBack() {
+  if (saving.value || settings.loading) return
+  saving.value = true
+  try {
+    await settings.saveSettings(draft.value, draftBase.value)
     toast.show('设置已保存', 'success')
-    router.push('/')
-  }).catch(() => {
-    toast.show('保存失败', 'error')
-  })
+    await router.push('/')
+  } catch (e: any) {
+    toast.show('保存失败: ' + (e?.message || '未知错误'), 'error')
+  } finally {
+    saving.value = false
+  }
+}
+
+function cancelAndBack() {
+  resetDraft()
+  router.push('/')
 }
 
 // ---- Shortcut customization ----
 const recordingId = ref<string | null>(null)
 function comboFor(id: string): string {
-  return resolveCombo(settings.settings.shortcuts, id)
+  return resolveCombo(draft.value.shortcuts, id)
 }
 // combo -> list of action ids, to flag conflicts (same combo bound twice).
 const comboCounts = computed(() => {
@@ -314,15 +367,15 @@ function onRecordKey(e: KeyboardEvent) {
   if (e.key === 'Escape') { recordingId.value = null; return }
   const combo = comboFromEvent(e)
   if (!combo) return // pure modifier; keep waiting
-  if (!settings.settings.shortcuts) settings.settings.shortcuts = {}
-  settings.settings.shortcuts[recordingId.value] = combo
+  if (!draft.value.shortcuts) draft.value.shortcuts = {}
+  draft.value.shortcuts[recordingId.value] = combo
   recordingId.value = null
 }
 function resetShortcut(id: string) {
-  if (settings.settings.shortcuts) delete settings.settings.shortcuts[id]
+  if (draft.value.shortcuts) delete draft.value.shortcuts[id]
 }
 function resetAllShortcuts() {
-  settings.settings.shortcuts = {}
+  draft.value.shortcuts = {}
 }
 
 // Capture the next keystroke globally while recording.
@@ -347,7 +400,10 @@ function detachSettingsNavigation() {
   settingsScrollUnlockTimer = null
   scrollingToSettingsSection = null
 }
-onActivated(attachSettingsNavigation)
+onActivated(() => {
+  resetDraft()
+  attachSettingsNavigation()
+})
 onDeactivated(() => {
   recordingId.value = null
   detachSettingsNavigation()
@@ -362,7 +418,7 @@ onUnmounted(() => {
 <template>
   <div ref="settingsPage" class="h-full min-h-0 overflow-y-auto page-bg text-[var(--color-text)]">
     <AppPageHeader title="设置" subtitle="调整界面、编辑体验与本地文件行为" width="6xl">
-      <button @click="saveAndBack()" class="btn btn-sm btn-brand">保存并返回</button>
+      <button @click="saveAndBack()" :disabled="saving || settings.loading" class="btn btn-sm btn-brand">{{ saving ? '保存中…' : '保存并返回' }}</button>
     </AppPageHeader>
 
     <main class="max-w-6xl mx-auto px-6 py-7">
@@ -410,7 +466,7 @@ onUnmounted(() => {
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><Palette :size="15" /></span>
           <div class="section-title">外观</div>
         </div>
-        <ThemePicker />
+        <ThemePicker :settings-model="draft" />
 
         <div class="mt-4 pt-4 border-t border-[var(--color-border)] flex items-center justify-between gap-3">
           <div>
@@ -453,8 +509,8 @@ onUnmounted(() => {
               <div class="app-help mt-0.5">编辑器文本显示大小</div>
             </div>
             <div class="flex items-center gap-2 shrink-0">
-              <input v-model.number="settings.settings.fontSize" type="range" min="10" max="48" step="1" class="range range-primary range-xs w-28" />
-              <span class="text-sm w-8 text-center font-mono">{{ settings.settings.fontSize }}</span>
+              <input v-model.number="draft.fontSize" type="range" min="10" max="48" step="1" class="range range-primary range-xs w-28" />
+              <span class="text-sm w-8 text-center font-mono">{{ draft.fontSize }}</span>
             </div>
           </div>
 
@@ -464,8 +520,8 @@ onUnmounted(() => {
               <div class="app-help mt-0.5">Ctrl+Z/Y 可撤销/重做的最大次数</div>
             </div>
             <div class="flex items-center gap-2 shrink-0">
-              <input v-model.number="settings.settings.undoDepth" type="range" min="1" max="100" step="1" class="range range-primary range-xs w-28" />
-              <span class="text-sm w-8 text-center font-mono">{{ settings.settings.undoDepth }}</span>
+              <input v-model.number="draft.undoDepth" type="range" min="1" max="100" step="1" class="range range-primary range-xs w-28" />
+              <span class="text-sm w-8 text-center font-mono">{{ draft.undoDepth }}</span>
             </div>
           </div>
 
@@ -476,26 +532,18 @@ onUnmounted(() => {
             </div>
             <SkSelect
               class="w-44 shrink-0"
-              :model-value="settings.settings.indexOrder"
-              @update:model-value="settings.settings.indexOrder = $event as 'asc' | 'desc'"
+              :model-value="draft.indexOrder"
+              @update:model-value="draft.indexOrder = $event as 'asc' | 'desc'"
               :options="[{ value: 'desc', label: '降序（最新的在底部）' }, { value: 'asc', label: '升序（最新的在顶部）' }]"
             />
           </div>
 
           <label class="flex items-center justify-between gap-3 cursor-pointer">
             <div>
-              <div class="text-sm font-medium">切模式保留剧情</div>
-              <div class="app-help mt-0.5">切换翻/校/合时保留当前译文</div>
-            </div>
-            <input v-model="settings.settings.preserveStoryOnModeSwitch" type="checkbox" class="toggle toggle-primary toggle-sm" />
-          </label>
-
-          <label class="flex items-center justify-between gap-3 cursor-pointer">
-            <div>
               <div class="text-sm font-medium">关闭对比时保留高亮</div>
               <div class="app-help mt-0.5">关闭对比后，校对/合意的改动处仍以绿色标出</div>
             </div>
-            <input v-model="settings.settings.keepHighlightWhenCompareOff" type="checkbox" class="toggle toggle-primary toggle-sm" />
+            <input v-model="draft.keepHighlightWhenCompareOff" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
 
           <label class="flex items-center justify-between gap-3 cursor-pointer">
@@ -503,7 +551,7 @@ onUnmounted(() => {
               <div class="text-sm font-medium">进入合意模式时提示导入顺序</div>
               <div class="app-help mt-0.5">提醒先导入翻译稿再导入校对稿</div>
             </div>
-            <input :checked="!settings.settings.hideAgreementImportHint" @change="settings.settings.hideAgreementImportHint = !($event.target as HTMLInputElement).checked" type="checkbox" class="toggle toggle-primary toggle-sm" />
+            <input :checked="!draft.hideAgreementImportHint" @change="draft.hideAgreementImportHint = !($event.target as HTMLInputElement).checked" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
         </div>
       </section>
@@ -518,7 +566,7 @@ onUnmounted(() => {
         <p class="app-help mt-0.5 mb-2">专用下载页面 (/download) 的默认保存位置</p>
         <div class="flex gap-2">
           <input
-            v-model="settings.settings.jsonDownloadDir"
+            v-model="draft.jsonDownloadDir"
             type="text"
             placeholder="./downloads/json"
             class="app-input flex-1"
@@ -538,7 +586,7 @@ onUnmounted(() => {
         <p class="app-help mb-3">译文自动建档与保存的根目录，按 <span class="font-mono">故事类型/索引/【模式】标题.txt</span> 自动分级归档；点「保存」与自动保存都落在这里。</p>
         <div class="flex gap-2">
           <input
-            :value="settings.settings.saveBaseDir"
+            :value="draft.saveBaseDir"
             type="text"
             readonly
             placeholder="默认 ~/Documents/SekaiText"
@@ -566,31 +614,9 @@ onUnmounted(() => {
               <div class="text-sm font-medium">保存 \N 换行符</div>
               <div class="app-help mt-0.5">翻译文件中保留 \N 换行标记</div>
             </div>
-            <input v-model="settings.settings.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
+            <input v-model="draft.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
 
-          <label class="flex items-center justify-between gap-3 cursor-pointer">
-            <div>
-              <div class="text-sm font-medium">保存语音文件</div>
-              <div class="app-help mt-0.5">下载并保存语音文件到本地</div>
-            </div>
-            <input v-model="settings.settings.saveVoice" type="checkbox" class="toggle toggle-primary toggle-sm" />
-          </label>
-
-          <div class="sm:col-span-2">
-            <label class="app-label">语音输出目录</label>
-            <div class="flex gap-2 mt-1.5">
-              <input
-                v-model="settings.settings.voiceOutputDir"
-                type="text"
-                placeholder="留空使用默认目录"
-                class="app-input flex-1"
-              />
-              <button v-if="isTauri" @click="browseVoiceOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
-                <FolderOpen :size="15" /> 浏览
-              </button>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -616,26 +642,18 @@ onUnmounted(() => {
             </div>
             <SkSelect
               class="w-[200px] shrink-0"
-              :model-value="settings.settings.downloadMirror || 'cdn'"
-              @update:model-value="settings.settings.downloadMirror = $event as string"
+              :model-value="draft.downloadMirror || 'cdn'"
+              @update:model-value="draft.downloadMirror = $event as string"
               :options="downloadMirrorOptions"
             />
           </div>
 
           <label class="flex items-center justify-between gap-3 cursor-pointer">
             <div>
-              <div class="text-sm font-medium">SSL 验证</div>
-              <div class="app-help mt-0.5">禁用 SSL 证书验证（某些网络环境需要）</div>
-            </div>
-            <input v-model="settings.settings.disableSSL" type="checkbox" class="toggle toggle-primary toggle-sm" />
-          </label>
-
-          <label class="flex items-center justify-between gap-3 cursor-pointer">
-            <div>
               <div class="text-sm font-medium">调试日志</div>
               <div class="app-help mt-0.5">在底部显示调试日志窗口</div>
             </div>
-            <input v-model="settings.settings.debugEnabled" type="checkbox" class="toggle toggle-primary toggle-sm" />
+            <input v-model="draft.debugEnabled" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
         </div>
       </section>
@@ -698,6 +716,7 @@ onUnmounted(() => {
           </div>
           <button @click="installPluginFromFile" class="btn btn-ghost btn-xs gap-1"><FileUp :size="13" />从文件安装</button>
         </div>
+        <p class="app-help mb-3">本地及旧版未验证插件默认禁用；可确认风险后重新授权，或从插件市场重新安装官方验证包。</p>
         <div v-if="plugins.loading" class="flex items-center gap-2 py-2 text-sm text-[var(--color-text-secondary)]">
           <span class="loading loading-spinner loading-sm" /> 加载中…
         </div>
@@ -715,6 +734,7 @@ onUnmounted(() => {
               <div class="flex items-center gap-2">
                 <span class="text-sm font-medium truncate">{{ p.name || p.id }}</span>
                 <span class="text-xs text-[var(--color-text-tertiary)] font-mono">v{{ p.version }}</span>
+                <span v-if="p.local" class="app-chip bg-warning/12 text-warning">未验证，需确认</span>
               </div>
               <div v-if="p.description" class="app-help mt-0.5 truncate">{{ p.description }}</div>
             </div>
@@ -732,7 +752,7 @@ onUnmounted(() => {
                 class="toggle toggle-primary toggle-sm"
                 :checked="p.enabled"
                 :disabled="plugins.busyId === p.id"
-                @change="togglePlugin(p.id, ($event.target as HTMLInputElement).checked)"
+                @change="togglePlugin(p.id, p.local, $event)"
               />
             </div>
           </div>
@@ -775,8 +795,8 @@ onUnmounted(() => {
       </section>
 
       <div class="flex justify-end gap-2 border-t border-[var(--color-border)] pt-6">
-        <button @click="router.push('/')" class="btn btn-sm btn-ghost border border-[var(--color-border)]">取消</button>
-        <button @click="saveAndBack()" class="btn btn-sm btn-brand">保存设置</button>
+        <button @click="cancelAndBack" :disabled="saving" class="btn btn-sm btn-ghost border border-[var(--color-border)]">取消</button>
+        <button @click="saveAndBack()" :disabled="saving || settings.loading" class="btn btn-sm btn-brand">{{ saving ? '保存中…' : '保存设置' }}</button>
       </div>
         </div>
       </div>

@@ -1,7 +1,7 @@
 // Plugin host types shared by the bridge, loader, registry and (via the global)
-// by plugins themselves. Plugins are FIRST-PARTY and trusted — the bridge hands
-// them the host's live Vue/Pinia/router singletons so they never bundle their
-// own copies (which would create a second Vue instance and break reactivity).
+// by plugins themselves. Plugins run with the host's full process permissions.
+// The bridge hands them the live Vue/Pinia/router singletons so they never bundle
+// their own copies (which would create a second Vue instance and break reactivity).
 import type * as VueRuntime from 'vue'
 import type { Router, RouteRecordRaw } from 'vue-router'
 import type { Pinia } from 'pinia'
@@ -45,6 +45,12 @@ export interface PluginDockPanel {
   pluginId?: string
 }
 
+// Navigation-only router surface. Route table mutation remains private to the
+// owner-bound registerRoute API so plugins cannot remove or replace host routes.
+export type PluginRouter = Pick<Router,
+  'currentRoute' | 'push' | 'replace' | 'resolve' | 'back' | 'forward' | 'go'
+>
+
 // What the host exposes to every plugin's setup(host).
 export interface SekaiHost {
   // Host version (semver) so a plugin can check minHostVersion.
@@ -57,8 +63,8 @@ export interface SekaiHost {
   // The host's Vue runtime — plugins call host.vue.defineComponent/h/ref/... and
   // SFCs are compiled with vue externalized so they resolve to THIS instance.
   vue: typeof VueRuntime
-  // The host's router + pinia singletons.
-  router: Router
+  // Navigation surface plus the host's pinia singleton.
+  router: PluginRouter
   pinia: Pinia
   // Lazily-resolved store accessors (call to get the live store instance).
   stores: {
@@ -94,7 +100,7 @@ export interface SekaiHost {
   }
   // Registration — a plugin calls these in setup(); the host tracks them under
   // the plugin id so unload can reverse them.
-  registerRoute: (pluginId: string, route: RouteRecordRaw) => void
+  registerRoute: (pluginId: string, route: RouteRecordRaw) => () => void
   registerSidebarItem: (pluginId: string, item: PluginSidebarItem) => void
   registerSettingsSection: (pluginId: string, section: PluginSettingsSection) => void
   // Contribute a dockable panel (e.g. the Live2D player) the host mounts in the

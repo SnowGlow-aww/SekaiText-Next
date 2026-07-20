@@ -2,49 +2,59 @@ import { ref } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import { useAppStore } from '../stores/app'
 import { useStoryStore } from '../stores/story'
-import { api } from '../api/client'
+import { buildRecoverySaveRequest } from '../editor/recovery'
+import { clearRecovery, hasPendingRecoveryClear, saveRecovery } from '../editor/recoveryCoordinator'
+
+export async function syncRecoveryNow(beforeCapture?: () => void | Promise<void>): Promise<void> {
+  await beforeCapture?.()
+  const editor = useEditorStore()
+  const app = useAppStore()
+  const story = useStoryStore()
+  const states = editor.captureModeStates()
+  const active = states.find(state => state.mode === editor.currentMode)
+  // Local/legacy files may not own a document snapshot. Use the navigator only
+  // for that active slot; snapshots in every other mode remain isolated.
+  if (active && !active.docMeta && story.selectedType) {
+    active.docMeta = {
+      saveTitle: story.saveTitle,
+      chapterTitle: story.chapterTitle,
+      type: story.selectedType,
+      sort: story.selectedSort,
+      index: story.selectedIndex,
+      indexLabel: story.selectedIndexLabel,
+      chapter: story.selectedChapter,
+      source: story.selectedSource,
+      scenarioId: story.scenarioId,
+    }
+  }
+  const request = buildRecoverySaveRequest(states, editor.currentMode, app.saveN)
+  if (request.modes.length === 0) await clearRecovery()
+  else await saveRecovery(request)
+}
 
 /**
  * Periodically saves editor state to a recovery file (autosave).
  * Never writes the real project file — that only happens on explicit save.
  */
-export function useAutoSave(intervalMs = 30000) {
+export function useAutoSave(
+  intervalMs = 30000,
+  beforeCapture?: () => void | Promise<void>,
+) {
   const editor = useEditorStore()
-  const app = useAppStore()
-  const story = useStoryStore()
   const lastSaved = ref(Date.now())
   let timer: ReturnType<typeof setInterval> | null = null
+  let intervalSync: Promise<void> | null = null
+  const syncNow = (capture: typeof beforeCapture = beforeCapture) => syncRecoveryNow(capture)
 
   function start() {
     if (timer) return
-    timer = setInterval(async () => {
-      if (!editor.hasUnsavedChanges || editor.talks.length === 0) return
-
-      // 恢复坐标优先取文档身份快照（editor.docMeta，载入时绑定，5.7.6 起随
-      // modeCache 存取）。story.selected* 是全局的：下载页会直改它且离开不还原，
-      // 若这里读实时选择，崩溃恢复会按错剧情去 CheckLines 重排译文并自动写回原
-      // 文件。docMeta 为 null（如本地导入）才回退现有 story.selected* 行为。
-      const meta = editor.docMeta
-      const coord = meta
-        ? { type: meta.type, sort: meta.sort, index: meta.index, chapter: meta.chapter, source: meta.source }
-        : { type: story.selectedType, sort: story.selectedSort, index: story.selectedIndex, chapter: story.selectedChapter, source: story.selectedSource }
-
-      // Always save recovery file with story context
-      try {
-        await api.recoverySave({
-          talks: editor.dstTalks,
-          saveN: app.saveN,
-          filePath: editor.currentFilePath,
-          editorMode: app.editorMode,
-          storyType: coord.type || undefined,
-          storySort: coord.sort || undefined,
-          storyIndex: coord.index || undefined,
-          storyChapter: coord.chapter >= 0 ? coord.chapter : undefined,
-          storySource: coord.source || undefined,
-        })
-      } catch {
-        // Silent fail on recovery save
-      }
+    timer = setInterval(() => {
+      if (!editor.hasAnyUnsaved() && !hasPendingRecoveryClear()) return
+      if (intervalSync) return
+      intervalSync = syncNow()
+        .then(() => { lastSaved.value = Date.now() })
+        .catch(() => { /* silent recovery failure */ })
+        .finally(() => { intervalSync = null })
     }, intervalMs)
   }
 
@@ -55,9 +65,17 @@ export function useAutoSave(intervalMs = 30000) {
     }
   }
 
+  function stopAndSync(capture: typeof beforeCapture = beforeCapture): Promise<void> {
+    stop()
+    if (!editor.hasAnyUnsaved() && !hasPendingRecoveryClear()) return Promise.resolve()
+    return syncNow(capture).then(() => { lastSaved.value = Date.now() })
+  }
+
   return {
     lastSaved,
     start,
     stop,
+    stopAndSync,
+    syncNow,
   }
 }

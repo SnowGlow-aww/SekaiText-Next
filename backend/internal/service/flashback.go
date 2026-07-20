@@ -4,31 +4,33 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"sekaitext/backend/internal/model"
 )
 
 // FlashbackAnalyzer analyzes voice IDs to identify flashback scenes.
 type FlashbackAnalyzer struct {
-	lm         *ListManager
-	flashbackRe *regexp.Regexp
-	areatalkRe  *regexp.Regexp
-	mainstoryEpRe *regexp.Regexp
-	cardrarityEpRe *regexp.Regexp
-	clueDict    map[string]EventEntry
-	mainstory   map[string]MainStoryEntry
+	lm                 *ListManager
+	mu                 sync.RWMutex
+	flashbackRe        *regexp.Regexp
+	areatalkRe         *regexp.Regexp
+	mainstoryEpRe      *regexp.Regexp
+	cardrarityEpRe     *regexp.Regexp
+	clueDict           map[string]EventEntry
+	mainstory          map[string]MainStoryEntry
 	voiceMsToMainStory map[string]string
 }
 
 // NewFlashbackAnalyzer creates a new FlashbackAnalyzer.
 func NewFlashbackAnalyzer(lm *ListManager) *FlashbackAnalyzer {
 	fb := &FlashbackAnalyzer{
-		lm:          lm,
-		flashbackRe: regexp.MustCompile(`voice_(.+)_\d+[a-z]?_\d+(?:_?.*)?$`),
-		areatalkRe:  regexp.MustCompile(`areatalk_(ev|wl)_(.+)_\d+$`),
-		mainstoryEpRe: regexp.MustCompile(`(.*?)(\d+)$`),
+		lm:             lm,
+		flashbackRe:    regexp.MustCompile(`voice_(.+)_\d+[a-z]?_\d+(?:_?.*)?$`),
+		areatalkRe:     regexp.MustCompile(`areatalk_(ev|wl)_(.+)_\d+$`),
+		mainstoryEpRe:  regexp.MustCompile(`(.*?)(\d+)$`),
 		cardrarityEpRe: regexp.MustCompile(`(\d+)(.*?)$`),
-		mainstory:   make(map[string]MainStoryEntry),
+		mainstory:      make(map[string]MainStoryEntry),
 		voiceMsToMainStory: map[string]string{
 			"band":   "light_sound",
 			"idol":   "idol",
@@ -38,6 +40,7 @@ func NewFlashbackAnalyzer(lm *ListManager) *FlashbackAnalyzer {
 			"piapro": "piapro",
 		},
 	}
+	lm.registerFlashbackAnalyzer(fb)
 	fb.updateClues()
 	return fb
 }
@@ -71,7 +74,9 @@ func (fb *FlashbackAnalyzer) ResolveVoiceSourceURL(voiceID, source string) (url,
 		return "", "", "", false
 	}
 	clueKey := strings.Join(body, "_")
+	fb.mu.RLock()
 	ev, found := fb.clueDict[clueKey]
+	fb.mu.RUnlock()
 	if !found {
 		return "", "", "", false
 	}
@@ -100,15 +105,20 @@ func (fb *FlashbackAnalyzer) ResolveVoiceSourceURL(voiceID, source string) (url,
 }
 
 func (fb *FlashbackAnalyzer) updateClues() {
-	for _, ms := range fb.lm.MainStory {
-		fb.mainstory[ms.Unit] = ms
-	}
 	// Populate each event's InferredVoiceIDs (voice-prefix -> event) from the
 	// area-talk scenario IDs BEFORE building the clue dict. Without this call
 	// InferredVoiceIDs stays nil for every event, so BuildVoiceIDClues returns
 	// an empty map and every event flashback renders "未知活动".
 	fb.lm.InferVoiceEventID()
-	fb.clueDict = fb.lm.BuildVoiceIDClues()
+	fb.refreshIndexes()
+}
+
+func (fb *FlashbackAnalyzer) refreshIndexes() {
+	clues, mainstory := fb.lm.flashbackIndexes()
+	fb.mu.Lock()
+	fb.clueDict = clues
+	fb.mainstory = mainstory
+	fb.mu.Unlock()
 }
 
 // choffsetValue reads the "choffset" chapter offset out of an event's
@@ -144,6 +154,8 @@ func (fb *FlashbackAnalyzer) GetClueFromVoiceID(voiceID string) (string, bool) {
 
 // GetClueHints returns human-readable hints for a clue.
 func (fb *FlashbackAnalyzer) GetClueHints(clue, lang string) []string {
+	fb.mu.RLock()
+	defer fb.mu.RUnlock()
 	if lang == "" {
 		lang = "zh-cn"
 	}

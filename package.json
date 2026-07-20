@@ -1,8 +1,23 @@
 {
   "name": "sekaitext",
   "private": true,
-  "version": "5.9.0",
+  "version": "5.9.1",
+  "description": "Project Sekai story translation and subtitle editing desktop application",
+  "author": "SnowGlow-aww",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SnowGlow-aww/SekaiText-Next.git"
+  },
+  "homepage": "https://sakimizuki.accr.cc/web/index.html",
+  "bugs": {
+    "url": "https://github.com/SnowGlow-aww/SekaiText-Next/issues"
+  },
+  "packageManager": "npm@11.12.1",
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "dev": "node scripts/cleanup.mjs 5173 && vite",
     "dev:go": "node scripts/cleanup.mjs 9800 && cd backend && go run ./cmd/sekaitext/ --dir .",
@@ -12,6 +27,7 @@
     "build:all": "npm run build:go && npm run build",
     "build:tauri": "npx tauri build",
     "build": "vue-tsc -b && vite build",
+    "test": "vitest run && node --test scripts/plugin-market-lib.test.mjs scripts/release-manifest-lib.test.mjs scripts/release-workflow.test.mjs scripts/sync-version.test.mjs",
     "preview": "vite preview",
     "version": "node scripts/sync-version.mjs"
   },
@@ -36,9 +52,11 @@
     "@vitejs/plugin-vue": "^6.0.6",
     "@vue/tsconfig": "^0.9.1",
     "concurrently": "^9.2.1",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.2",
     "unplugin-auto-import": "^21.0.0",
     "vite": "^8.0.10",
+    "vitest": "^4.1.6",
     "vue-tsc": "^3.2.7"
   }
 }

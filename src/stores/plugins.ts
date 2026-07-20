@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../api/client'
 import { fetchInstalledPlugins, pluginEntryUrl, type InstalledPlugin } from '../plugin-host/autoload'
-import { loadPlugin, unloadPlugin } from '../plugin-host/loader'
+import { cancelPluginLoad, loadPlugin, unloadPlugin } from '../plugin-host/loader'
 
 declare const __APP_VERSION__: string
 
@@ -26,30 +26,70 @@ export const usePluginsStore = defineStore('plugins', () => {
     }
   }
 
-  async function setEnabled(id: string, enabled: boolean) {
+  async function reconcileRuntime(
+    id: string,
+    fallback: InstalledPlugin | undefined,
+    host: NonNullable<Window['__SEKAI_HOST__']>,
+  ) {
+    let current = fallback
+    try {
+      const authoritative = await fetchInstalledPlugins()
+      list.value = authoritative
+      current = authoritative.find(plugin => plugin.id === id)
+    } catch {
+      // A rejected mutation normally leaves backend state unchanged. If listing
+      // is also unavailable, the previous identity is the best reload candidate.
+    }
+    if (current?.enabled) await loadPlugin(current, pluginEntryUrl(current), host)
+    else await unloadPlugin(id, host.pinia)
+  }
+
+  async function setEnabled(id: string, enabled: boolean, approveLocal = false) {
     const host = window.__SEKAI_HOST__
     if (!host) throw new Error('host bridge unavailable')
+    const previous = list.value.find(plugin => plugin.id === id)
     busyId.value = id
     try {
-      await api.pluginSetEnabled(id, enabled)
+      // Fence any fetch/import/setup synchronously before changing backend state.
+      cancelPluginLoad(id)
+      if (!enabled) await unloadPlugin(id, host.pinia)
+      await api.pluginSetEnabled(id, enabled, approveLocal)
+      await refresh()
       const p = list.value.find((x) => x.id === id)
-      // The backend has now persisted `enabled`; reflect it in the UI up front so
-      // the toggle can't diverge from persisted state if the live load/unload
-      // below fails.
-      if (p) p.enabled = enabled
       try {
         if (enabled) {
-          if (p) await loadPlugin(id, pluginEntryUrl(p), host)
-        } else {
-          await unloadPlugin(id, host.router, host.pinia)
+          if (!p?.enabled) throw new Error('插件启用状态复核失败')
+          await loadPlugin(p, pluginEntryUrl(p), host)
         }
       } catch (e) {
-        // Live apply failed after the backend already persisted `enabled`.
-        // Re-pull the authoritative list so the UI matches the backend instead
-        // of drifting, then surface the original error.
+        if (enabled) {
+          try {
+            await api.pluginRollback(id)
+            await refresh()
+            const restored = list.value.find((plugin) => plugin.id === id)
+            if (!restored?.enabled) throw new Error('恢复版本未启用')
+            await loadPlugin(restored, pluginEntryUrl(restored), host)
+            host.ui.toast(`插件 ${id} 加载失败，已恢复上一个可用版本`, 'warn', 6000)
+            return
+          } catch (rollbackError) {
+            console.error(`[plugin] ${id} 恢复失败，正在禁用`, rollbackError)
+            try {
+              await api.pluginSetEnabled(id, false)
+            } catch {
+              // refresh below still attempts to reconcile with backend state
+            }
+          }
+        }
         await refresh()
         throw e
       }
+    } catch (error) {
+      try {
+        await reconcileRuntime(id, previous, host)
+      } catch (reconcileError) {
+        console.error(`[plugin] ${id} 后端操作失败后的运行时恢复失败`, reconcileError)
+      }
+      throw error
     } finally {
       busyId.value = null
     }
@@ -58,20 +98,28 @@ export const usePluginsStore = defineStore('plugins', () => {
   async function uninstall(id: string) {
     const host = window.__SEKAI_HOST__
     if (!host) throw new Error('host bridge unavailable')
+    const previous = list.value.find(plugin => plugin.id === id)
     busyId.value = id
     try {
       // Unload from the running app first, then delete on the backend.
-      await unloadPlugin(id, host.router, host.pinia)
+      await unloadPlugin(id, host.pinia)
       await api.pluginUninstall(id)
       list.value = list.value.filter((x) => x.id !== id)
+    } catch (error) {
+      try {
+        await reconcileRuntime(id, previous, host)
+      } catch (reconcileError) {
+        console.error(`[plugin] ${id} 卸载失败后的运行时恢复失败`, reconcileError)
+      }
+      throw error
     } finally {
       busyId.value = null
     }
   }
 
-  // Install a .sekplugin from a local file path. Replaces any existing plugin
-  // of the same id (reloading it live if it was already running). Returns the
-  // installed plugin's id.
+  // Install a .sekplugin from a local file path. The backend retains the old
+  // payload for rollback and always marks the local payload disabled; activation
+  // requires a separate full-permission risk confirmation in Settings.
   async function installFromPath(srcPath: string): Promise<string> {
     const host = window.__SEKAI_HOST__
     if (!host) throw new Error('host bridge unavailable')
@@ -79,10 +127,10 @@ export const usePluginsStore = defineStore('plugins', () => {
     const installed = await api.pluginInstall(srcPath, hostVersion)
     // If a plugin with this id was already loaded, unload it so the new payload
     // takes effect on the next load.
-    await unloadPlugin(installed.id, host.router, host.pinia)
+    await unloadPlugin(installed.id, host.pinia)
     await refresh()
     const p = list.value.find((x) => x.id === installed.id)
-    if (p && p.enabled) await loadPlugin(p.id, pluginEntryUrl(p), host)
+    if (p?.enabled) await loadPlugin(p, pluginEntryUrl(p), host)
     return installed.id
   }
 
