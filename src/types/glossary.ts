@@ -31,15 +31,7 @@ export interface TeamStatus {
   connected: boolean
   readonly: boolean
   serverUrl: string
-  certificateFingerprint: string
   user: TeamUser | null
-}
-
-export interface TeamCertificateProbe {
-  serverUrl: string
-  fingerprint: string
-  trusted: boolean
-  changed: boolean
 }
 
 export interface Proposal {

@@ -554,18 +554,14 @@ export const api = {
 
   // --- Team mode (proxied to remote glossary-server via local backend) ---
   teamStatus: () => request<import('../types/glossary').TeamStatus>('/team/status'),
-  teamProbe: (serverUrl: string) =>
-    request<import('../types/glossary').TeamCertificateProbe>('/team/probe', {
-      method: 'POST', body: JSON.stringify({ serverUrl }),
-    }),
-  teamLogin: (serverUrl: string, username: string, password: string, fingerprint: string) =>
+  teamLogin: (serverUrl: string, username: string, password: string) =>
     request<{ loggedIn: boolean; user: import('../types/glossary').TeamUser }>('/team/login', {
-      method: 'POST', body: JSON.stringify({ serverUrl, username, password, fingerprint }),
+      method: 'POST', body: JSON.stringify({ serverUrl, username, password }),
     }),
   teamLogout: () => request<{ status: string }>('/team/logout', { method: 'POST' }),
-  teamConnect: (serverUrl: string, fingerprint: string) =>
+  teamConnect: (serverUrl: string) =>
     request<{ connected: boolean; readonly: boolean }>('/team/connect', {
-      method: 'POST', body: JSON.stringify({ serverUrl, fingerprint }),
+      method: 'POST', body: JSON.stringify({ serverUrl }),
     }),
   teamDisconnect: () => request<{ status: string }>('/team/disconnect', { method: 'POST' }),
   teamSync: (force = false) =>

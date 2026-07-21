@@ -32,7 +32,7 @@ func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) 
 	// 401 path can tell whether a concurrent goroutine already rotated it.
 	send := func(serverURL, access string, client *http.Client) (*http.Response, error) {
 		if client == nil {
-			return nil, ErrTeamFingerprintRequired
+			return nil, ErrNotLoggedIn
 		}
 		var rdr io.Reader
 		if payload != nil {
@@ -112,7 +112,7 @@ func (t *TeamService) getPublic(path string) ([]byte, int, error) {
 	url, client := t.serverURL+path, t.client
 	t.mu.RUnlock()
 	if client == nil {
-		return nil, 0, ErrTeamFingerprintRequired
+		return nil, 0, ErrNotLoggedIn
 	}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -129,13 +129,13 @@ func (t *TeamService) getPublic(path string) ([]byte, int, error) {
 // non-JSON/empty config): callers fall back to the direct server endpoints.
 func (t *TeamService) snapshot() string {
 	t.mu.RLock()
-	server, fingerprint, client := t.serverURL, t.fingerprint, t.client
-	base, forURL, forFingerprint := t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseFingerprint
+	server, epoch, client := t.serverURL, t.sessionEpoch, t.client
+	base, forURL, forEpoch := t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseEpoch
 	t.mu.RUnlock()
 	if server == "" {
 		return ""
 	}
-	if forURL == server && forFingerprint == fingerprint {
+	if forURL == server && forEpoch == epoch {
 		// 已针对当前服务器发现过（base 可能是空串，代表老服务器，同样不再重探）。
 		return base
 	}
@@ -144,12 +144,12 @@ func (t *TeamService) snapshot() string {
 	discovered := t.discoverSnapshotBase(server, client)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// 双检：期间 URL 或证书 pin 若被切换/清空，本次结果作废，交给下次读路径重探。
-	if t.serverURL == server && t.fingerprint == fingerprint {
-		t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseFingerprint = discovered, server, fingerprint
+	// 双检：期间 URL 或会话若被切换/清空，本次结果作废，交给下次读路径重探。
+	if t.serverURL == server && t.sessionEpoch == epoch {
+		t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseEpoch = discovered, server, epoch
 		return discovered
 	}
-	if t.snapshotBaseFor == t.serverURL && t.snapshotBaseFingerprint == t.fingerprint {
+	if t.snapshotBaseFor == t.serverURL && t.snapshotBaseEpoch == t.sessionEpoch {
 		return t.snapshotBase
 	}
 	return ""
@@ -158,7 +158,7 @@ func (t *TeamService) snapshot() string {
 // discoverSnapshotBase asks the team server where its CDN snapshot lives via the
 // public GET /api/config. Returns "" for old servers (404), unreachable servers,
 // or an unparseable/empty payload — callers then fall back to direct endpoints.
-// Goes through the pinned team client because the server may be self-signed.
+// Goes through the team client because the server may be self-signed.
 func (t *TeamService) discoverSnapshotBase(server string, client *http.Client) string {
 	if client == nil {
 		return ""
@@ -294,7 +294,7 @@ type TeamSyncResult struct {
 }
 
 // Sync serializes the complete pull and merge sequence against other syncs. The
-// URL, certificate fingerprint, and session epoch captured at entry must remain
+// URL and session epoch captured at entry must remain
 // current after each remote operation and immediately before both merge and
 // last-version commit. Session transitions are excluded only during the local
 // merge, so logout remains immediate while a network request is in flight.
@@ -304,9 +304,8 @@ func (t *TeamService) Sync(force bool, merge func([]byte) (int, error)) (TeamSyn
 
 	t.mu.RLock()
 	session := teamSessionIdentity{
-		epoch:       t.sessionEpoch,
-		serverURL:   t.serverURL,
-		fingerprint: t.fingerprint,
+		epoch:     t.sessionEpoch,
+		serverURL: t.serverURL,
 	}
 	lastVer := t.lastVer
 	t.mu.RUnlock()

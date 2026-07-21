@@ -2,10 +2,7 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -15,20 +12,6 @@ import (
 	"strings"
 	"time"
 )
-
-var (
-	ErrTeamFingerprintRequired = errors.New("server certificate fingerprint confirmation required")
-	ErrTeamFingerprintChanged  = errors.New("server certificate fingerprint changed")
-)
-
-// TeamCertificateProbe is safe to show before authentication. Probe performs a
-// TLS handshake only; it does not send an HTTP request or any credentials.
-type TeamCertificateProbe struct {
-	ServerURL   string `json:"serverUrl"`
-	Fingerprint string `json:"fingerprint"`
-	Trusted     bool   `json:"trusted"`
-	Changed     bool   `json:"changed"`
-}
 
 func normalizeTeamServerURL(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -47,121 +30,21 @@ func normalizeTeamServerURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-func normalizeFingerprint(raw string) (string, error) {
-	fingerprint := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(raw), ":", ""))
-	decoded, err := hex.DecodeString(fingerprint)
-	if err != nil || len(decoded) != sha256.Size {
-		return "", ErrTeamFingerprintRequired
-	}
-	return fingerprint, nil
-}
-
-// ProbeCertificate retrieves the leaf certificate without sending an HTTP
-// request. Verification failures expose the received chain for the no-data TOFU
-// prompt; all application requests use newPinnedTeamClient below.
-func (t *TeamService) ProbeCertificate(rawServerURL string) (*TeamCertificateProbe, []byte, error) {
+// newTeamHTTPClient accepts the team's self-signed certificate. The server URL
+// remains HTTPS-only, and redirects cannot leave the selected origin.
+func newTeamHTTPClient(rawServerURL string) (string, *http.Client, error) {
 	serverURL, err := normalizeTeamServerURL(rawServerURL)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, err
 	}
-	u, _ := url.Parse(serverURL)
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
-	if err != nil {
-		return nil, nil, fmt.Errorf("certificate probe failed: %w", err)
-	}
-	defer rawConn.Close()
-
-	// Use normal verification first. For a self-signed server, Go returns the
-	// received chain in CertificateVerificationError; extracting that chain is
-	// enough for a no-data TOFU prompt and does not weaken TLS configuration.
-	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName: u.Hostname(),
-		MinVersion: tls.VersionTLS12,
-	})
-	var leaf *x509.Certificate
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		var verifyErr *tls.CertificateVerificationError
-		if !errors.As(err, &verifyErr) || len(verifyErr.UnverifiedCertificates) == 0 {
-			return nil, nil, fmt.Errorf("certificate probe failed: %w", err)
-		}
-		leaf = verifyErr.UnverifiedCertificates[0]
-	} else {
-		state := tlsConn.ConnectionState()
-		if len(state.PeerCertificates) > 0 {
-			leaf = state.PeerCertificates[0]
-		}
-	}
-	if leaf == nil {
-		return nil, nil, errors.New("certificate probe returned no peer certificate")
-	}
-	certDER := append([]byte(nil), leaf.Raw...)
-	fingerprint := certificateFingerprint(certDER)
-
-	t.mu.RLock()
-	trustedURL, trustedFingerprint := t.serverURL, t.fingerprint
-	t.mu.RUnlock()
-	probe := &TeamCertificateProbe{
-		ServerURL:   serverURL,
-		Fingerprint: fingerprint,
-		Trusted:     trustedURL == serverURL && trustedFingerprint == fingerprint,
-		Changed:     trustedURL == serverURL && trustedFingerprint != "" && trustedFingerprint != fingerprint,
-	}
-	return probe, certDER, nil
-}
-
-func (t *TeamService) preparePinnedServer(rawServerURL, confirmedFingerprint string) (string, string, []byte, *http.Client, error) {
-	confirmed, err := normalizeFingerprint(confirmedFingerprint)
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	probe, certDER, err := t.ProbeCertificate(rawServerURL)
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	if probe.Fingerprint != confirmed {
-		return "", "", nil, nil, fmt.Errorf("%w: expected %s, got %s", ErrTeamFingerprintChanged, confirmed, probe.Fingerprint)
-	}
-	client, err := newPinnedTeamClient(probe.ServerURL, certDER, confirmed)
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	return probe.ServerURL, confirmed, certDER, client, nil
-}
-
-func newPinnedTeamClient(serverURL string, certDER []byte, fingerprint string) (*http.Client, error) {
-	cert, err := certificateFromDER(certDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse pinned certificate: %w", err)
-	}
-	if certificateFingerprint(certDER) != fingerprint {
-		return nil, ErrTeamFingerprintChanged
-	}
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
-	roots.AddCert(cert)
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    roots,
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 || certificateFingerprint(cs.PeerCertificates[0].Raw) != fingerprint {
-				return ErrTeamFingerprintChanged
-			}
-			return nil
-		},
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, // The configured team server uses a self-signed certificate.
 	}
 	origin, _ := url.Parse(serverURL)
-	return &http.Client{
+	return serverURL, &http.Client{
 		Timeout:   20 * time.Second,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -178,16 +61,6 @@ func newPinnedTeamClient(serverURL string, certDER []byte, fingerprint string) (
 
 func sameOrigin(a, b *url.URL) bool {
 	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
-}
-
-func (t *TeamService) currentClient() (*http.Client, error) {
-	t.mu.RLock()
-	client, fingerprint := t.client, t.fingerprint
-	t.mu.RUnlock()
-	if client == nil || fingerprint == "" {
-		return nil, ErrTeamFingerprintRequired
-	}
-	return client, nil
 }
 
 func publicSnapshotURLAllowed(raw string) bool {

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,11 +32,9 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	fingerprint := certificateFingerprint(server.Certificate().Raw)
-
 	t.Run("login and logout", func(t *testing.T) {
 		svc := NewTeamService(unusableTeamDataDir(t))
-		user, err := svc.Login(server.URL, "amia", "secret", fingerprint)
+		user, err := svc.Login(server.URL, "amia", "secret")
 		if !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Login error = %v, want ErrTeamPersistence", err)
 		}
@@ -49,7 +46,7 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 		if !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Logout error = %v, want ErrTeamPersistence", err)
 		}
-		url, _, statusUser := svc.Status()
+		url, statusUser := svc.Status()
 		svc.mu.RLock()
 		access, refresh := svc.access, svc.refresh
 		svc.mu.RUnlock()
@@ -60,7 +57,7 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 
 	t.Run("connect and disconnect", func(t *testing.T) {
 		svc := NewTeamService(unusableTeamDataDir(t))
-		if err := svc.Connect(server.URL, fingerprint); !errors.Is(err, ErrTeamPersistence) {
+		if err := svc.Connect(server.URL); !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Connect error = %v, want ErrTeamPersistence", err)
 		}
 		if !svc.Connected() {
@@ -70,20 +67,18 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 		if err := svc.Disconnect(); !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Disconnect error = %v, want ErrTeamPersistence", err)
 		}
-		url, pin, user := svc.Status()
-		if url != "" || pin != "" || user != nil || svc.Connected() {
-			t.Fatalf("disconnect did not clear memory before persistence failure: url=%q pin=%q user=%+v", url, pin, user)
+		url, user := svc.Status()
+		if url != "" || user != nil || svc.Connected() {
+			t.Fatalf("disconnect did not clear memory before persistence failure: url=%q user=%+v", url, user)
 		}
 	})
 }
 
-func writeRestorableTeamSession(t *testing.T, dir, serverURL string, certDER []byte, refresh string) {
+func writeRestorableTeamSession(t *testing.T, dir, serverURL, refresh string) {
 	t.Helper()
 	p := teamPersist{
-		ServerURL:              serverURL,
-		RefreshToken:           refresh,
-		CertificateFingerprint: certificateFingerprint(certDER),
-		CertificateDER:         base64.StdEncoding.EncodeToString(certDER),
+		ServerURL:    serverURL,
+		RefreshToken: refresh,
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -118,7 +113,7 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 		}))
 		defer server.Close()
 		dir := t.TempDir()
-		writeRestorableTeamSession(t, dir, server.URL, server.Certificate().Raw, "retryable")
+		writeRestorableTeamSession(t, dir, server.URL, "retryable")
 
 		svc := NewTeamService(dir)
 		svc.mu.RLock()
@@ -132,7 +127,7 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 	t.Run("network error", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 		dir := t.TempDir()
-		writeRestorableTeamSession(t, dir, server.URL, server.Certificate().Raw, "retryable")
+		writeRestorableTeamSession(t, dir, server.URL, "retryable")
 		server.Close()
 
 		svc := NewTeamService(dir)
@@ -155,7 +150,7 @@ func TestTeamRestoreClearsCredentialsOnTerminalAuthRejection(t *testing.T) {
 	}))
 	defer server.Close()
 	dir := t.TempDir()
-	writeRestorableTeamSession(t, dir, server.URL, server.Certificate().Raw, "revoked")
+	writeRestorableTeamSession(t, dir, server.URL, "revoked")
 
 	svc := NewTeamService(dir)
 	svc.mu.RLock()

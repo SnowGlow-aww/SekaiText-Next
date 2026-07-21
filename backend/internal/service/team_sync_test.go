@@ -153,7 +153,7 @@ func TestTeamSyncRejectsSessionChangeBeforeMerge(t *testing.T) {
 	}
 }
 
-func TestSnapshotDiscoveryDoesNotCrossFingerprintChange(t *testing.T) {
+func TestSnapshotDiscoveryDoesNotCrossSessionChange(t *testing.T) {
 	firstConfigStarted := make(chan struct{})
 	releaseFirstConfig := make(chan struct{})
 	var configHits atomic.Int32
@@ -178,12 +178,10 @@ func TestSnapshotDiscoveryDoesNotCrossFingerprintChange(t *testing.T) {
 	go func() { firstDone <- svc.snapshot() }()
 	<-firstConfigStarted
 
-	newFingerprint := strings.Repeat("b", 64)
 	svc.sessionMu.Lock()
 	svc.mu.Lock()
 	svc.sessionEpoch++
-	svc.resetServerCachesLocked(server.URL, newFingerprint)
-	svc.fingerprint = newFingerprint
+	svc.resetServerCachesLocked("")
 	svc.mu.Unlock()
 	svc.sessionMu.Unlock()
 	close(releaseFirstConfig)
@@ -192,7 +190,7 @@ func TestSnapshotDiscoveryDoesNotCrossFingerprintChange(t *testing.T) {
 		t.Fatalf("stale discovery returned %q, want empty", got)
 	}
 	if got := svc.snapshot(); got != "https://new.example" {
-		t.Fatalf("new fingerprint discovery = %q, want https://new.example", got)
+		t.Fatalf("new session discovery = %q, want https://new.example", got)
 	}
 	if got := configHits.Load(); got != 2 {
 		t.Fatalf("config requests = %d, want 2", got)

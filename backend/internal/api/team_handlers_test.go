@@ -33,14 +33,8 @@ func TestTeamSessionHandlersExposePersistenceFailures(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	probeSvc := service.NewTeamService(t.TempDir())
-	probe, _, err := probeSvc.ProbeCertificate(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	h := teamHandlerWithUnwritableSession(t)
-	loginBody := `{"serverUrl":"` + server.URL + `","username":"amia","password":"secret","fingerprint":"` + probe.Fingerprint + `"}`
+	loginBody := `{"serverUrl":"` + server.URL + `","username":"amia","password":"secret"}`
 	login := httptest.NewRecorder()
 	h.TeamLogin(login, httptest.NewRequest(http.MethodPost, "/team/login", strings.NewReader(loginBody)))
 	if login.Code != http.StatusInternalServerError {
@@ -57,7 +51,7 @@ func TestTeamSessionHandlersExposePersistenceFailures(t *testing.T) {
 	}
 
 	h = teamHandlerWithUnwritableSession(t)
-	connectBody := `{"serverUrl":"` + server.URL + `","fingerprint":"` + probe.Fingerprint + `"}`
+	connectBody := `{"serverUrl":"` + server.URL + `"}`
 	connect := httptest.NewRecorder()
 	h.TeamConnect(connect, httptest.NewRequest(http.MethodPost, "/team/connect", strings.NewReader(connectBody)))
 	if connect.Code != http.StatusInternalServerError {

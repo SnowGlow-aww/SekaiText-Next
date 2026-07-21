@@ -25,22 +25,6 @@ const username = ref('')
 const password = ref('')
 const busy = ref(false)
 
-async function confirmServerCertificate(url: string) {
-  const probe = await api.teamProbe(url)
-  if (probe.trusted) return probe.fingerprint
-  const accepted = await confirm({
-    title: probe.changed ? '团队服务器证书已变化' : '信任团队服务器证书',
-    message: probe.changed
-      ? '服务器证书与此前记录不一致。确认管理员已更换证书后才能继续。'
-      : '首次连接不会发送账号或密码。请向管理员核对以下 SHA-256 指纹。',
-    detail: probe.fingerprint,
-    tone: probe.changed ? 'danger' : 'primary',
-    confirmText: probe.changed ? '确认新证书' : '信任并继续',
-  })
-  if (!accepted) throw new Error('已取消证书确认')
-  return probe.fingerprint
-}
-
 onMounted(async () => {
   try {
     const s = await team.refreshStatus()
@@ -56,8 +40,7 @@ async function doLogin() {
   busy.value = true
   try {
     const url = serverUrl.value.trim()
-    const fingerprint = await confirmServerCertificate(url)
-    const u = await team.login(url, username.value.trim(), password.value, fingerprint)
+    const u = await team.login(url, username.value.trim(), password.value)
     password.value = ''
     ok(`已登录：${u.displayName}（${roleLabel(u.role)}）`)
     await refreshLocal()
@@ -73,8 +56,7 @@ async function doConnect() {
   busy.value = true
   try {
     const url = serverUrl.value.trim()
-    const fingerprint = await confirmServerCertificate(url)
-    await team.connect(url, fingerprint)
+    await team.connect(url)
     ok('已连接（只读模式）')
     await refreshLocal()
   } catch (e) {

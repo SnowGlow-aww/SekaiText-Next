@@ -17,9 +17,8 @@ func newReadonlyTeam(t *testing.T, serverURL string) *TeamService {
 	svc := NewTeamService(t.TempDir())
 	svc.mu.Lock()
 	svc.serverURL = serverURL
-	// These request-path tests use local plain-HTTP fixtures. Production can only
-	// populate these fields through the HTTPS probe/pin flow.
-	svc.fingerprint = strings.Repeat("a", 64)
+	// These request-path tests use local plain-HTTP fixtures. Production only
+	// accepts HTTPS team server URLs.
 	svc.client = &http.Client{}
 	svc.cdnClient = &http.Client{}
 	svc.snapshotURLAllowed = func(string) bool { return true }

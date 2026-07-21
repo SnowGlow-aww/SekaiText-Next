@@ -20,16 +20,15 @@ type tokenResp struct {
 	Error        string    `json:"error"`
 }
 
-// Login authenticates only after the caller confirms the fingerprint returned
-// by ProbeCertificate. The probe happens before the credential body is created.
-func (t *TeamService) Login(serverURL, username, password, confirmedFingerprint string) (*TeamUser, error) {
+// Login authenticates against the selected team server.
+func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, error) {
 	t.sessionMu.Lock()
 	t.mu.Lock()
 	t.sessionEpoch++
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
-	serverURL, fingerprint, certDER, client, err := t.preparePinnedServer(serverURL, confirmedFingerprint)
+	serverURL, client, err := newTeamHTTPClient(serverURL)
 	if err != nil {
 		return nil, err
 	}
@@ -55,11 +54,9 @@ func (t *TeamService) Login(serverURL, username, password, confirmedFingerprint 
 		t.sessionMu.Unlock()
 		return nil, ErrStaleTeamSession
 	}
-	// Each URL and certificate pin identifies a distinct remote version/cache
-	// namespace, even when a replacement server is mounted at the same URL.
-	t.resetServerCachesLocked(serverURL, fingerprint)
+	t.resetServerCachesLocked(serverURL)
 	t.serverURL, t.access, t.refresh, t.user = serverURL, tr.AccessToken, tr.RefreshToken, tr.User
-	t.fingerprint, t.certDER, t.client = fingerprint, append([]byte(nil), certDER...), client
+	t.client = client
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
 	if err := t.persist(); err != nil {
@@ -68,16 +65,15 @@ func (t *TeamService) Login(serverURL, username, password, confirmedFingerprint 
 	return tr.User, nil
 }
 
-// Connect sets the server URL for no-login readonly mode after the same explicit
-// certificate confirmation used by Login.
-func (t *TeamService) Connect(serverURL, confirmedFingerprint string) error {
+// Connect sets the server URL for no-login readonly mode.
+func (t *TeamService) Connect(serverURL string) error {
 	t.sessionMu.Lock()
 	t.mu.Lock()
 	t.sessionEpoch++
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
-	serverURL, fingerprint, certDER, client, err := t.preparePinnedServer(serverURL, confirmedFingerprint)
+	serverURL, client, err := newTeamHTTPClient(serverURL)
 	if err != nil {
 		return err
 	}
@@ -96,10 +92,10 @@ func (t *TeamService) Connect(serverURL, confirmedFingerprint string) error {
 		t.sessionMu.Unlock()
 		return ErrStaleTeamSession
 	}
-	t.resetServerCachesLocked(serverURL, fingerprint)
+	t.resetServerCachesLocked(serverURL)
 	t.serverURL = serverURL
 	t.access, t.refresh, t.user = "", "", nil
-	t.fingerprint, t.certDER, t.client = fingerprint, append([]byte(nil), certDER...), client
+	t.client = client
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
 	return t.persist()
@@ -190,19 +186,19 @@ func (t *TeamService) Disconnect() error {
 	t.sessionMu.Lock()
 	t.mu.Lock()
 	t.sessionEpoch++
-	t.resetServerCachesLocked("", "")
+	t.resetServerCachesLocked("")
 	t.serverURL, t.access, t.refresh, t.user = "", "", "", nil
-	t.fingerprint, t.certDER, t.client = "", nil, nil
+	t.client = nil
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
 	return t.persist()
 }
 
 // Status reports the current session (nil user = not logged in).
-func (t *TeamService) Status() (string, string, *TeamUser) {
+func (t *TeamService) Status() (string, *TeamUser) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.serverURL, t.fingerprint, t.user
+	return t.serverURL, t.user
 }
 
 // LoggedIn reports whether there is an active access token.

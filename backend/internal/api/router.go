@@ -180,11 +180,10 @@ func NewRouter(cfg *config.AppConfig) *Server {
 		})
 
 		// Team mode: proxy to a remote glossary-server (login, sync, proposals,
-		// review, admin). The local backend holds the token and pins the explicitly
-		// confirmed server certificate; the frontend only talks to localhost.
+		// review, admin). The local backend holds the token; the frontend only talks
+		// to localhost.
 		r.Route("/team", func(r chi.Router) {
 			r.Get("/status", h.TeamStatus)
-			r.Post("/probe", h.TeamProbe)
 			r.Post("/login", h.TeamLogin)
 			r.Post("/logout", h.TeamLogout)
 			r.Post("/connect", h.TeamConnect)

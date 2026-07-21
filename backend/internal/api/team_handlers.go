@@ -13,21 +13,18 @@ import (
 
 // TeamStatus reports the current team-mode session.
 func (h *Handler) TeamStatus(w http.ResponseWriter, r *http.Request) {
-	url, fingerprint, user := h.team.Status()
+	url, user := h.team.Status()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"loggedIn":               user != nil,
-		"connected":              url != "",
-		"readonly":               url != "" && user == nil,
-		"serverUrl":              url,
-		"certificateFingerprint": fingerprint,
-		"user":                   user,
+		"loggedIn":  user != nil,
+		"connected": url != "",
+		"readonly":  url != "" && user == nil,
+		"serverUrl": url,
+		"user":      user,
 	})
 }
 
-// TeamProbe performs only a TLS handshake and returns the leaf certificate
-// fingerprint for explicit TOFU confirmation. No HTTP request or credential is
-// sent to the remote server.
-func (h *Handler) TeamProbe(w http.ResponseWriter, r *http.Request) {
+// TeamConnect sets the server URL for no-login readonly mode.
+func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ServerURL string `json:"serverUrl"`
 	}
@@ -35,25 +32,7 @@ func (h *Handler) TeamProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	probe, _, err := h.team.ProbeCertificate(req.ServerURL)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, probe)
-}
-
-// TeamConnect sets the server URL for no-login readonly mode.
-func (h *Handler) TeamConnect(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ServerURL   string `json:"serverUrl"`
-		Fingerprint string `json:"fingerprint"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if err := h.team.Connect(req.ServerURL, req.Fingerprint); err != nil {
+	if err := h.team.Connect(req.ServerURL); err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrTeamPersistence) {
 			status = http.StatusInternalServerError
@@ -76,16 +55,15 @@ func (h *Handler) TeamDisconnect(w http.ResponseWriter, r *http.Request) {
 // TeamLogin authenticates against a remote glossary-server.
 func (h *Handler) TeamLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ServerURL   string `json:"serverUrl"`
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		Fingerprint string `json:"fingerprint"`
+		ServerURL string `json:"serverUrl"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	user, err := h.team.Login(req.ServerURL, req.Username, req.Password, req.Fingerprint)
+	user, err := h.team.Login(req.ServerURL, req.Username, req.Password)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, service.ErrTeamPersistence) {

@@ -10,7 +10,7 @@ _✨ Project Sekai 剧情翻译编辑器 ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <a href="https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-5.9.3-blue?style=flat-square" /></a>
+  <a href="https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-5.9.4-blue?style=flat-square" /></a>
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
@@ -114,7 +114,7 @@ npm run build:tauri
 
 ## 版本
 
-当前版本：**5.9.3** (stable)
+当前版本：**5.9.4** (stable)
 
 [下载最新版并查看更新日志](https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest)。历史版本与更新说明统一发布在 [GitHub Releases](https://github.com/SnowGlow-aww/SekaiText-Next/releases)，仓库内的 `CHANGELOG.md` 已停止维护。
 
