@@ -15,7 +15,7 @@ _✨ Project Sekai Story Translation Editor ✨_
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/github/license/SnowGlow-aww/SekaiText-Next?style=flat-square&color=ff69b4" />
-  <a href="https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-5.9.4-blue?style=flat-square" /></a>
+  <a href="https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-5.9.5-blue?style=flat-square" /></a>
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-ffc131?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3.5-4fc08d?style=flat-square&logo=vuedotjs&logoColor=white" />
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00add8?style=flat-square&logo=go&logoColor=white" />
@@ -119,7 +119,7 @@ Settings are available in-app via the Settings page:
 
 ## Version
 
-Current version: **5.9.4** (stable)
+Current version: **5.9.5** (stable)
 
 [Download the latest release and read its notes](https://github.com/SnowGlow-aww/SekaiText-Next/releases/latest). Historical downloads and changelogs are published in [GitHub Releases](https://github.com/SnowGlow-aww/SekaiText-Next/releases); the repository `CHANGELOG.md` is no longer maintained.
 

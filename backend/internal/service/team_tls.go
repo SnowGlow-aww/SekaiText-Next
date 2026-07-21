@@ -95,6 +95,23 @@ func publicSnapshotIP(ip net.IP) bool {
 	return true
 }
 
+func publicSnapshotResolvedIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	// Clash and compatible TUN proxies use 198.18.0.0/15 as a DNS Fake-IP
+	// range. Raw URLs in this range are still rejected by
+	// publicSnapshotURLAllowed; only a hostname resolved by the local DNS proxy
+	// may reach the dialer with one of these synthetic addresses.
+	if clashFakeIPPrefix.Contains(addr.Unmap()) {
+		return true
+	}
+	return publicSnapshotIP(ip)
+}
+
+var clashFakeIPPrefix = netip.MustParsePrefix("198.18.0.0/15")
+
 var nonPublicSnapshotPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("10.0.0.0/8"),
@@ -162,7 +179,7 @@ func newPublicSnapshotTransport(lookup lookupIPAddrFunc, dial dialContextFunc) *
 			return nil, err
 		}
 		for _, candidate := range ips {
-			if !publicSnapshotIP(candidate.IP) {
+			if !publicSnapshotResolvedIP(candidate.IP) {
 				return nil, fmt.Errorf("snapshot host resolved to a non-public address: %s", candidate.IP)
 			}
 		}

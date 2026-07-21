@@ -2,8 +2,11 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -140,5 +143,27 @@ func TestSnapshotClientIgnoresEnvironmentProxy(t *testing.T) {
 	}
 	if transport.Proxy != nil {
 		t.Fatal("snapshot transport inherited ProxyFromEnvironment")
+	}
+}
+
+func TestSnapshotClientAllowsClashFakeIPForHostname(t *testing.T) {
+	wantErr := errors.New("dial reached")
+	transport := newPublicSnapshotTransport(
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("198.18.0.73")}}, nil
+		},
+		func(_ context.Context, _, address string) (net.Conn, error) {
+			if address != "198.18.0.73:443" {
+				t.Fatalf("dial address = %q", address)
+			}
+			return nil, wantErr
+		},
+	)
+	_, err := transport.DialContext(context.Background(), "tcp", "cdn.example.com:443")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("DialContext error = %v, want dial sentinel", err)
+	}
+	if publicSnapshotURLAllowed("https://198.18.0.73/app-release.json") {
+		t.Fatal("raw Fake-IP URL must remain blocked")
 	}
 }
