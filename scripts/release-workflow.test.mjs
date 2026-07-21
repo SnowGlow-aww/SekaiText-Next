@@ -46,6 +46,16 @@ test('release verification prepares generated Tauri inputs before Rust tests', (
   assert.ok(enginePath >= 0 && enginePath < rustTest)
 })
 
+test('tag releases deploy the website after manifest publication', () => {
+  const manifestJob = release.indexOf('\n  manifest:\n')
+  const websiteJob = release.indexOf('\n  website:\n')
+  assert.ok(manifestJob >= 0 && websiteJob > manifestJob)
+  const website = release.slice(websiteJob)
+  assert.match(website, /needs: manifest/)
+  assert.match(website, /SITE_BASE: \/web\//)
+  assert.match(website, /run: npm run deploy:oss/)
+})
+
 test('all external workflow actions are pinned to full commit SHAs', () => {
   for (const [name, source] of [['release', release], ['manifest', manifest]]) {
     for (const match of source.matchAll(/^\s*-\s+uses:\s+([^\s#]+)/gm)) {
