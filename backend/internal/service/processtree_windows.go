@@ -12,6 +12,8 @@ import (
 const (
 	jobObjectExtendedLimitInformation = 9
 	jobObjectLimitKillOnJobClose      = 0x00002000
+	processTerminate                  = 0x0001
+	processSetQuota                   = 0x0100
 )
 
 var (
@@ -74,17 +76,18 @@ func newProcessTreeAuthority(cmd *exec.Cmd) (processTreeAuthority, error) {
 		return nil, windowsCallError(callErr)
 	}
 
-	var assignErr error
-	if err := cmd.Process.WithHandle(func(processHandle uintptr) {
-		result, _, callErr := assignEngineProcessToJob.Call(handle, processHandle)
-		if result == 0 {
-			assignErr = windowsCallError(callErr)
-		}
-	}); err != nil {
+	processHandle, err := syscall.OpenProcess(
+		processTerminate|processSetQuota,
+		false,
+		uint32(cmd.Process.Pid),
+	)
+	if err != nil {
 		return nil, err
 	}
-	if assignErr != nil {
-		return nil, assignErr
+	defer syscall.CloseHandle(processHandle)
+	result, _, callErr = assignEngineProcessToJob.Call(handle, uintptr(processHandle))
+	if result == 0 {
+		return nil, windowsCallError(callErr)
 	}
 	closeOnError = false
 	return &windowsProcessTreeJob{handle: handle}, nil

@@ -38,6 +38,13 @@ jobs:
           cache-dependency-path: backend/go.sum
       - run: go test -race ./...
         working-directory: backend
+      - name: Cross-build Windows backend
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build -o "$RUNNER_TEMP/sekaitext-backend.exe" ./cmd/sekaitext
+        working-directory: backend
 
   rust:
     runs-on: ubuntu-latest
