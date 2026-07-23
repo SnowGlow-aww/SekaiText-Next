@@ -9,9 +9,8 @@ import App from './App.vue'
 
 // Transport: in packaged builds the frontend talks to the Go backend over the
 // Tauri custom scheme (sekai://) instead of TCP, so there is no externally
-// reachable socket to defend — the capability-token fetch monkey-patch and the
-// `auth_token` invoke have been removed (the IPC stdio channel is in-process and
-// the token middleware no-ops). The backend origin is read from
+// reachable socket to defend. Development stays same-origin and Vite proxies API
+// calls with an ephemeral TCP capability; the backend origin is read from
 // window.__SEKAI_ORIGIN__ in src/api/client.ts.
 
 const app = createApp(App)

@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,7 +16,16 @@ import (
 	"testing"
 )
 
-func TestTeamLoginAcceptsSelfSignedCertificate(t *testing.T) {
+func testServerRoots(t *testing.T, servers ...*httptest.Server) *x509.CertPool {
+	t.Helper()
+	roots := x509.NewCertPool()
+	for _, server := range servers {
+		roots.AddCert(server.Certificate())
+	}
+	return roots
+}
+
+func TestTeamLoginRejectsUntrustedCertificate(t *testing.T) {
 	var hits atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -28,6 +38,29 @@ func TestTeamLoginAcceptsSelfSignedCertificate(t *testing.T) {
 	defer server.Close()
 
 	svc := NewTeamService(t.TempDir())
+	_, err := svc.Login(server.URL, "amia", "secret")
+	var unknownAuthority x509.UnknownAuthorityError
+	if !errors.As(err, &unknownAuthority) {
+		t.Fatalf("Login error = %v, want x509.UnknownAuthorityError", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("server received %d credential requests before certificate verification", hits.Load())
+	}
+}
+
+func TestTeamLoginAcceptsExplicitlyTrustedCertificate(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/api/auth/login" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"accessToken":"access","refreshToken":"refresh","user":{"id":"1","username":"amia","displayName":"Amia","role":"member","status":"active"}}`))
+	}))
+	defer server.Close()
+
+	svc := NewTeamServiceWithRootCAs(t.TempDir(), testServerRoots(t, server))
 	user, err := svc.Login(server.URL, "amia", "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +71,28 @@ func TestTeamLoginAcceptsSelfSignedCertificate(t *testing.T) {
 	url, statusUser := svc.Status()
 	if url != server.URL || statusUser == nil {
 		t.Fatalf("status not retained: url=%q user=%+v", url, statusUser)
+	}
+}
+
+func TestTeamClientRejectsTrustedCertificateForWrongHostname(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	serverURL, client, err := newTeamHTTPClient("https://wrong-host.invalid", testServerRoots(t, server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := client.Transport.(*http.Transport)
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	_, err = client.Get(serverURL)
+	var hostnameErr x509.HostnameError
+	if !errors.As(err, &hostnameErr) {
+		t.Fatalf("request error = %v, want x509.HostnameError", err)
 	}
 }
 
@@ -53,7 +108,7 @@ func TestTeamAuthenticationBlocksCrossOriginRedirect(t *testing.T) {
 	}))
 	defer source.Close()
 
-	svc := NewTeamService(t.TempDir())
+	svc := NewTeamServiceWithRootCAs(t.TempDir(), testServerRoots(t, source, target))
 	if _, err := svc.Login(source.URL, "user", "password"); err == nil {
 		t.Fatal("Login unexpectedly followed a cross-origin redirect")
 	}
@@ -95,7 +150,7 @@ func TestTeamSessionRestoreIgnoresCertificateFingerprint(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			svc := NewTeamService(dir)
+			svc := NewTeamServiceWithRootCAs(dir, testServerRoots(t, server))
 			if !svc.LoggedIn() || persistedRefreshToken(t, dir) != "renewed" {
 				t.Fatal("persisted session did not refresh and remain logged in")
 			}

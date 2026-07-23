@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"time"
 
@@ -215,7 +216,7 @@ func NewRouter(cfg *config.AppConfig) *Server {
 			r.Post("/save", h.RecoverySave)
 			r.Get("/load", h.RecoveryLoad)
 			r.Delete("/clear", h.RecoveryClear)
-			r.Post("/clear", h.RecoveryClear) // for sendBeacon on beforeunload
+			r.Post("/clear", h.RecoveryClear)
 		})
 
 		// Update (CDN refresh)
@@ -277,10 +278,9 @@ func developmentCORS() *cors.Cors {
 }
 
 // capabilityToken rejects mutating requests that don't carry the per-launch
-// X-Sekai-Token (set by the Tauri shell, forwarded by the frontend fetch wrapper
-// in main.ts). Enforced only when token != "" (production). GET/HEAD/OPTIONS are
-// non-mutating; the sole write exemption is the exact sendBeacon recovery clear
-// request, whose browser API cannot attach the custom header.
+// X-Sekai-Token. TCP startup requires a token; process-private IPC leaves it empty.
+// JSON is required for methods that can carry mutation payloads, which also rejects
+// browser-simple text/plain form attacks independently of CORS policy.
 func capabilityToken(token string) func(http.Handler) http.Handler {
 	mutating := func(m string) bool {
 		switch m {
@@ -291,14 +291,22 @@ func capabilityToken(token string) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			recoveryBeacon := r.Method == http.MethodPost && r.URL.Path == "/api/v1/recovery/clear"
-			if token != "" && mutating(r.Method) && !recoveryBeacon {
+			if token != "" && mutating(r.Method) {
 				got := r.Header.Get("X-Sekai-Token")
 				if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusForbidden)
 					w.Write([]byte(`{"error":"missing or invalid capability token"}`))
 					return
+				}
+				if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+					mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+					if err != nil || mediaType != "application/json" {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusUnsupportedMediaType)
+						w.Write([]byte(`{"error":"mutating request content type must be application/json"}`))
+						return
+					}
 				}
 			}
 			next.ServeHTTP(w, r)

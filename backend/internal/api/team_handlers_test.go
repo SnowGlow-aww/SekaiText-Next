@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/x509"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,13 +13,13 @@ import (
 	"sekaitext/backend/internal/service"
 )
 
-func teamHandlerWithUnwritableSession(t *testing.T) *Handler {
+func teamHandlerWithUnwritableSession(t *testing.T, rootCAs *x509.CertPool) *Handler {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(path, []byte("block child paths"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &Handler{team: service.NewTeamService(path)}
+	return &Handler{team: service.NewTeamServiceWithRootCAs(path, rootCAs)}
 }
 
 func TestTeamSessionHandlersExposePersistenceFailures(t *testing.T) {
@@ -33,7 +34,9 @@ func TestTeamSessionHandlersExposePersistenceFailures(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	h := teamHandlerWithUnwritableSession(t)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	h := teamHandlerWithUnwritableSession(t, roots)
 	loginBody := `{"serverUrl":"` + server.URL + `","username":"amia","password":"secret"}`
 	login := httptest.NewRecorder()
 	h.TeamLogin(login, httptest.NewRequest(http.MethodPost, "/team/login", strings.NewReader(loginBody)))
@@ -50,7 +53,7 @@ func TestTeamSessionHandlersExposePersistenceFailures(t *testing.T) {
 		t.Fatal("logout persistence failure left the in-memory session logged in")
 	}
 
-	h = teamHandlerWithUnwritableSession(t)
+	h = teamHandlerWithUnwritableSession(t, roots)
 	connectBody := `{"serverUrl":"` + server.URL + `"}`
 	connect := httptest.NewRecorder()
 	h.TeamConnect(connect, httptest.NewRequest(http.MethodPost, "/team/connect", strings.NewReader(connectBody)))

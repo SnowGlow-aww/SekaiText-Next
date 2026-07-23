@@ -19,9 +19,10 @@
     "node": ">=20.19"
   },
   "scripts": {
-    "dev": "node scripts/cleanup.mjs 5173 && vite",
-    "dev:go": "node scripts/cleanup.mjs 9800 && cd backend && go run ./cmd/sekaitext/ --dir .",
-    "dev:web": "concurrently --names go,vue --prefix-colors yellow,cyan \"npm run dev:go\" \"npm run dev\"",
+    "dev": "vite",
+    "dev:go": "node scripts/dev-tcp.mjs --backend-only",
+    "dev:tcp": "node scripts/dev-tcp.mjs",
+    "dev:web": "npm run dev:tcp",
     "dev:tauri": "node scripts/build-go.mjs && npx tauri dev",
     "build:go": "node scripts/build-go.mjs",
     "build:all": "npm run build:go && npm run build",
@@ -41,7 +42,6 @@
     "daisyui": "^5.5.23",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^3.0.4",
-    "sharp": "^0.34.5",
     "tailwindcss": "^4.3.1",
     "vue": "^3.5.32",
     "vue-router": "^5.0.6"

@@ -14,20 +14,22 @@ func TestCapabilityTokenMutatingRoutes(t *testing.T) {
 	handler := capabilityToken(token)(next)
 
 	tests := []struct {
-		name   string
-		method string
-		path   string
-		header string
-		want   int
+		name        string
+		method      string
+		path        string
+		header      string
+		contentType string
+		want        int
 	}{
-		{"engine write requires token", http.MethodPost, "/api/v1/engine/timing/start", "", http.StatusForbidden},
-		{"live2d import requires token", http.MethodPost, "/api/v1/live2d/import", "", http.StatusForbidden},
-		{"live2d sync requires token", http.MethodPost, "/api/v1/live2d/sync", "", http.StatusForbidden},
-		{"valid token accepted", http.MethodPost, "/api/v1/engine/timing/start", token, http.StatusNoContent},
-		{"read does not require token", http.MethodGet, "/api/v1/engine/status", "", http.StatusNoContent},
-		{"recovery beacon is narrow exception", http.MethodPost, "/api/v1/recovery/clear", "", http.StatusNoContent},
-		{"recovery delete still requires token", http.MethodDelete, "/api/v1/recovery/clear", "", http.StatusForbidden},
-		{"similar recovery path still requires token", http.MethodPost, "/api/v1/recovery/clear/extra", "", http.StatusForbidden},
+		{"engine write requires token", http.MethodPost, "/api/v1/engine/timing/start", "", "application/json", http.StatusForbidden},
+		{"live2d import requires token", http.MethodPost, "/api/v1/live2d/import", "", "application/json", http.StatusForbidden},
+		{"live2d sync requires token", http.MethodPost, "/api/v1/live2d/sync", "", "application/json", http.StatusForbidden},
+		{"valid token and JSON accepted", http.MethodPost, "/api/v1/engine/timing/start", token, "application/json", http.StatusNoContent},
+		{"valid token rejects text plain", http.MethodPost, "/api/v1/translation/save", token, "text/plain", http.StatusUnsupportedMediaType},
+		{"read does not require token", http.MethodGet, "/api/v1/engine/status", "", "", http.StatusNoContent},
+		{"recovery post requires token", http.MethodPost, "/api/v1/recovery/clear", "", "text/plain", http.StatusForbidden},
+		{"recovery delete requires token", http.MethodDelete, "/api/v1/recovery/clear", "", "", http.StatusForbidden},
+		{"similar recovery path requires token", http.MethodPost, "/api/v1/recovery/clear/extra", "", "application/json", http.StatusForbidden},
 	}
 
 	for _, tt := range tests {
@@ -36,12 +38,43 @@ func TestCapabilityTokenMutatingRoutes(t *testing.T) {
 			if tt.header != "" {
 				req.Header.Set("X-Sekai-Token", tt.header)
 			}
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
 			if rr.Code != tt.want {
 				t.Fatalf("status = %d, want %d", rr.Code, tt.want)
 			}
 		})
+	}
+}
+
+func TestCrossOriginSimpleFileMutationsCannotReachHandlers(t *testing.T) {
+	const token = "test-capability"
+	var hits int
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := developmentCORS().Handler(capabilityToken(token)(next))
+
+	for _, path := range []string{
+		"/api/v1/translation/create",
+		"/api/v1/translation/rename-file",
+		"/api/v1/translation/save",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Origin", "https://attacker.invalid")
+		req.Header.Set("Content-Type", "text/plain")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("POST %s status = %d, want %d", path, rr.Code, http.StatusForbidden)
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("unauthenticated file mutation handler ran %d times", hits)
 	}
 }
 

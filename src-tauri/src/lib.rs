@@ -664,14 +664,14 @@ pub fn run() {
             .expect("Failed to load window icon"),
     ));
 
-    // The frontend reads window.__SEKAI_ORIGIN__ to decide where to send requests.
-    // Release uses the custom scheme (platform-dependent origin); dev keeps TCP.
+    // Release uses the custom scheme (platform-dependent origin). Development
+    // stays on the Vite origin so its proxy can add the ephemeral TCP capability.
     #[cfg(windows)]
     const RELEASE_ORIGIN: &str = "http://sekai.localhost";
     #[cfg(not(windows))]
     const RELEASE_ORIGIN: &str = "sekai://localhost";
     let origin = if cfg!(debug_assertions) {
-        "http://localhost:9800"
+        ""
     } else {
         RELEASE_ORIGIN
     };

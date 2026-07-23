@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -30,20 +31,22 @@ func normalizeTeamServerURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-// newTeamHTTPClient accepts the team's self-signed certificate. The server URL
-// remains HTTPS-only, and redirects cannot leave the selected origin.
-func newTeamHTTPClient(rawServerURL string) (string, *http.Client, error) {
+// newTeamHTTPClient verifies the team server against the supplied roots, or the
+// system trust store (including custom installed CAs) when roots is nil. Redirects
+// cannot leave the selected origin, so credentials never reach another server.
+func newTeamHTTPClient(rawServerURL string, rootCAs *x509.CertPool) (string, *http.Client, error) {
 	serverURL, err := normalizeTeamServerURL(rawServerURL)
 	if err != nil {
 		return "", nil, err
 	}
 
+	origin, _ := url.Parse(serverURL)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, // The configured team server uses a self-signed certificate.
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    rootCAs,
+		ServerName: origin.Hostname(),
 	}
-	origin, _ := url.Parse(serverURL)
 	return serverURL, &http.Client{
 		Timeout:   20 * time.Second,
 		Transport: transport,

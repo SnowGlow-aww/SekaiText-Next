@@ -8,7 +8,8 @@ describe('API transport', () => {
   })
 
   it('preserves default and caller-provided headers together', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('/api/v1/test')
       const headers = new Headers(init?.headers)
       expect(headers.get('Content-Type')).toBe('application/json')
       expect(headers.get('X-Request-ID')).toBe('test-request')

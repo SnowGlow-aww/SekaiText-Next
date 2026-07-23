@@ -24,11 +24,10 @@
 import { ref, onMounted, watch } from 'vue'
 import { useSettingsStore } from './stores/settings'
 import { useAppStore } from './stores/app'
-import { useEditorStore } from './stores/editor'
 import { useAppUpdateStore } from './stores/appUpdate'
 import { useToast } from './composables/useToast'
 import { useDebugLog } from './composables/useDebugLog'
-import { api, ORIGIN } from './api/client'
+import { api } from './api/client'
 import Toast from './components/Toast.vue'
 import UpdateBanner from './components/ui/UpdateBanner.vue'
 import DownloadFloat from './components/DownloadFloat.vue'
@@ -126,22 +125,9 @@ onMounted(async () => {
   if ((window as any).__TAURI_INTERNALS__) {
     document.addEventListener('contextmenu', (e) => e.preventDefault())
   }
-  // Recovery is cleared on normal exit by the Tauri shell in RELEASE (Rust sends
-  // DELETE /api/v1/recovery/clear on RunEvent::Exit — on macOS an Apple-event quit
-  // fires ONLY Exit, not ExitRequested, so Exit is the single reliable quit hook).
-  // A beforeunload sendBeacon can't reliably reach a custom-scheme backend,
-  // so it's gone there. In DEV (dev:web / dev:tauri talk to the backend over TCP and
-  // have no Rust quit hook), keep a dev-only beacon so a clean exit still clears
-  // recovery. In-app explicit "clear recovery" actions still go through the api client.
-  if (import.meta.env.DEV) {
-    window.addEventListener('beforeunload', () => {
-      // Only clear when nothing is dirty: a dev reload (Cmd+R) with unsaved
-      // edits unloads the page — the edits die with it, and clearing here would
-      // destroy the autosave too, i.e. the only remaining copy.
-      const ed = useEditorStore()
-      if (!ed.hasAnyUnsaved()) navigator.sendBeacon(`${ORIGIN}/api/v1/recovery/clear`)
-    })
-  }
+  // Recovery is cleared on normal packaged-app exit by the Tauri shell. Browser
+  // sendBeacon cannot attach the TCP capability, so development unloads retain
+  // recovery until the next explicit authenticated clear.
   try {
     await settings.fetchSettings()
   } catch {

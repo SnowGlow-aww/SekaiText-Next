@@ -28,3 +28,28 @@ func TestShutdownLifecycleAlwaysInvokesBackendCleanup(t *testing.T) {
 		t.Fatalf("shutdownLifecycle error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestAuthTokenForTransport(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		ipc     bool
+		token   string
+		want    string
+		wantErr bool
+	}{
+		{name: "TCP rejects empty token", token: "", wantErr: true},
+		{name: "TCP rejects whitespace token", token: "  ", wantErr: true},
+		{name: "TCP keeps non-empty token", token: "secret-token", want: "secret-token"},
+		{name: "IPC does not expose supplied token", ipc: true, token: "ignored", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := authTokenForTransport(tt.ipc, tt.token)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("token = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

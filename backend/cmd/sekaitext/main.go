@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,11 +23,16 @@ import (
 func main() {
 	port := flag.Int("port", 9800, "server port")
 	host := flag.String("host", "127.0.0.1", "interface to bind; 127.0.0.1 keeps the sidecar local-only. Use 0.0.0.0 to deliberately expose it to the LAN.")
-	authToken := flag.String("auth-token", "", "capability token required on mutating requests (X-Sekai-Token header); empty disables enforcement (dev)")
+	authToken := flag.String("auth-token", "", "capability token required in TCP mode on mutating requests (X-Sekai-Token header)")
 	dir := flag.String("dir", ".", "base directory for read-only resources (images)")
 	dataDir := flag.String("data-dir", "", "base directory for writable data (catalog, settings); defaults to --dir")
 	ipcMode := flag.Bool("ipc", false, "serve over stdio framing (Tauri sekai:// custom scheme) instead of binding TCP; release transport. No TCP port, no capability token.")
 	flag.Parse()
+	validatedAuthToken, err := authTokenForTransport(*ipcMode, *authToken)
+	if err != nil {
+		log.Printf("Refusing to start: %v", err)
+		return
+	}
 
 	// Resolve base directory:
 	// - If --dir explicitly provided, use it as-is (relative to CWD).
@@ -45,12 +51,8 @@ func main() {
 	}
 
 	cfg := config.NewAppConfig(baseDir, *dataDir)
-	// In ipc (stdio) mode the channel is process-private — no external page can
-	// reach it — so the capability token is pointless and stays "" (the token
-	// middleware then no-ops). TCP mode keeps the per-launch token.
-	if !*ipcMode {
-		cfg.AuthToken = *authToken
-	}
+	// IPC is process-private and uses no capability; TCP is fail-closed above.
+	cfg.AuthToken = validatedAuthToken
 
 	// Ensure writable directories exist
 	ensureDir(cfg.CatalogDir)
@@ -115,6 +117,16 @@ func main() {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		log.Printf("Server failed: %v", serveErr)
 	}
+}
+
+func authTokenForTransport(ipcMode bool, raw string) (string, error) {
+	if ipcMode {
+		return "", nil
+	}
+	if strings.TrimSpace(raw) == "" {
+		return "", errors.New("TCP mode requires a non-empty --auth-token")
+	}
+	return raw, nil
 }
 
 type lifecycleShutdowner interface {

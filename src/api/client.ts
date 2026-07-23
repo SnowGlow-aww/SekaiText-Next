@@ -1,9 +1,9 @@
 // Backend origin is injected by the Tauri shell (Rust `initialization_script`)
 // as window.__SEKAI_ORIGIN__, which runs before the app JS. In packaged builds it
 // points at the custom scheme (sekai://localhost or http://sekai.localhost); in
-// dev (plain browser / vite) the global is absent so we fall back to the TCP
-// backend on localhost:9800. No platform branching needed here.
-export const ORIGIN = (typeof window !== 'undefined' && (window as any).__SEKAI_ORIGIN__) || 'http://localhost:9800'
+// dev (plain browser / Vite) the global is absent, so requests stay same-origin
+// and Vite's proxy adds the per-run TCP capability without exposing it to JS.
+export const ORIGIN = (typeof window !== 'undefined' && (window as any).__SEKAI_ORIGIN__) || ''
 export const BASE_URL = ORIGIN + '/api/v1'
 
 export class ApiError extends Error {

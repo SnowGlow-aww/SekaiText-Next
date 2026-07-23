@@ -28,7 +28,7 @@ func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, er
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
-	serverURL, client, err := newTeamHTTPClient(serverURL)
+	serverURL, client, err := t.newHTTPClient(serverURL)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (t *TeamService) Connect(serverURL string) error {
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
 	t.sessionMu.Unlock()
-	serverURL, client, err := newTeamHTTPClient(serverURL)
+	serverURL, client, err := t.newHTTPClient(serverURL)
 	if err != nil {
 		return err
 	}

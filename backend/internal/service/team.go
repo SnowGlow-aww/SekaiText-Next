@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,9 +40,12 @@ var ErrTeamPersistence = errors.New("persist team session")
 type TeamService struct {
 	dataDir string
 	syncDir func(string) error
-	// client is scoped to the selected server origin and accepts its self-signed
-	// certificate. Redirects are still restricted to that same origin.
+	// client is scoped to the selected server origin and verifies its certificate.
+	// Redirects are restricted to that same origin.
 	client *http.Client
+	// teamRootCAs is nil in production so Go uses the system trust store. Tests
+	// inject a private CA to exercise trusted TLS without changing process trust.
+	teamRootCAs *x509.CertPool
 	// cdnClient only permits public HTTPS destinations and never carries team
 	// credentials. snapshotURLAllowed is a dependency seam for local unit tests;
 	// production always uses publicSnapshotURLAllowed.
@@ -111,14 +115,25 @@ func (t *TeamService) resetServerCachesLocked(serverURL string) {
 
 // NewTeamService creates the service and attempts to restore a prior session.
 func NewTeamService(dataDir string) *TeamService {
+	return NewTeamServiceWithRootCAs(dataDir, nil)
+}
+
+// NewTeamServiceWithRootCAs uses the supplied trust pool instead of the system
+// pool. Callers providing a private team CA remain subject to hostname checks.
+func NewTeamServiceWithRootCAs(dataDir string, teamRootCAs *x509.CertPool) *TeamService {
 	t := &TeamService{
 		dataDir:            dataDir,
 		syncDir:            fsutil.SyncDir,
 		snapshotURLAllowed: publicSnapshotURLAllowed,
+		teamRootCAs:        teamRootCAs,
 	}
 	t.cdnClient = newSnapshotHTTPClient()
 	t.restore()
 	return t
+}
+
+func (t *TeamService) newHTTPClient(rawServerURL string) (string, *http.Client, error) {
+	return newTeamHTTPClient(rawServerURL, t.teamRootCAs)
 }
 
 func (t *TeamService) sessionPath() string {
@@ -134,7 +149,7 @@ func (t *TeamService) restore() {
 	if json.Unmarshal(b, &p) != nil || p.ServerURL == "" {
 		return
 	}
-	serverURL, client, err := newTeamHTTPClient(p.ServerURL)
+	serverURL, client, err := t.newHTTPClient(p.ServerURL)
 	if err != nil {
 		return
 	}

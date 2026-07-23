@@ -32,8 +32,9 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	roots := testServerRoots(t, server)
 	t.Run("login and logout", func(t *testing.T) {
-		svc := NewTeamService(unusableTeamDataDir(t))
+		svc := NewTeamServiceWithRootCAs(unusableTeamDataDir(t), roots)
 		user, err := svc.Login(server.URL, "amia", "secret")
 		if !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Login error = %v, want ErrTeamPersistence", err)
@@ -56,7 +57,7 @@ func TestTeamSessionMutationsReportPersistenceFailures(t *testing.T) {
 	})
 
 	t.Run("connect and disconnect", func(t *testing.T) {
-		svc := NewTeamService(unusableTeamDataDir(t))
+		svc := NewTeamServiceWithRootCAs(unusableTeamDataDir(t), roots)
 		if err := svc.Connect(server.URL); !errors.Is(err, ErrTeamPersistence) {
 			t.Fatalf("Connect error = %v, want ErrTeamPersistence", err)
 		}
@@ -115,7 +116,7 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 		dir := t.TempDir()
 		writeRestorableTeamSession(t, dir, server.URL, "retryable")
 
-		svc := NewTeamService(dir)
+		svc := NewTeamServiceWithRootCAs(dir, testServerRoots(t, server))
 		svc.mu.RLock()
 		refresh := svc.refresh
 		svc.mu.RUnlock()
@@ -152,7 +153,7 @@ func TestTeamRestoreClearsCredentialsOnTerminalAuthRejection(t *testing.T) {
 	dir := t.TempDir()
 	writeRestorableTeamSession(t, dir, server.URL, "revoked")
 
-	svc := NewTeamService(dir)
+	svc := NewTeamServiceWithRootCAs(dir, testServerRoots(t, server))
 	svc.mu.RLock()
 	refresh := svc.refresh
 	svc.mu.RUnlock()

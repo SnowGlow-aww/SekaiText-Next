@@ -34,7 +34,7 @@ SekaiText Next 是一款桌面应用程序，用于浏览、翻译和校对「�
 | 前端 | [Vue 3](https://vuejs.org/) + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vitejs.dev/) + [Tailwind CSS v4](https://tailwindcss.com/) + [DaisyUI](https://daisyui.com/) |
 | 状态管理 | [Pinia](https://pinia.vuejs.org/) |
 | 路由 | [Vue Router v5](https://router.vuejs.org/) |
-| 后端 | [Go 1.24](https://go.dev/) + [chi router](https://github.com/go-chi/chi)（开发绑 TCP，发布走 stdio + `sekai://` 自定义协议，无端口） |
+| 后端 | [Go 1.26](https://go.dev/) + [chi router](https://github.com/go-chi/chi)（开发绑 TCP，发布走 stdio + `sekai://` 自定义协议，无端口） |
 | 桌面壳 | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | 轴机 / 压制内核 | [SekaiCoreEngine](https://github.com/SnowGlow-aww/SekaiTools-Avalonia) + [FFmpeg](https://ffmpeg.org/)，作为 sidecar 由后端经 NDJSON IPC 驱动 |
 | 插件系统 | 热加载插件，共享宿主 Vue / Pinia / Router 单例 |

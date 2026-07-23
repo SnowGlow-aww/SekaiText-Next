@@ -57,7 +57,7 @@ export interface SekaiHost {
   version: string
   // The backend origin (no trailing slash), injected as window.__SEKAI_ORIGIN__:
   // the custom scheme (sekai://localhost / http://sekai.localhost) in packaged
-  // builds, or http://localhost:9800 in dev. Plugins read this instead of
+  // builds, or the same-origin Vite proxy in dev. Plugins read this instead of
   // hard-coding the origin for asset/voice/proxy URLs.
   backendOrigin: string
   // The host's Vue runtime — plugins call host.vue.defineComponent/h/ref/... and

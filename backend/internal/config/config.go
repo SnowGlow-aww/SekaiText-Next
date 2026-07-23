@@ -34,8 +34,8 @@ type AppConfig struct {
 	FfmpegPath string
 	// AuthToken is the per-launch capability token the Tauri shell passes via
 	// --auth-token. When non-empty, mutating API requests must carry a matching
-	// X-Sekai-Token header (see the capabilityToken middleware). Empty in dev =
-	// enforcement off.
+	// X-Sekai-Token header (see the capabilityToken middleware). It is required
+	// for TCP and empty only for process-private IPC.
 	AuthToken string
 }
 

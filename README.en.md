@@ -39,7 +39,7 @@ Supported platforms are macOS 12 or later on Apple Silicon (M-series) and Window
 | Frontend | [Vue 3](https://vuejs.org/) + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vitejs.dev/) + [Tailwind CSS v4](https://tailwindcss.com/) + [DaisyUI](https://daisyui.com/) |
 | State | [Pinia](https://pinia.vuejs.org/) |
 | Routing | [Vue Router v5](https://router.vuejs.org/) |
-| Backend | [Go 1.24](https://go.dev/) + [chi router](https://github.com/go-chi/chi) (TCP in dev; stdio + `sekai://` custom scheme in release, no port) |
+| Backend | [Go 1.26](https://go.dev/) + [chi router](https://github.com/go-chi/chi) (TCP in dev; stdio + `sekai://` custom scheme in release, no port) |
 | Desktop Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | Timing / Encoding Engine | SekaiCoreEngine (C# / .NET) + [FFmpeg](https://ffmpeg.org/), driven by the backend over NDJSON IPC as a sidecar |
 | Plugins | Hot-loadable plugins sharing the host Vue / Pinia / Router singletons |
