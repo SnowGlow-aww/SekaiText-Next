@@ -8,9 +8,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -103,7 +105,17 @@ func main() {
 		log.Printf("Server failed to bind %s: %v", addr, err)
 		return
 	}
-	httpServer := &http.Server{Handler: router}
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = ln.Close()
+		_ = shutdownLifecycle(router, nil, 8*time.Second)
+		log.Printf("Server listener has unexpected address type %T", ln.Addr())
+		return
+	}
+	// Keep Host validation outside the router so hostile authorities are rejected
+	// before CORS, authentication, logging, or any route. IPC does not use this
+	// handler because its authority is synthesized inside the private frame transport.
+	httpServer := &http.Server{Handler: trustedLoopbackHost(tcpAddr.Port)(router)}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- httpServer.Serve(ln) }()
 	var serveErr error
@@ -127,6 +139,72 @@ func authTokenForTransport(ipcMode bool, raw string) (string, error) {
 		return "", errors.New("TCP mode requires a non-empty --auth-token")
 	}
 	return raw, nil
+}
+
+func trustedLoopbackHost(expectedPort int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !trustedLoopbackAuthority(r.Host, expectedPort) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusMisdirectedRequest)
+				_, _ = w.Write([]byte(`{"error":"untrusted request authority"}`))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func trustedLoopbackAuthority(authority string, expectedPort int) bool {
+	if authority == "" || expectedPort < 1 || expectedPort > 65535 {
+		return false
+	}
+
+	host, port, hasPort := authority, "", false
+	if strings.HasPrefix(authority, "[") {
+		closing := strings.IndexByte(authority, ']')
+		if closing < 0 {
+			return false
+		}
+		host = authority[1:closing]
+		remainder := authority[closing+1:]
+		if remainder != "" {
+			if len(remainder) < 2 || remainder[0] != ':' {
+				return false
+			}
+			port = remainder[1:]
+			hasPort = true
+		}
+	} else {
+		switch strings.Count(authority, ":") {
+		case 0:
+		case 1:
+			var err error
+			host, port, err = net.SplitHostPort(authority)
+			if err != nil {
+				return false
+			}
+			hasPort = true
+		default:
+			// IPv6 authorities must be bracketed.
+			return false
+		}
+	}
+
+	if hasPort {
+		if port == "" {
+			return false
+		}
+		parsed, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || int(parsed) != expectedPort {
+			return false
+		}
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && (addr == netip.MustParseAddr("127.0.0.1") || addr == netip.IPv6Loopback())
 }
 
 type lifecycleShutdowner interface {
