@@ -203,13 +203,21 @@ async function saveEdit(id: string) {
   const target = [...glossary.results, ...browseEntries.value].find(x => x.id === id)
   // Remote (server) entries: route edits through the team proposal queue.
   if (team.loggedIn && target?.origin === 'remote') {
+    if (!target.version || target.version <= 0) {
+      toast.show('词条版本无效，请先同步最新术语库后重试', 'warn')
+      return
+    }
+    if ((editDraft.value.category || target.category) !== target.category) {
+      toast.show('团队词条暂不支持跨分类移动；请保持原分类后再提交', 'warn')
+      return
+    }
     try {
       await team.submitProposal({
         kind: 'edit',
         targetId: id,
-        category: editDraft.value.category || target?.category || '自定义',
-        payload: { ...editDraft.value, id, category: editDraft.value.category || target?.category },
-        baseVersion: target?.version,
+        category: target.category,
+        payload: { ...editDraft.value, id, category: target.category },
+        baseVersion: target.version,
       })
       editingId.value = null
       toast.show('已提交修改提案，待管理员审核', 'success')
@@ -230,12 +238,17 @@ async function removeEntry(id: string) {
   if (team.readonly) { toast.show('只读模式：登录后才能删除', 'warn'); return }
   const e = [...glossary.results, ...browseEntries.value].find(x => x.id === id)
   // Remote (server) entries: a local delete would be reverted by the next 60s
-  // sync, so route them through the team delete-proposal queue (admin self-approves).
+  // sync, so route them through the team delete-proposal queue for another
+  // authorized reviewer to decide.
   if (team.loggedIn && e?.origin === 'remote') {
+    if (!e.version || e.version <= 0) {
+      toast.show('词条版本无效，请先同步最新术语库后重试', 'warn')
+      return
+    }
     if (!(await confirm({ title: '提交删除提案', message: `确定提交删除「${e?.source ?? ''}」的提案吗？`, detail: '需管理员审核通过后生效。', tone: 'danger', confirmText: '提交' }))) return
     try {
       await team.submitProposal({
-        kind: 'delete', targetId: id, category: e?.category || '自定义', payload: { id },
+        kind: 'delete', targetId: id, category: e.category || '自定义', payload: { id }, baseVersion: e.version,
       })
       toast.show('已提交删除提案，待管理员审核', 'success')
     } catch (err: any) { toast.show(err.message || '提交失败', 'error') }

@@ -78,6 +78,34 @@ describe('EditorWorkspace focused edit materialization', () => {
     app.unmount()
   })
 
+  it('materializes non-IME input before blur so recovery can persist the focused draft', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const editor = useEditorStore()
+    const story = useStoryStore()
+    editor.setTalks([talk('old')], [talk('old')], [])
+    story.sourceTalks = [{ speaker: '场景', text: 'source', charIndex: 0 }]
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp(EditorWorkspace)
+    app.use(pinia)
+    const workspace = app.mount(container) as unknown as { flushPendingEdit: () => Promise<void> }
+    await nextTick()
+
+    const editable = container.querySelector<HTMLElement>('[contenteditable="true"][data-gidx="0"]')!
+    editable.focus()
+    editable.textContent = 'still focused'
+    editable.dispatchEvent(new Event('input', { bubbles: true }))
+
+    expect(editor.talks[0].text).toBe('still focused')
+    expect(editor.dstTalks[0].text).toBe('still focused')
+    expect(editor.hasUnsavedChanges).toBe(true)
+
+    await workspace.flushPendingEdit()
+    expect(apiMock.changeText).toHaveBeenCalledWith(expect.objectContaining({ text: 'still focused' }))
+    app.unmount()
+  })
+
   it('does not repaint the focused contenteditable or reset its caret after an IME commit', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -113,6 +141,47 @@ describe('EditorWorkspace focused edit materialization', () => {
     expect(editable.firstChild).toBe(textNode)
     expect(selection.anchorNode).toBe(textNode)
     expect(selection.anchorOffset).toBe(3)
+    app.unmount()
+  })
+
+  it('does not re-submit unchanged focused DOM after backend normalization', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const editor = useEditorStore()
+    const story = useStoryStore()
+    editor.setTalks([talk('old')], [talk('old')], [])
+    story.sourceTalks = [{ speaker: '场景', text: 'source', charIndex: 0 }]
+    apiMock.changeText.mockImplementationOnce(async data => {
+      const talks = JSON.parse(JSON.stringify(data.talks)) as DstTalk[]
+      const dstTalks = JSON.parse(JSON.stringify(data.dstTalks)) as DstTalk[]
+      talks[0].text = 'hi！'
+      dstTalks[0].text = 'hi！'
+      return { talks, dstTalks }
+    })
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp(EditorWorkspace)
+    app.use(pinia)
+    const workspace = app.mount(container) as unknown as { flushPendingEdit: () => Promise<void> }
+    await nextTick()
+
+    const editable = container.querySelector<HTMLElement>('[contenteditable="true"][data-gidx="0"]')!
+    Object.defineProperty(editable, 'isContentEditable', { configurable: true, value: true })
+    editable.focus()
+    editable.textContent = 'hi!'
+    editable.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await workspace.flushPendingEdit()
+
+    expect(apiMock.changeText).toHaveBeenCalledTimes(1)
+    expect(editor.talks[0].text).toBe('hi！')
+    expect(editor.dstTalks[0].text).toBe('hi！')
+    expect(editable.textContent).toBe('hi!')
+
+    editable.blur()
+    await nextTick()
+    expect(editable.textContent).toBe('hi！')
     app.unmount()
   })
 

@@ -17,6 +17,7 @@ import { useSettingsStore } from '../../stores/settings'
 import { useTeamStore } from '../../stores/team'
 import { useGlossaryNotifyStore } from '../../stores/glossaryNotify'
 import { usePluginRegistry } from '../../plugin-host/registry'
+import { capabilities } from '../../platform/capabilities'
 
 const COMPACT_BREAKPOINT = 1080
 const settings = useSettingsStore()
@@ -55,7 +56,7 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
 </script>
 
 <template>
-  <div class="app-shell page-bg" :class="{ 'is-compact': !sidebarOpen }">
+  <div class="app-shell page-bg" :class="{ 'is-compact': !sidebarOpen, 'is-android': capabilities.isAndroid }">
     <aside class="app-shell-sidebar">
       <div class="app-shell-brand">
         <span class="app-shell-brand-mark" aria-hidden="true" />
@@ -78,7 +79,7 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
         <router-link to="/" exact-active-class="is-route-active" class="app-shell-nav-item" title="编辑器">
           <FilePenLine class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">编辑器</span>
         </router-link>
-        <router-link to="/download" exact-active-class="is-route-active" class="app-shell-nav-item" title="剧情下载">
+        <router-link v-if="!capabilities.isAndroid" to="/download" exact-active-class="is-route-active" class="app-shell-nav-item" title="剧情下载">
           <Download class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">剧情下载</span>
         </router-link>
         <router-link
@@ -94,11 +95,11 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
         <router-link to="/grammar" exact-active-class="is-route-active" class="app-shell-nav-item" title="语法用例">
           <BookOpenText class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">语法用例</span>
         </router-link>
-        <router-link to="/market" exact-active-class="is-route-active" class="app-shell-nav-item" data-tour="nav-market" title="插件市场">
+        <router-link v-if="capabilities.supportsPlugins" to="/market" exact-active-class="is-route-active" class="app-shell-nav-item" data-tour="nav-market" title="插件市场">
           <Store class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">插件市场</span>
         </router-link>
         <router-link
-          v-for="item in pluginRegistry.sidebarItems"
+          v-for="item in (capabilities.supportsPlugins || capabilities.isAndroid) ? pluginRegistry.sidebarItems : []"
           :key="`${item.pluginId}:${item.id}`"
           :to="item.to"
           exact-active-class="is-route-active"
@@ -108,7 +109,7 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
           <component :is="pluginIcon(item.icon)" class="app-shell-nav-icon" :size="17" />
           <span class="app-shell-nav-label">{{ item.label }}</span>
         </router-link>
-        <router-link v-if="settings.settings.debugEnabled" to="/debug" exact-active-class="is-route-active" class="app-shell-nav-item" title="调试日志">
+        <router-link v-if="!capabilities.isAndroid && settings.settings.debugEnabled" to="/debug" exact-active-class="is-route-active" class="app-shell-nav-item" title="调试日志">
           <Bug class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">调试日志</span>
         </router-link>
       </nav>
@@ -304,6 +305,68 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
   50% { color: var(--accent, var(--color-primary)); }
 }
 .notify-breathe { animation: notify-breathe 2.2s ease-in-out infinite; }
+@media (max-width: 767px) {
+  .app-shell.is-android {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) calc(4rem + env(safe-area-inset-bottom));
+  }
+  .app-shell.is-android .app-shell-sidebar {
+    grid-row: 2;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    padding: 0.35rem max(0.5rem, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(0.5rem, env(safe-area-inset-left));
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-top: 1px solid var(--color-border);
+    border-right: 0;
+  }
+  .app-shell.is-android .app-shell-brand,
+  .app-shell.is-android .app-shell-kicker,
+  .app-shell.is-android .app-shell-collapse {
+    display: none;
+  }
+  .app-shell.is-android .app-shell-nav,
+  .app-shell.is-android .app-shell-nav-bottom,
+  .app-shell.is-android .app-shell-kicker + .app-shell-nav {
+    display: contents;
+  }
+  .app-shell.is-android .app-shell-nav-item {
+    flex: 1 0 4.2rem;
+    min-width: 4.2rem;
+    height: 3.25rem;
+    padding: 0.25rem;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.2rem;
+    overflow: visible;
+    font-size: 0.65rem;
+  }
+  .app-shell.is-android .app-shell-nav-label {
+    display: block;
+    max-width: 5.5rem;
+    overflow: hidden;
+    opacity: 1;
+    transform: none;
+    text-overflow: ellipsis;
+  }
+  .app-shell.is-android .app-shell-nav-item:hover {
+    transform: none;
+  }
+  .app-shell.is-android .app-shell-nav-item.is-route-active::before,
+  .app-shell.is-android .app-shell-nav-item[aria-current='page']::before {
+    left: 20%;
+    right: 20%;
+    top: 0;
+    bottom: auto;
+    width: auto;
+    height: 2px;
+  }
+  .app-shell.is-android .app-shell-content {
+    grid-row: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-shell { animation: none; transition: none; }
   .app-shell-sidebar,

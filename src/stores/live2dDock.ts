@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useSettingsStore } from './settings'
 import { useStoryStore } from './story'
+import { capabilities } from '../platform/capabilities'
 
 // Where the Live2D player sits relative to the editor. 'left' is deliberately
 // absent — the left edge is the story navigator / plugin sidebar.
@@ -63,7 +64,10 @@ export const useLive2dDockStore = defineStore('live2dDock', () => {
     // 右侧 (right) was removed as a selectable placement; a missing/legacy/unknown
     // value (including a persisted 'right') now degrades to the 独立窗口 default so
     // the retired option can never break the layout.
-    return p === 'top' || p === 'bottom' || p === 'window' ? p : 'window'
+    const normalized = p === 'top' || p === 'bottom' || p === 'window' ? p : 'window'
+    return normalized === 'window' && !capabilities.supportsDetachedLive2DWindow
+      ? 'bottom'
+      : normalized
   }
 
   // Entry point for the editor's Live2D button. Routes by the user's placement:
@@ -145,7 +149,7 @@ export const useLive2dDockStore = defineStore('live2dDock', () => {
       w.once('tauri://error', () => {
         // Window couldn't open (perm/path) → degrade to a docked panel. forcedDock
         // makes EditorPage.dockSide mount the dock even though placement is 'window'.
-        forcedDock.value = 'right'
+        forcedDock.value = capabilities.isAndroid ? 'bottom' : 'right'
         visible.value = true
         pendingJump.value = jump
       })

@@ -42,7 +42,7 @@ func TestTeamSyncSerializesVersionExportMergeAndCommit(t *testing.T) {
 				close(firstExportStarted)
 				<-releaseFirstExport
 			}
-			_, _ = io.WriteString(w, `{"entries":[{"source":"v`+strconv.Itoa(int(n))+`"}]}`)
+			_, _ = io.WriteString(w, `{"entries":[{"source":"v`+strconv.Itoa(int(n))+`"}],"appellations":[]}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -120,7 +120,7 @@ func TestTeamSyncRejectsSessionChangeBeforeMerge(t *testing.T) {
 		case "/api/glossary/export":
 			close(exportStarted)
 			<-releaseExport
-			_, _ = io.WriteString(w, `{"entries":[{"source":"stale"}]}`)
+			_, _ = io.WriteString(w, `{"entries":[{"source":"stale"}],"appellations":[]}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -150,6 +150,43 @@ func TestTeamSyncRejectsSessionChangeBeforeMerge(t *testing.T) {
 	}
 	if got := svc.LastSyncedVersion(); got != 0 {
 		t.Fatalf("last synced version = %d after disconnect, want 0", got)
+	}
+}
+
+func TestTeamSyncCommitsVersionOnlyAfterMergePersistenceSucceeds(t *testing.T) {
+	var exportHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/glossary/version":
+			_, _ = io.WriteString(w, `{"version":1}`)
+		case "/api/glossary/export":
+			exportHits.Add(1)
+			_, _ = io.WriteString(w, `{"entries":[],"appellations":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	svc := newReadonlyTeam(t, server.URL)
+	persistErr := errors.New("persist glossary snapshot")
+	if _, err := svc.Sync(false, func([]byte) (int, error) { return 0, persistErr }); !errors.Is(err, persistErr) {
+		t.Fatalf("Sync error = %v, want persistence error", err)
+	}
+	if got := svc.LastSyncedVersion(); got != 0 {
+		t.Fatalf("failed merge committed version %d, want 0", got)
+	}
+	result, err := svc.Sync(false, func([]byte) (int, error) { return 0, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Version != 1 || svc.LastSyncedVersion() != 1 {
+		t.Fatalf("successful retry did not commit version: result=%+v last=%d", result, svc.LastSyncedVersion())
+	}
+	if exportHits.Load() != 2 {
+		t.Fatalf("export hits = %d, want 2 so failed persistence cannot mark data current", exportHits.Load())
 	}
 }
 

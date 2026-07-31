@@ -1,8 +1,10 @@
 import { api } from '../api/client'
+import { capabilities } from '../platform/capabilities'
+import { mobileCore } from '../platform/mobileCore'
 import type { DstTalk } from '../types/translation'
 import type { SaveMetadata } from '../types/api'
 
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+const isTauri = capabilities.isTauri
 
 export function useFileDialog() {
   async function openTranslation(): Promise<{
@@ -17,9 +19,23 @@ export function useFileDialog() {
         title: '打开翻译文件',
         filters: [{ name: '翻译文件', extensions: ['txt'] }],
       })
-      if (!path) return null
-      const result = await api.translationLoad(path as string)
-      return { talks: result.talks, meta: result.meta, filePath: path as string }
+      if (!path || typeof path !== 'string') return null
+      if (capabilities.isAndroid) {
+        const { readTextFile } = await import('@tauri-apps/plugin-fs')
+        // Android's picker returns an opaque content:// URI. The fs plugin
+        // accepts that URI as a string; wrapping it in URL rejects non-file
+        // schemes before the native Android resolver can handle it.
+        const content = await readTextFile(path)
+        const result = await mobileCore.loadTranslation(content)
+        // The stock dialog opens with a temporary read grant and does not take
+        // a persistable grant. Treat this as an import, not a writable binding;
+        // the first Save creates a fresh document URI through the save picker.
+        // Keep the provider's display-name-like tail for title/mode inference.
+        const fileName = decodeURIComponent(path.split('/').pop() || '').replace(/^document:/, '')
+        return { talks: result.talks, meta: result.meta, fileName }
+      }
+      const result = await api.translationLoad(path)
+      return { talks: result.talks, meta: result.meta, filePath: path }
     } else {
       return new Promise((resolve) => {
         const input = document.createElement('input')
@@ -54,13 +70,13 @@ export function useFileDialog() {
     if (isTauri) {
       const { save } = await import('@tauri-apps/plugin-dialog')
       // macOS NSSavePanel rejects a defaultPath whose parent directory does not
-      // exist ("The string did not match the expected pattern"). When the name
-      // is a layered path (<base>/<type>/<index>/<file>.txt), create the parent
-      // dirs first so the dialog can default into them. Best-effort: if it fails
-      // we fall back to passing just the bare filename.
-      let defaultPath = defaultName
+      // exist ("The string did not match the expected pattern"). Android's SAF
+      // owns its destination and only accepts a display filename/content URI.
+      let defaultPath = capabilities.isAndroid
+        ? (defaultName.split(/[/\\]/).pop() || defaultName)
+        : defaultName
       const isLayered = /[/\\]/.test(defaultName)
-      if (isLayered) {
+      if (!capabilities.isAndroid && isLayered) {
         try {
           await api.ensureDir(defaultName)
         } catch (e) {
@@ -75,8 +91,16 @@ export function useFileDialog() {
       })
       if (!path) return null
       console.log('[Save] writing file', { path, talkCount: talks.length, saveN, hasMeta: !!meta })
-      await api.translationSave(path as string, talks, saveN, meta)
-      return path as string
+      if (capabilities.isAndroid) {
+        const [{ writeTextFile }, serialized] = await Promise.all([
+          import('@tauri-apps/plugin-fs'),
+          mobileCore.serializeTranslation({ talks, saveN, meta }),
+        ])
+        await writeTextFile(path, serialized.content)
+      } else {
+        await api.translationSave(path, talks, saveN, meta)
+      }
+      return path
     } else {
       console.log('[Save] serializing for download', { defaultName, talkCount: talks.length });
       const { content } = await api.translationSerialize({ talks, saveN, meta })

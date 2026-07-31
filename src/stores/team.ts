@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '../api/client'
 import type { TeamUser, Proposal } from '../types/glossary'
+import { useGlossaryStore } from './glossary'
 
 // Team mode store: holds login state (mirrored from the local backend, which
 // owns the actual tokens) and drives periodic sync of the authoritative
@@ -120,6 +121,15 @@ export const useTeamStore = defineStore('team', () => {
       const r = await api.teamSync(force)
       lastSync.value = { at: Date.now(), changed: r.changed, version: r.version }
       syncError.value = ''
+      if (r.changed) {
+        try {
+          await useGlossaryStore().loadAllEntries(true)
+        } catch (e) {
+          // The remote sync already succeeded. Keep its status successful even
+          // if the frontend matcher cache cannot be refreshed until the next sync.
+          console.warn('Failed to refresh glossary matcher cache after team sync', e)
+        }
+      }
       return r
     } catch (e) {
       syncError.value = e instanceof Error ? e.message : String(e)

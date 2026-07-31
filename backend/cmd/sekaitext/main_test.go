@@ -31,6 +31,14 @@ func TestShutdownLifecycleAlwaysInvokesBackendCleanup(t *testing.T) {
 	}
 }
 
+func TestTCPHTTPServerHasSlowConnectionTimeouts(t *testing.T) {
+	server := newTCPHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
+		t.Fatalf("timeouts must be positive: header=%s read=%s idle=%s",
+			server.ReadHeaderTimeout, server.ReadTimeout, server.IdleTimeout)
+	}
+}
+
 func TestAuthTokenForTransport(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -51,6 +59,37 @@ func TestAuthTokenForTransport(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("token = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHostForTransport(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		ipc     bool
+		host    string
+		want    string
+		wantErr bool
+	}{
+		{name: "default IPv4 loopback", host: "127.0.0.1", want: "127.0.0.1"},
+		{name: "localhost is normalized", host: "LOCALHOST", want: "localhost"},
+		{name: "IPv6 loopback", host: "::1", want: "::1"},
+		{name: "wildcard IPv4 is rejected", host: "0.0.0.0", wantErr: true},
+		{name: "wildcard IPv6 is rejected", host: "::", wantErr: true},
+		{name: "LAN address is rejected", host: "192.168.1.20", wantErr: true},
+		{name: "other loopback aliases are rejected", host: "127.0.0.2", wantErr: true},
+		{name: "arbitrary DNS name is rejected", host: "devbox.local", wantErr: true},
+		{name: "empty host is rejected", host: "", wantErr: true},
+		{name: "IPC ignores host", ipc: true, host: "0.0.0.0", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := hostForTransport(tt.ipc, tt.host)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("host = %q, want %q", got, tt.want)
 			}
 		})
 	}

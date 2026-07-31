@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SekaiText Next",
+        "fullscreen": false,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPCACHE/sekaitext/live2d/objects/**"
+        ]
+      }
+    }
+  },
+  "plugins": {},
+  "bundle": {
+    "targets": "all",
+    "externalBin": null,
+    "resources": null,
+    "android": {
+      "minSdkVersion": 28
+    },
+    "icon": [
+      "icons/android/mipmap-mdpi/ic_launcher.png",
+      "icons/android/mipmap-hdpi/ic_launcher.png",
+      "icons/android/mipmap-xhdpi/ic_launcher.png",
+      "icons/android/mipmap-xxhdpi/ic_launcher.png",
+      "icons/android/mipmap-xxxhdpi/ic_launcher.png"
+    ]
+  }
+}

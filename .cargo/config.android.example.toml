@@ -1,0 +1,5 @@
+# Copy this file to .cargo/config.toml and adjust paths for the local machine.
+[env]
+ANDROID_HOME = { value = "/path/to/Android/sdk", force = false }
+ANDROID_SDK_ROOT = { value = "/path/to/Android/sdk", force = false }
+JAVA_HOME = { value = "/path/to/jdk-17-or-newer", force = false }

@@ -13,7 +13,8 @@ export const LINKS = {
 
 /**
  * 在系统浏览器中打开外部链接。Tauri webview 不处理 target=_blank /
- * window.open，必须经后端 /open-url 调系统打开；浏览器开发模式直接新标签。
+ * window.open：桌面经后端打开，Android 经受限的原生 ACTION_VIEW 命令；
+ * 浏览器开发模式直接新标签。
  */
 export function openExternal(url: string): void {
   if (isTauri) {

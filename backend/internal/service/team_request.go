@@ -19,9 +19,28 @@ import (
 // over-serializes their refreshes, it never corrupts state.
 var teamRefreshMu sync.Mutex
 
+const (
+	maxTeamResponseBytes int64 = 64 << 20
+	maxTeamConfigBytes   int64 = 1 << 20
+)
+
+func readBoundedResponse(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read remote response: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("remote response exceeds %d byte limit", limit)
+	}
+	return data, nil
+}
+
 // do performs an authenticated request to the remote server, transparently
 // refreshing the access token once on 401. Returns the raw body and status.
 func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) {
+	if err := t.RefreshSessionIfNeeded(); err != nil {
+		return nil, 0, err
+	}
 	t.mu.RLock()
 	epoch, serverURL, access, client := t.sessionEpoch, t.serverURL, t.access, t.client
 	t.mu.RUnlock()
@@ -90,19 +109,19 @@ func (t *TeamService) do(method, path string, payload any) ([]byte, int, error) 
 		}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := readBoundedResponse(resp.Body, maxTeamResponseBytes)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
 	return body, resp.StatusCode, nil
 }
 
-// remoteErr extracts an {"error":...} message from a non-2xx body.
-func remoteErr(body []byte, status int) error {
-	var e struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(body, &e) == nil && e.Error != "" {
-		return fmt.Errorf("%s", e.Error)
-	}
-	return fmt.Errorf("remote returned HTTP %d", status)
+// remoteErr deliberately excludes the remote response body. Team service
+// errors cross desktop and mobile frontend boundaries, so an upstream error
+// string must never become user-visible: servers may echo credentials or other
+// sensitive diagnostics in it.
+func remoteErr(operation string, status int) error {
+	return fmt.Errorf("%s failed (HTTP %d)", operation, status)
 }
 
 // getPublic performs an unauthenticated GET against the (public) server path.
@@ -119,7 +138,10 @@ func (t *TeamService) getPublic(path string) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := readBoundedResponse(resp.Body, maxTeamResponseBytes)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
 	return body, resp.StatusCode, nil
 }
 
@@ -171,7 +193,10 @@ func (t *TeamService) discoverSnapshotBase(server string, client *http.Client) s
 	if resp.StatusCode != http.StatusOK {
 		return ""
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := readBoundedResponse(resp.Body, maxTeamConfigBytes)
+	if err != nil {
+		return ""
+	}
 	var c struct {
 		SnapshotBase string `json:"snapshotBase"`
 	}
@@ -203,7 +228,10 @@ func (t *TeamService) getCDN(url string) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := readBoundedResponse(resp.Body, maxTeamResponseBytes)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
 	return body, resp.StatusCode, nil
 }
 
@@ -246,7 +274,7 @@ func (t *TeamService) remoteVersionDirect() (int, error) {
 		return 0, err
 	}
 	if status != http.StatusOK {
-		return 0, remoteErr(body, status)
+		return 0, remoteErr("remote glossary version", status)
 	}
 	var v struct {
 		Version int `json:"version"`
@@ -270,13 +298,9 @@ func (t *TeamService) FetchExport(version int) ([]byte, error) {
 		url := fmt.Sprintf("%s/export.json?v=%d", base, version)
 		if body, status, err := t.getCDN(url); err == nil && status == http.StatusOK {
 			// 与 RemoteVersion 同理：200 不代表 body 可信（CDN 软错误页/截断对象
-			// 也可能是 200）。快照必须解析成带 entries 数组的 GlossaryData 形状
-			// （服务器导出恒有 entries:[]，绝不缺键）才采信，否则落直连兜底——
-			// 不校验的话坏 body 会一路传到 MergeImport 才炸，且绝不会触发回退。
-			var probe struct {
-				Entries []json.RawMessage `json:"entries"`
-			}
-			if json.Unmarshal(body, &probe) == nil && probe.Entries != nil {
+			// 也可能是 200）。快照必须解析成带 entries/appellations 数组的
+			// GlossaryData 形状（服务器全量导出恒有这两个键）才采信，否则回退。
+			if _, err := DecodeGlossarySnapshot(body); err == nil {
 				return body, nil
 			}
 		}
@@ -301,6 +325,10 @@ type TeamSyncResult struct {
 func (t *TeamService) Sync(force bool, merge func([]byte) (int, error)) (TeamSyncResult, error) {
 	t.syncMu.Lock()
 	defer t.syncMu.Unlock()
+
+	if err := t.RefreshSessionIfNeeded(); err != nil {
+		return TeamSyncResult{}, err
+	}
 
 	t.mu.RLock()
 	session := teamSessionIdentity{
@@ -395,17 +423,28 @@ func (t *TeamService) fetchExportDirect() ([]byte, error) {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, remoteErr(body, status)
+		return nil, remoteErr("remote glossary export", status)
+	}
+	if _, err := DecodeGlossarySnapshot(body); err != nil {
+		return nil, errors.New("remote glossary export is missing full snapshot arrays")
 	}
 	return body, nil
 }
 
-// Proxy forwards an arbitrary authenticated call and returns body+status, so
-// handlers for proposals/admin can pass through transparently.
+// Proxy forwards an arbitrary authenticated call. Successful bodies remain raw
+// for the frontend boundary to sanitize by key. Non-2xx bodies are replaced
+// with a generic JSON error so desktop relays preserve the upstream status
+// without exposing arbitrary server-provided strings.
 func (t *TeamService) Proxy(method, path string, payload any) ([]byte, int, error) {
 	body, status, err := t.do(method, path, payload)
 	if err != nil {
-		return nil, 0, err
+		return nil, status, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		safeBody, _ := json.Marshal(map[string]string{
+			"error": remoteErr("remote team request", status).Error(),
+		})
+		return safeBody, status, nil
 	}
 	return body, status, nil
 }

@@ -9,7 +9,7 @@
     </router-view>
   </AppShell>
   <Toast />
-  <UpdateBanner />
+  <UpdateBanner v-if="capabilities.supportsAppUpdater" />
   <DownloadFloat />
   <ConfirmHost />
   <RecoveryDialog
@@ -41,6 +41,7 @@ import { usePluginRegistry } from './plugin-host/registry'
 import { useRouter } from 'vue-router'
 import { hasRecovery } from './editor/recovery'
 import { pluginStartupResult } from './plugin-host/autoload'
+import { capabilities } from './platform/capabilities'
 
 const settings = useSettingsStore()
 // Keep only pages with activation-bound lifecycle/state. Utility/listing pages
@@ -150,21 +151,26 @@ onMounted(async () => {
 
   // Plugin startup performs its update before autoload so stale code cannot
   // race a valid replacement and roll it back. Only surface its result here.
-  void pluginStartupResult().then((sum) => {
-    if (sum && sum.updated?.length) {
-      const names = sum.updated.map((p) => p.name || p.id).join('、')
-      toast.show(`已自动更新并加载 ${sum.updated.length} 个插件（${names}）`, 'success', 6000)
-    }
-  }).catch(() => {})
-  void appUpdate.check()
+  if (capabilities.supportsPlugins) {
+    void pluginStartupResult().then((sum) => {
+      if (sum && sum.updated?.length) {
+        const names = sum.updated.map((p) => p.name || p.id).join('、')
+        toast.show(`已自动更新并加载 ${sum.updated.length} 个插件（${names}）`, 'success', 6000)
+      }
+    }).catch(() => {})
+  }
 
-  // Re-check for app updates when the user refocuses the window (throttled), so a
-  // long-running session surfaces a new release without needing a restart.
-  const recheck = () => { void appUpdate.maybeRecheck() }
-  window.addEventListener('focus', recheck)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') recheck()
-  })
+  if (capabilities.supportsAppUpdater) {
+    void appUpdate.check()
+
+    // Re-check for app updates when the user refocuses the window (throttled), so a
+    // long-running session surfaces a new release without needing a restart.
+    const recheck = () => { void appUpdate.maybeRecheck() }
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') recheck()
+    })
+  }
 
   maybeStartBootTour()
 })

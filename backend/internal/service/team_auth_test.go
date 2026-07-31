@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -103,6 +105,116 @@ func persistedRefreshToken(t *testing.T, dir string) string {
 	return p.RefreshToken
 }
 
+func TestTeamAuthenticationErrorsDoNotExposeRemoteText(t *testing.T) {
+	const sensitive = "access-secret refresh-secret server-stack-secret"
+
+	t.Run("login rejection", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/auth/login" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"`+sensitive+`"}`)
+		}))
+		defer server.Close()
+
+		svc := NewTeamServiceWithRootCAsDeferredRefresh(t.TempDir(), testServerRoots(t, server))
+		_, err := svc.Login(server.URL, "amia", "password")
+		if err == nil || err.Error() != "login failed (HTTP 401)" || strings.Contains(err.Error(), sensitive) {
+			t.Fatalf("Login error = %v", err)
+		}
+	})
+
+	t.Run("oversized successful login response", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/auth/login" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = io.WriteString(w, `{"accessToken":"access","refreshToken":"refresh","user":{"id":"1","username":"amia"}}`)
+			_, _ = io.WriteString(w, strings.Repeat(" ", int(maxTeamConfigBytes)))
+		}))
+		defer server.Close()
+
+		svc := NewTeamServiceWithRootCAsDeferredRefresh(t.TempDir(), testServerRoots(t, server))
+		_, err := svc.Login(server.URL, "amia", "password")
+		if err == nil || err.Error() != "login failed: invalid authentication response" || svc.LoggedIn() {
+			t.Fatalf("oversized Login result: error=%v loggedIn=%v", err, svc.LoggedIn())
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		status       int
+		want         string
+		wantRetained bool
+	}{
+		{name: "terminal rejection", status: http.StatusUnauthorized, want: "refresh failed (HTTP 401)"},
+		{name: "transient rejection", status: http.StatusServiceUnavailable, want: "refresh failed (HTTP 503)", wantRetained: true},
+		{name: "malformed success", status: http.StatusOK, want: "refresh failed: invalid authentication response", wantRetained: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/auth/refresh" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"error":"`+sensitive+`"}`)
+			}))
+			defer server.Close()
+
+			dir := t.TempDir()
+			writeRestorableTeamSession(t, dir, server.URL, "saved-refresh")
+			svc := NewTeamServiceWithRootCAsDeferredRefresh(dir, testServerRoots(t, server))
+			err := svc.RefreshSessionIfNeeded()
+			if err == nil || err.Error() != tc.want || strings.Contains(err.Error(), sensitive) {
+				t.Fatalf("RefreshSessionIfNeeded error = %v, want %q", err, tc.want)
+			}
+			retained := persistedRefreshToken(t, dir) == "saved-refresh"
+			if retained != tc.wantRetained {
+				t.Fatalf("refresh credential retained = %v, want %v", retained, tc.wantRetained)
+			}
+		})
+	}
+
+	t.Run("refresh requires a rotated refresh token", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/auth/refresh" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = io.WriteString(w, `{"accessToken":"renewed-access","user":{"id":"1","username":"amia"}}`)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		writeRestorableTeamSession(t, dir, server.URL, "saved-refresh")
+		svc := NewTeamServiceWithRootCAsDeferredRefresh(dir, testServerRoots(t, server))
+		err := svc.RefreshSessionIfNeeded()
+		if err == nil || err.Error() != "refresh failed: invalid authentication response" {
+			t.Fatalf("RefreshSessionIfNeeded error = %v", err)
+		}
+		if got := persistedRefreshToken(t, dir); got != "saved-refresh" {
+			t.Fatalf("malformed success replaced retryable credential with %q", got)
+		}
+	})
+
+	t.Run("network failure", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		dir := t.TempDir()
+		writeRestorableTeamSession(t, dir, server.URL, "saved-refresh")
+		server.Close()
+
+		svc := NewTeamServiceWithRootCAsDeferredRefresh(dir, nil)
+		err := svc.RefreshSessionIfNeeded()
+		if err == nil || err.Error() != "refresh failed: request could not be completed" {
+			t.Fatalf("network refresh error = %v", err)
+		}
+	})
+}
+
 func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 	t.Run("server error", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +229,9 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 		writeRestorableTeamSession(t, dir, server.URL, "retryable")
 
 		svc := NewTeamServiceWithRootCAs(dir, testServerRoots(t, server))
+		if err := svc.RefreshSessionIfNeeded(); err == nil {
+			t.Fatal("transient refresh failure unexpectedly succeeded")
+		}
 		svc.mu.RLock()
 		refresh := svc.refresh
 		svc.mu.RUnlock()
@@ -132,6 +247,9 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 		server.Close()
 
 		svc := NewTeamService(dir)
+		if err := svc.RefreshSessionIfNeeded(); err == nil {
+			t.Fatal("network refresh failure unexpectedly succeeded")
+		}
 		svc.mu.RLock()
 		refresh := svc.refresh
 		svc.mu.RUnlock()
@@ -139,6 +257,51 @@ func TestTeamRestoreRetainsCredentialsOnTransientRefreshFailure(t *testing.T) {
 			t.Fatal("startup network error cleared retryable persisted credentials")
 		}
 	})
+}
+
+func TestAuthenticatedRequestRetriesTransientLazyRefresh(t *testing.T) {
+	var refreshHits atomic.Int32
+	var protectedHits atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/refresh":
+			if refreshHits.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = io.WriteString(w, `{"accessToken":"renewed-access","refreshToken":"renewed-refresh","user":{"id":"1","username":"amia"}}`)
+		case "/api/proposals/mine":
+			protectedHits.Add(1)
+			if r.Header.Get("Authorization") != "Bearer renewed-access" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(w, `[]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	writeRestorableTeamSession(t, dir, server.URL, "retryable")
+	svc := NewTeamServiceWithRootCAsDeferredRefresh(dir, testServerRoots(t, server))
+	if refreshHits.Load() != 0 {
+		t.Fatalf("deferred constructor performed network refresh: hits=%d", refreshHits.Load())
+	}
+	if _, _, err := svc.Proxy(http.MethodGet, "/api/proposals/mine", nil); err == nil {
+		t.Fatal("first transient refresh failure unexpectedly reached authenticated endpoint")
+	}
+	body, status, err := svc.Proxy(http.MethodGet, "/api/proposals/mine", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || string(body) != `[]` || protectedHits.Load() != 1 {
+		t.Fatalf("retry result: status=%d body=%s protectedHits=%d", status, body, protectedHits.Load())
+	}
+	if refreshHits.Load() != 2 || persistedRefreshToken(t, dir) != "renewed-refresh" {
+		t.Fatalf("refresh was not safely retried: hits=%d persisted=%q", refreshHits.Load(), persistedRefreshToken(t, dir))
+	}
 }
 
 func TestTeamRestoreClearsCredentialsOnTerminalAuthRejection(t *testing.T) {

@@ -118,11 +118,15 @@ export const useGlossaryStore = defineStore('glossary', () => {
   // Full entry list cache for the editor matcher (loaded once, lazily).
   const allEntries = ref<GlossaryEntry[]>([])
   const allEntriesLoaded = ref(false)
+  let allEntriesSeq = 0
   async function loadAllEntries(force = false) {
     if (allEntriesLoaded.value && !force) return allEntries.value
+    const seq = ++allEntriesSeq
     const r = await api.glossaryEntries('', 0, 100000)
-    allEntries.value = r.items
-    allEntriesLoaded.value = true
+    if (seq === allEntriesSeq) {
+      allEntries.value = r.items
+      allEntriesLoaded.value = true
+    }
     return allEntries.value
   }
 

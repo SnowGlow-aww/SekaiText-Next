@@ -4,6 +4,8 @@ import router from './router'
 import { useDebugLog } from './composables/useDebugLog'
 import { installHostBridge } from './plugin-host/bridge'
 import { startPluginStartup } from './plugin-host/autoload'
+import { loadBuiltinLive2D } from './plugin-host/builtinLive2d'
+import { capabilities } from './platform/capabilities'
 import './style.css'
 import App from './App.vue'
 
@@ -18,20 +20,30 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 
-// Expose the host bridge to plugins (after pinia + router are active), then
-// auto-load any installed/enabled plugins. Plugin routes register asynchronously,
-// so a cold start landing directly on a plugin URL (e.g. #/live2d) initially
-// resolves to no match (blank page). After autoload, if the current route never
-// matched, re-resolve it so the freshly-registered plugin route takes effect.
-const host = installHostBridge(router, pinia)
-const hostVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
-void startPluginStartup(host, hostVersion).then(async () => {
-  await router.isReady()
-  const cur = router.currentRoute.value
-  if (cur.matched.length === 0) {
-    await router.replace(cur.fullPath).catch(() => {})
-  }
-})
+// Expose the host bridge after pinia + router are active. Desktop/web keeps its
+// signed dynamic-plugin startup unchanged; Android only activates the immutable
+// Live2D bundle shipped inside the APK.
+const needsHostBridge = capabilities.supportsPlugins || capabilities.isAndroid
+if (needsHostBridge) {
+  const host = installHostBridge(router, pinia)
+  const hostVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
+  const startup = capabilities.isAndroid
+    ? loadBuiltinLive2D(host)
+    : startPluginStartup(host, hostVersion)
+
+  // Plugin routes register asynchronously, so a cold start landing directly on
+  // #/live2d initially resolves to no match. Re-resolve after startup so the new
+  // route becomes active. Android failures are visible but do not blank the editor.
+  void startup.then(async () => {
+    await router.isReady()
+    const cur = router.currentRoute.value
+    if (cur.matched.length === 0) {
+      await router.replace(cur.fullPath).catch(() => {})
+    }
+  }).catch((error) => {
+    console.error('[startup] Live2D/plugin initialization failed', error)
+  })
+}
 
 // Initialize console log capture for debug panel
 const debug = useDebugLog()

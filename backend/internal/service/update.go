@@ -19,14 +19,16 @@ import (
 )
 
 const (
-	harukiNeoMasterURL  = "https://sekai-master-direct.haruki.seiunx.com/haruki-sekai-master/master/%s.json"
-	maxMasterTableBytes = 128 << 20
+	harukiNeoMasterOrigin = "https://sekai-master-direct.haruki.seiunx.com"
+	harukiNeoMasterURL    = harukiNeoMasterOrigin + "/haruki-sekai-master/master/%s.json"
+	maxMasterTableBytes   = 128 << 20
 	// 元数据加速镜像：accr.cc 侧把整域名 sekai-master-direct.haruki.accr.cc
 	// 反代到上面的源站（路径不变，仅换 host）走 CDN。数据不定时更新，绝不能吃
 	// 到过期副本——fetchCDN 先 HEAD 源站拿当前 ETag（几百字节的探针），镜像响应
 	// 的 ETag 必须与之一致才采用，否则回落直连源站。任何一环失败（域名未生效/
 	// 边缘缓存失误/镜像不可达）都自动退回源站，结果永远与源站最新版一致。
-	harukiMirrorMasterURL = "https://sekai-master-direct.haruki.accr.cc/haruki-sekai-master/master/%s.json"
+	harukiMirrorMasterOrigin = "https://sekai-master-direct.haruki.accr.cc"
+	harukiMirrorMasterURL    = harukiMirrorMasterOrigin + "/haruki-sekai-master/master/%s.json"
 )
 
 var httpClient = &http.Client{
@@ -84,6 +86,65 @@ const (
 	catalogGenerationDir = ".catalog-generations"
 )
 
+func trustedMasterOrigin(url *neturl.URL) (string, error) {
+	if url == nil || !strings.EqualFold(url.Scheme, "https") {
+		return "", fmt.Errorf("master catalog URL must use HTTPS")
+	}
+	if url.User != nil {
+		return "", fmt.Errorf("master catalog URL must not contain user information")
+	}
+	if port := url.Port(); port != "" && port != "443" {
+		return "", fmt.Errorf("master catalog URL uses non-default HTTPS port %q", port)
+	}
+
+	origin := "https://" + strings.ToLower(url.Hostname())
+	switch origin {
+	case harukiNeoMasterOrigin, harukiMirrorMasterOrigin:
+		return origin, nil
+	default:
+		return "", fmt.Errorf("untrusted master catalog host %q", url.Hostname())
+	}
+}
+
+func doMasterRequest(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("master catalog request is nil")
+	}
+	origin, err := trustedMasterOrigin(req.URL)
+	if err != nil {
+		return nil, fmt.Errorf("refusing master catalog request: %w", err)
+	}
+	if httpClient == nil {
+		return nil, fmt.Errorf("master catalog HTTP client is nil")
+	}
+
+	client := *httpClient
+	inheritedRedirectPolicy := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		nextOrigin, err := trustedMasterOrigin(next.URL)
+		if err != nil {
+			return fmt.Errorf("refusing master catalog redirect: %w", err)
+		}
+		if nextOrigin != origin {
+			return fmt.Errorf("refusing master catalog redirect from %s to %s: cross-origin redirect", origin, nextOrigin)
+		}
+		for _, previous := range via {
+			previousOrigin, err := trustedMasterOrigin(previous.URL)
+			if err != nil || previousOrigin != origin {
+				return fmt.Errorf("refusing master catalog redirect: redirect chain left origin %s", origin)
+			}
+		}
+		if inheritedRedirectPolicy != nil {
+			return inheritedRedirectPolicy(next, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return client.Do(req)
+}
+
 func headETag(url string, timeout time.Duration) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -91,7 +152,7 @@ func headETag(url string, timeout time.Duration) string {
 	if err != nil {
 		return ""
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := doMasterRequest(req)
 	if err != nil {
 		return ""
 	}
@@ -129,21 +190,27 @@ func probeMirrorTrusted() bool {
 // prefetchTables 并发拉齐全部表：此前每表「探针+下载」串行共 18 次网络往返，
 // 到源站的慢路由会把整轮拖到分钟级；并发后整轮 ≈ 最慢一张表的耗时。
 func prefetchTables(probeMirror bool) (*tableBatch, error) {
+	return prefetchTableGroup(masterTables, probeMirror)
+}
+
+// prefetchTableGroup downloads one dependency group concurrently. Mobile uses
+// small groups so the raw bytes of all master tables are never resident at once.
+func prefetchTableGroup(tables []string, probeMirror bool) (*tableBatch, error) {
 	type result struct {
 		table string
 		data  []byte
 		err   error
 	}
-	results := make(chan result, len(masterTables))
-	for _, t := range masterTables {
+	results := make(chan result, len(tables))
+	for _, t := range tables {
 		go func(table string) {
 			data, err := fetchTable(table, probeMirror)
 			results <- result{table: table, data: data, err: err}
 		}(t)
 	}
-	batch := &tableBatch{data: make(map[string][]byte, len(masterTables))}
+	batch := &tableBatch{data: make(map[string][]byte, len(tables))}
 	var failures []string
-	for range masterTables {
+	for range tables {
 		result := <-results
 		if result.err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", result.table, result.err))
@@ -160,7 +227,11 @@ func prefetchTables(probeMirror bool) (*tableBatch, error) {
 
 func fetchURL(url string) ([]byte, string, error) {
 	log.Printf("[update] downloading %s", url)
-	resp, err := httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := doMasterRequest(req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1079,11 +1150,22 @@ func (lm *ListManager) publishCatalog(catalog *catalogData, generation uint64, c
 	// Keep derived voice lookup state in the same atomic generation swap. Readers
 	// can never observe new Events/AreaTalks paired with old voice-clue indexes.
 	lm.inferVoiceEventIDLocked()
+	character2DPublishGuard := lm.character2DPublishGuard
 	lm.mu.Unlock()
 
-	char2dMu.Lock()
-	char2dMap = char2ds
-	char2dMu.Unlock()
+	// Invoke the guard only after releasing lm.mu. Mobile guards take the runtime
+	// lock so the current-runtime check and global swap are atomic with respect to
+	// cross-root Initialize; calling them under lm.mu would invert that lock order.
+	publishCharacter2Ds := func() {
+		char2dMu.Lock()
+		char2dMap = char2ds
+		char2dMu.Unlock()
+	}
+	if character2DPublishGuard == nil {
+		publishCharacter2Ds()
+	} else {
+		character2DPublishGuard(publishCharacter2Ds)
+	}
 
 	lm.refreshFlashbackAnalyzers()
 }
@@ -1126,5 +1208,111 @@ func (lm *ListManager) UpdateAllFromCDN(dir string, pt *ProgressTracker) error {
 	lm.publishCatalog(catalog, manifest.Generation, char2ds)
 	pt.Done()
 	log.Printf("[update] metadata refresh complete (generation %d)", manifest.Generation)
+	return nil
+}
+
+// UpdateAllFromCDNLowMemory builds the same validated catalog generation while
+// downloading only each dependency group at a time. It is intended for mobile
+// processes where retaining every raw master table alongside decoded data can
+// exceed the app memory budget. Desktop keeps using UpdateAllFromCDN.
+func (lm *ListManager) UpdateAllFromCDNLowMemory(dir string, pt *ProgressTracker) error {
+	lm.updateMu.Lock()
+	defer lm.updateMu.Unlock()
+
+	pt.SetTotal(8)
+	probeMirror := probeMirrorTrusted()
+
+	lm.mu.RLock()
+	previousGreets := append([]GreetEntry(nil), lm.Greets...)
+	generation := lm.generation + 1
+	lm.mu.RUnlock()
+
+	catalog := &catalogData{}
+	fetch := func(tables ...string) (*tableBatch, error) {
+		batch, err := prefetchTableGroup(tables, probeMirror)
+		if err != nil {
+			pt.fail("元数据下载失败: " + err.Error())
+		}
+		return batch, err
+	}
+	failBuild := func(stage string, err error) error {
+		wrapped := fmt.Errorf("build %s: %w", stage, err)
+		pt.fail("元数据校验失败: " + wrapped.Error())
+		return wrapped
+	}
+
+	batch, err := fetch("events", "eventStories", "eventCards")
+	if err != nil {
+		return err
+	}
+	if catalog.Events, err = buildEvents(batch); err != nil {
+		return failBuild("events", err)
+	}
+	pt.Advance("已构建 events")
+
+	batch, err = fetch("cards")
+	if err != nil {
+		return err
+	}
+	if catalog.Cards, err = buildCards(batch); err != nil {
+		return failBuild("cards", err)
+	}
+	pt.Advance("已构建 cards")
+
+	if catalog.Festivals, err = buildFestivals(catalog.Events, catalog.Cards); err != nil {
+		return failBuild("festivals", err)
+	}
+	pt.Advance("已构建 festivals")
+
+	batch, err = fetch("unitStories")
+	if err != nil {
+		return err
+	}
+	if catalog.MainStory, err = buildMainStory(batch); err != nil {
+		return failBuild("mainStory", err)
+	}
+	pt.Advance("已构建 mainStory")
+
+	batch, err = fetch("actionSets", "character2ds")
+	if err != nil {
+		return err
+	}
+	var char2ds map[int]cdnCharacter2D
+	if catalog.AreaTalks, char2ds, err = buildAreaTalks(batch, catalog.Events); err != nil {
+		return failBuild("areaTalks", err)
+	}
+	pt.Advance("已构建 areaTalks")
+
+	batch, err = fetch("specialStories")
+	if err != nil {
+		return err
+	}
+	if catalog.Specials, err = buildSpecials(batch); err != nil {
+		return failBuild("specials", err)
+	}
+	pt.Advance("已构建 specials")
+
+	batch, err = fetch("systemLive2ds")
+	if err != nil {
+		return err
+	}
+	if catalog.Greets, err = buildGreets(batch, previousGreets); err != nil {
+		return failBuild("greets", err)
+	}
+	if err := validateCatalog(catalog); err != nil {
+		pt.fail("元数据校验失败: " + err.Error())
+		return err
+	}
+	pt.Advance("已构建 greets")
+
+	manifest, err := persistCatalogGeneration(dir, generation, catalog)
+	if err != nil {
+		pt.fail("元数据发布失败: " + err.Error())
+		return err
+	}
+	lm.publishCatalog(catalog, manifest.Generation, char2ds)
+	pt.Advance("已发布元数据")
+	pt.Done()
+	log.Printf("[update] low-memory metadata refresh complete (generation %d)", manifest.Generation)
 	return nil
 }

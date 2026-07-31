@@ -3,8 +3,22 @@
 // points at the custom scheme (sekai://localhost or http://sekai.localhost); in
 // dev (plain browser / Vite) the global is absent, so requests stay same-origin
 // and Vite's proxy adds the per-run TCP capability without exposing it to JS.
-export const ORIGIN = (typeof window !== 'undefined' && (window as any).__SEKAI_ORIGIN__) || ''
+import { capabilities } from '../platform/capabilities'
+import { mobileCore } from '../platform/mobileCore'
+import {
+  clearMobileRecovery,
+  loadMobileRecovery,
+  loadMobileSettings,
+  saveMobileRecovery,
+  saveMobileSettings,
+} from '../platform/mobileStorage'
+
+export const ORIGIN = (typeof window !== 'undefined' && window.__SEKAI_ORIGIN__) || ''
 export const BASE_URL = ORIGIN + '/api/v1'
+
+function unsupportedOnAndroid<T>(feature: string): Promise<T> {
+  return Promise.reject(new Error(`${feature} is not available on Android`))
+}
 
 export class ApiError extends Error {
   status: number
@@ -87,23 +101,29 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
 export const api = {
   // Story navigation
-  storyTypes: () => request<string[]>('/story/types'),
+  storyTypes: () => capabilities.isAndroid
+    ? mobileCore.storyTypes()
+    : request<string[]>('/story/types'),
 
-  storySorts: (type: string) =>
-    request<{ label: string; value: string }[]>(`/story/sorts?type=${encodeURIComponent(type)}`),
+  storySorts: (type: string) => capabilities.isAndroid
+    ? mobileCore.storySorts(type)
+    : request<{ label: string; value: string }[]>(`/story/sorts?type=${encodeURIComponent(type)}`),
 
-  storyIndex: (type: string, sort: string) =>
-    request<{ label: string; value: string; chapters?: number[] }[]>(
+  storyIndex: (type: string, sort: string) => capabilities.isAndroid
+    ? mobileCore.storyIndex(type, sort)
+    : request<{ label: string; value: string; chapters?: number[] }[]>(
       `/story/index?type=${encodeURIComponent(type)}&sort=${encodeURIComponent(sort)}`,
     ),
 
-  storyChapter: (type: string, sort: string, index: string) =>
-    request<{ number: number; label: string }[]>(
+  storyChapter: (type: string, sort: string, index: string) => capabilities.isAndroid
+    ? mobileCore.storyChapters(type, sort, index)
+    : request<{ number: number; label: string }[]>(
       `/story/chapter?type=${encodeURIComponent(type)}&sort=${encodeURIComponent(sort)}&index=${encodeURIComponent(index)}`,
     ),
 
-  jsonPath: (type: string, sort: string, index: string, chapter: number, source: string) =>
-    request<{ url: string; fileName: string; saveTitle: string; chapterTitle: string }>(
+  jsonPath: (type: string, sort: string, index: string, chapter: number, source: string) => capabilities.isAndroid
+    ? mobileCore.storyJsonPath(type, sort, index, chapter, source)
+    : request<{ url: string; fileName: string; saveTitle: string; chapterTitle: string }>(
       `/story/json-path?type=${encodeURIComponent(type)}&sort=${encodeURIComponent(sort)}&index=${encodeURIComponent(index)}&chapter=${chapter}&source=${encodeURIComponent(source)}`,
     ),
 
@@ -113,27 +133,35 @@ export const api = {
     index: string
     chapter: number
     source: string
-  }) =>
-    request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string; indexLabel: string }>(
+  }) => capabilities.isAndroid
+    ? mobileCore.storyLoad(data)
+    : request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string; indexLabel: string }>(
       '/story/load',
       { method: 'POST', body: JSON.stringify(data) },
     ),
 
-  storyLoadLocal: (content: string) =>
-    request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string }>(
+  storyLoadLocal: (content: string) => capabilities.isAndroid
+    ? mobileCore.storyLoadLocal(content)
+    : request<{ scenarioId: string; sourceTalks: import('../types/translation').SourceTalk[]; saveTitle: string; chapterTitle: string; indexLabel?: string }>(
       '/story/load-local',
       { method: 'POST', body: JSON.stringify({ content }) },
     ),
 
-  resolveLabel: (label: string) =>
-    request<{ ok: boolean; storyType: string; index: string; indexLabel: string; chapter: number }>(
+  resolveLabel: (label: string) => capabilities.isAndroid
+    ? mobileCore.resolveStoryLabel(label)
+    : request<{ ok: boolean; storyType: string; index: string; indexLabel: string; chapter: number }>(
       '/story/resolve-label',
       { method: 'POST', body: JSON.stringify({ label }) },
     ),
 
+  storyCatalogStatus: () => capabilities.isAndroid
+    ? mobileCore.storyCatalogStatus()
+    : Promise.resolve({ ready: true, generation: 0, updating: false }),
+
   // Translation
-  translationLoadContent: (content: string) =>
-    request<{
+  translationLoadContent: (content: string) => capabilities.isAndroid
+    ? mobileCore.loadTranslation(content)
+    : request<{
       talks: import('../types/translation').DstTalk[]
       meta: import('../types/api').SaveMetadata | null
     }>('/translation/load-content', {
@@ -145,8 +173,9 @@ export const api = {
     talks: import('../types/translation').DstTalk[]
     saveN: boolean
     meta?: import('../types/api').SaveMetadata
-  }) =>
-    request<{ content: string }>('/translation/serialize', {
+  }) => capabilities.isAndroid
+    ? mobileCore.serializeTranslation(data)
+    : request<{ content: string }>('/translation/serialize', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -154,10 +183,12 @@ export const api = {
   translationCreate: (data: {
     sourceTalks: import('../types/translation').SourceTalk[]
     jp: boolean
-  }) => request<import('../types/translation').DstTalk[]>('/translation/create', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  }) => capabilities.isAndroid
+    ? mobileCore.createTranslation(data)
+    : request<import('../types/translation').DstTalk[]>('/translation/create', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   translationLoad: (filePath: string) =>
     request<{
@@ -189,19 +220,23 @@ export const api = {
   checkLines: (data: {
     sourceTalks: import('../types/translation').SourceTalk[]
     loadedTalks: import('../types/translation').DstTalk[]
-  }) => request<import('../types/translation').DstTalk[]>('/translation/check-lines', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  }) => capabilities.isAndroid
+    ? mobileCore.checkLines(data)
+    : request<import('../types/translation').DstTalk[]>('/translation/check-lines', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   compareText: (data: {
     referTalks: import('../types/translation').DstTalk[]
     checkTalks: import('../types/translation').DstTalk[]
     editorMode: number
-  }) => request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>('/editor/compare', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  }) => capabilities.isAndroid
+    ? mobileCore.compareText(data)
+    : request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>('/editor/compare', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Editor
   changeText: (data: {
@@ -211,8 +246,9 @@ export const api = {
     talks: import('../types/translation').DstTalk[]
     dstTalks: import('../types/translation').DstTalk[]
     referTalks: import('../types/translation').DstTalk[]
-  }) =>
-    request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
+  }) => capabilities.isAndroid
+    ? mobileCore.changeText(data)
+    : request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
       '/editor/change-text',
       { method: 'POST', body: JSON.stringify(data) },
     ),
@@ -222,8 +258,9 @@ export const api = {
     talks: import('../types/translation').DstTalk[]
     dstTalks: import('../types/translation').DstTalk[]
     isProofreading: boolean
-  }) =>
-    request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
+  }) => capabilities.isAndroid
+    ? mobileCore.addLine(data)
+    : request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
       '/editor/add-line',
       { method: 'POST', body: JSON.stringify(data) },
     ),
@@ -232,8 +269,9 @@ export const api = {
     row: number
     talks: import('../types/translation').DstTalk[]
     dstTalks: import('../types/translation').DstTalk[]
-  }) =>
-    request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
+  }) => capabilities.isAndroid
+    ? mobileCore.removeLine(data)
+    : request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>(
       '/editor/remove-line',
       { method: 'POST', body: JSON.stringify(data) },
     ),
@@ -252,14 +290,17 @@ export const api = {
     brackets: string
     talks: import('../types/translation').DstTalk[]
     dstTalks: import('../types/translation').DstTalk[]
-  }) => request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>('/editor/replace-brackets', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  }) => capabilities.isAndroid
+    ? mobileCore.replaceBrackets(data)
+    : request<{ talks: import('../types/translation').DstTalk[]; dstTalks: import('../types/translation').DstTalk[] }>('/editor/replace-brackets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Text check
-  checkText: (data: { speaker: string; text: string }) =>
-    request<{ text: string; checked: boolean; message?: string }>('/check/text', {
+  checkText: (data: { speaker: string; text: string }) => capabilities.isAndroid
+    ? mobileCore.checkText(data)
+    : request<{ text: string; checked: boolean; message?: string }>('/check/text', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -271,14 +312,16 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ sourceTalks }) },
     ),
 
-  clueHints: (clue: string, lang = 'zh-cn') =>
-    request<{ clue: string; hints: string[] }>(`/flashback/clue-hints?clue=${encodeURIComponent(clue)}&lang=${encodeURIComponent(lang)}`),
+  clueHints: (clue: string, lang = 'zh-cn') => capabilities.isAndroid
+    ? Promise.resolve({ clue, hints: [clue] })
+    : request<{ clue: string; hints: string[] }>(`/flashback/clue-hints?clue=${encodeURIComponent(clue)}&lang=${encodeURIComponent(lang)}`),
 
   voiceClues: () => request<Record<string, { id: number; title: string; name: string; chapters: { title: string }[]; cards: number[]; inferredVoiceIDs?: Record<string, unknown> }>>('/flashback/voice-clues'),
 
   // Voice
-  voiceUrl: (scenarioId: string, voiceId: string, source: string, chara2d?: number) =>
-    request<{ url: string }>(
+  voiceUrl: (scenarioId: string, voiceId: string, source: string, chara2d?: number) => capabilities.isAndroid
+    ? mobileCore.voiceUrl(scenarioId, voiceId, source, chara2d)
+    : request<{ url: string }>(
       `/voice/url?scenarioId=${encodeURIComponent(scenarioId)}&voiceId=${encodeURIComponent(voiceId)}&source=${encodeURIComponent(source)}` +
       (chara2d != null ? `&chara2d=${chara2d}` : ''),
     ),
@@ -287,45 +330,28 @@ export const api = {
   speakerCount: (data: {
     talks: import('../types/translation').DstTalk[]
     sourceTalks: import('../types/translation').SourceTalk[]
-  }) =>
-    request<{ speakers: { japanese: string; chinese: string; count: number }[] }>('/speaker/count', {
+  }) => capabilities.isAndroid
+    ? mobileCore.speakerCount(data)
+    : request<{ speakers: { japanese: string; chinese: string; count: number }[] }>('/speaker/count', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
   // Recovery (autosave)
-  recoverySave: (data: {
-    talks: import('../types/translation').DstTalk[]
-    saveN: boolean
-    filePath: string
-    editorMode: number
-    storyType?: string
-    storySort?: string
-    storyIndex?: string
-    storyChapter?: number
-    storySource?: string
-  }) =>
-    request<{ status: string }>('/recovery/save', {
+  recoverySave: (data: import('../editor/recovery').RecoverySaveRequestV2) => capabilities.isAndroid
+    ? saveMobileRecovery(data)
+    : request<{ status: string }>('/recovery/save', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
-  recoveryLoad: () =>
-    request<{
-      exists: boolean
-      content?: string
-      filePath?: string
-      editorMode?: number
-      savedAt?: string
-      storyType?: string
-      storySort?: string
-      storyIndex?: string
-      storyChapter?: number
-      storySource?: string
-    }>('/recovery/load'),
+  recoveryLoad: () => capabilities.isAndroid
+    ? loadMobileRecovery()
+    : request<import('../editor/recovery').RecoveryLoadResult>('/recovery/load'),
 
-  recoveryClear: () =>
-    request<{ status: string }>('/recovery/clear', { method: 'DELETE' }),
+  recoveryClear: () => capabilities.isAndroid
+    ? clearMobileRecovery()
+    : request<{ status: string }>('/recovery/clear', { method: 'DELETE' }),
 
   // Debug log viewer/export
   debugLogs: (signal?: AbortSignal) =>
@@ -337,25 +363,32 @@ export const api = {
     }),
 
   // Settings
-  getSettings: () => request<import('../types/api').Settings>('/settings'),
-  putSettings: (settings: import('../types/api').Settings) =>
-    request<import('../types/api').Settings>('/settings', {
+  getSettings: () => capabilities.isAndroid
+    ? Promise.resolve(loadMobileSettings())
+    : request<import('../types/api').Settings>('/settings'),
+  putSettings: (settings: import('../types/api').Settings) => capabilities.isAndroid
+    ? Promise.resolve(saveMobileSettings(settings))
+    : request<import('../types/api').Settings>('/settings', {
       method: 'PUT',
       body: JSON.stringify(settings),
     }),
 
-  openDataDir: () =>
-    request<{ dir: string }>('/open-data-dir', { method: 'POST' }),
-  openSaveDir: () =>
-    request<{ dir: string }>('/save-dir/open', { method: 'POST' }),
-  migrateSaveDir: (newDir: string) =>
-    request<import('../types/api').MigrateSaveDirResult>('/save-dir/migrate', {
+  openDataDir: () => capabilities.isAndroid
+    ? unsupportedOnAndroid<{ dir: string }>('Opening the desktop data directory')
+    : request<{ dir: string }>('/open-data-dir', { method: 'POST' }),
+  openSaveDir: () => capabilities.isAndroid
+    ? unsupportedOnAndroid<{ dir: string }>('Opening the desktop save directory')
+    : request<{ dir: string }>('/save-dir/open', { method: 'POST' }),
+  migrateSaveDir: (newDir: string) => capabilities.isAndroid
+    ? unsupportedOnAndroid<import('../types/api').MigrateSaveDirResult>('Migrating the desktop save directory')
+    : request<import('../types/api').MigrateSaveDirResult>('/save-dir/migrate', {
       method: 'POST',
       body: JSON.stringify({ newDir }),
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
-  openUrl: (url: string) =>
-    request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
+  openUrl: (url: string) => capabilities.isAndroid
+    ? mobileCore.openUrl(url)
+    : request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
 
   importLive2D: (srcDir: string) =>
     request<{ dir: string; moved: number }>('/live2d/import', {
@@ -363,6 +396,12 @@ export const api = {
       body: JSON.stringify({ srcDir }),
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
+
+  // Built-in Android Live2D resolves reviewed CDN URLs through the native,
+  // app-private cache. Desktop's signed plugin keeps using its local HTTP proxy.
+  live2dAssetUrl: async (url: string) => capabilities.isAndroid
+    ? mobileCore.resolveLive2DAsset(url)
+    : { url: `${BASE_URL}/live2d/proxy?url=${encodeURIComponent(url)}`, mime: '', size: 0, cacheHit: false },
 
   // Plugins (management). The listing/entry-serving is handled directly by the
   // plugin-host loader against /plugins/*; these cover enable/disable + uninstall.
@@ -441,12 +480,22 @@ export const api = {
     }),
 
   // Update (CDN refresh)
-  update: () => request<{ status: string }>('/update', {
-    method: 'POST',
-    timeoutMs: LONG_MUTATION_TIMEOUT_MS,
-  }),
-  updateProgress: () =>
-    request<{ current: number; total: number; message?: string; done: boolean }>('/update/progress'),
+  update: () => capabilities.isAndroid
+    ? mobileCore.updateStoryCatalog()
+    : request<{ status: string }>('/update', {
+      method: 'POST',
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
+    }),
+  updateProgress: (): Promise<{
+    current: number
+    total: number
+    message?: string
+    done: boolean
+    status?: 'idle' | 'running' | 'done' | 'error'
+    error?: string
+  }> => capabilities.isAndroid
+    ? mobileCore.storyUpdateProgress()
+    : request<{ current: number; total: number; message?: string; done: boolean }>('/update/progress'),
 
   // JSON Download
   downloadJson: (data: {
@@ -487,7 +536,9 @@ export const api = {
     request<import('../types/dictionary').CharacterInfo[]>('/assets/characters'),
   units: () => request<import('../types/dictionary').UnitInfo[]>('/assets/units'),
   areas: () => request<string[]>('/assets/areas'),
-  characterIconUrl: (index: number) => `${BASE_URL}/assets/character-icon/${index}`,
+  characterIconUrl: (index: number) => capabilities.isAndroid
+    ? `/character-icons/chr_${index}.png`
+    : `${BASE_URL}/assets/character-icon/${index}`,
   chrIconCustomStatus: () =>
     request<{ active: boolean; count: number }>('/assets/character-icon-custom'),
   chrIconCustomImport: (dir: string) =>
@@ -500,135 +551,177 @@ export const api = {
     request<{ active: boolean; count: number }>('/assets/character-icon-custom', { method: 'DELETE' }),
 
   // --- Glossary (term library) ---
-  glossarySearch: (q: string, category = '', limit = 50) =>
-    request<import('../types/glossary').GlossaryEntry[]>(
+  glossarySearch: (q: string, category = '', limit = 50) => capabilities.isAndroid
+    ? mobileCore.glossarySearch(q, category, limit)
+    : request<import('../types/glossary').GlossaryEntry[]>(
       `/glossary/search?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&limit=${limit}`,
     ),
-  glossaryCategories: () =>
-    request<import('../types/glossary').CategoryCount[]>('/glossary/categories'),
-  glossaryEntries: (category = '', offset = 0, limit = 200) =>
-    request<{ items: import('../types/glossary').GlossaryEntry[]; total: number }>(
+  glossaryCategories: () => capabilities.isAndroid
+    ? mobileCore.glossaryCategories()
+    : request<import('../types/glossary').CategoryCount[]>('/glossary/categories'),
+  glossaryEntries: (category = '', offset = 0, limit = 200) => capabilities.isAndroid
+    ? mobileCore.glossaryEntries(category, offset, limit)
+    : request<{ items: import('../types/glossary').GlossaryEntry[]; total: number }>(
       `/glossary/entries?category=${encodeURIComponent(category)}&offset=${offset}&limit=${limit}`,
     ),
-  glossaryAddEntry: (entry: Partial<import('../types/glossary').GlossaryEntry>) =>
-    request<import('../types/glossary').GlossaryEntry>('/glossary/entries', {
+  glossaryAddEntry: (entry: Partial<import('../types/glossary').GlossaryEntry>) => capabilities.isAndroid
+    ? mobileCore.glossaryAddEntry(entry)
+    : request<import('../types/glossary').GlossaryEntry>('/glossary/entries', {
       method: 'POST', body: JSON.stringify(entry),
     }),
-  glossaryUpdateEntry: (id: string, entry: Partial<import('../types/glossary').GlossaryEntry>) =>
-    request<import('../types/glossary').GlossaryEntry>(`/glossary/entries/${encodeURIComponent(id)}`, {
+  glossaryUpdateEntry: (id: string, entry: Partial<import('../types/glossary').GlossaryEntry>) => capabilities.isAndroid
+    ? mobileCore.glossaryUpdateEntry(id, entry)
+    : request<import('../types/glossary').GlossaryEntry>(`/glossary/entries/${encodeURIComponent(id)}`, {
       method: 'PUT', body: JSON.stringify(entry),
     }),
-  glossaryDeleteEntry: (id: string) =>
-    request<{ status: string }>(`/glossary/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  glossaryImport: (srcPath: string) =>
-    request<import('../types/glossary').ImportReport>('/glossary/import', {
+  glossaryDeleteEntry: (id: string) => capabilities.isAndroid
+    ? mobileCore.glossaryDeleteEntry(id)
+    : request<{ status: string }>(`/glossary/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  glossaryImport: (srcPath: string) => capabilities.isAndroid
+    ? unsupportedOnAndroid<import('../types/glossary').ImportReport>('Path-based glossary import')
+    : request<import('../types/glossary').ImportReport>('/glossary/import', {
       method: 'POST', body: JSON.stringify({ srcPath }),
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
-  glossaryReload: () => request<{ status: string }>('/glossary/reload', { method: 'POST' }),
-  glossarySync: (remoteUrl: string) =>
-    request<{ status: string; entries: number; appellations: number }>('/glossary/sync', {
+  glossaryReload: () => capabilities.isAndroid
+    ? unsupportedOnAndroid<{ status: string }>('Desktop glossary reload')
+    : request<{ status: string }>('/glossary/reload', { method: 'POST' }),
+  glossarySync: (remoteUrl: string) => capabilities.isAndroid
+    ? unsupportedOnAndroid<{ status: string; entries: number; appellations: number }>('Legacy glossary URL sync')
+    : request<{ status: string; entries: number; appellations: number }>('/glossary/sync', {
       method: 'POST', body: JSON.stringify({ remoteUrl }),
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
   // Appellation lookup (人称表)
-  glossaryAppellationSpeakers: () =>
-    request<string[]>('/glossary/appellations/speakers'),
-  glossaryAppellationTargets: (speaker: string) =>
-    request<string[]>(`/glossary/appellations/targets?speaker=${encodeURIComponent(speaker)}`),
-  glossaryAppellationLookup: (speaker: string, target: string) =>
-    request<import('../types/glossary').AppellationResult>(
+  glossaryAppellationSpeakers: () => capabilities.isAndroid
+    ? mobileCore.glossaryAppellationSpeakers()
+    : request<string[]>('/glossary/appellations/speakers'),
+  glossaryAppellationTargets: (speaker: string) => capabilities.isAndroid
+    ? mobileCore.glossaryAppellationTargets(speaker)
+    : request<string[]>(`/glossary/appellations/targets?speaker=${encodeURIComponent(speaker)}`),
+  glossaryAppellationLookup: (speaker: string, target: string) => capabilities.isAndroid
+    ? mobileCore.glossaryAppellationLookup(speaker, target)
+    : request<import('../types/glossary').AppellationResult>(
       `/glossary/appellations?speaker=${encodeURIComponent(speaker)}&target=${encodeURIComponent(target)}`,
     ),
-  glossaryAppellationUpsert: (a: import('../types/glossary').Appellation) =>
-    request<import('../types/glossary').Appellation>('/glossary/appellations', {
+  glossaryAppellationUpsert: (a: import('../types/glossary').Appellation) => capabilities.isAndroid
+    ? mobileCore.glossaryAppellationUpsert(a)
+    : request<import('../types/glossary').Appellation>('/glossary/appellations', {
       method: 'PUT', body: JSON.stringify(a),
     }),
   // Grammar (语法用例) + export
-  glossaryGrammar: (q = '', limit = 0) =>
-    request<import('../types/glossary').GrammarUsage[]>(
+  glossaryGrammar: (q = '', limit = 0) => capabilities.isAndroid
+    ? mobileCore.glossaryGrammar(q, limit)
+    : request<import('../types/glossary').GrammarUsage[]>(
       `/glossary/grammar?q=${encodeURIComponent(q)}&limit=${limit}`,
     ),
-  glossaryExport: () =>
-    request<import('../types/glossary').GlossaryData>('/glossary/export'),
+  glossaryExport: () => capabilities.isAndroid
+    ? mobileCore.glossaryExport()
+    : request<import('../types/glossary').GlossaryData>('/glossary/export'),
 
   // --- Team mode (proxied to remote glossary-server via local backend) ---
-  teamStatus: () => request<import('../types/glossary').TeamStatus>('/team/status'),
-  teamLogin: (serverUrl: string, username: string, password: string) =>
-    request<{ loggedIn: boolean; user: import('../types/glossary').TeamUser }>('/team/login', {
+  teamStatus: () => capabilities.isAndroid
+    ? mobileCore.teamStatus()
+    : request<import('../types/glossary').TeamStatus>('/team/status'),
+  teamLogin: (serverUrl: string, username: string, password: string) => capabilities.isAndroid
+    ? mobileCore.teamLogin(serverUrl, username, password)
+    : request<{ loggedIn: boolean; user: import('../types/glossary').TeamUser }>('/team/login', {
       method: 'POST', body: JSON.stringify({ serverUrl, username, password }),
     }),
-  teamLogout: () => request<{ status: string }>('/team/logout', { method: 'POST' }),
-  teamConnect: (serverUrl: string) =>
-    request<{ connected: boolean; readonly: boolean }>('/team/connect', {
+  teamLogout: () => capabilities.isAndroid
+    ? mobileCore.teamLogout()
+    : request<{ status: string }>('/team/logout', { method: 'POST' }),
+  teamConnect: (serverUrl: string) => capabilities.isAndroid
+    ? mobileCore.teamConnect(serverUrl)
+    : request<{ connected: boolean; readonly: boolean }>('/team/connect', {
       method: 'POST', body: JSON.stringify({ serverUrl }),
     }),
-  teamDisconnect: () => request<{ status: string }>('/team/disconnect', { method: 'POST' }),
-  teamSync: (force = false) =>
-    request<{ status: string; version: number; changed: boolean; entries?: number }>(
+  teamDisconnect: () => capabilities.isAndroid
+    ? mobileCore.teamDisconnect()
+    : request<{ status: string }>('/team/disconnect', { method: 'POST' }),
+  teamSync: (force = false) => capabilities.isAndroid
+    ? mobileCore.teamSync(force)
+    : request<{ status: string; version: number; changed: boolean; entries?: number }>(
       `/team/sync${force ? '?force=1' : ''}`, { method: 'POST', timeoutMs: LONG_MUTATION_TIMEOUT_MS },
     ),
   teamCreateProposal: (p: {
     kind: string; targetType?: string; targetId?: string; category: string
     payload: unknown; baseVersion?: number
-  }) => request<import('../types/glossary').Proposal>('/team/proposals', {
-    method: 'POST', body: JSON.stringify(p),
-  }),
-  teamMyProposals: () =>
-    request<import('../types/glossary').Proposal[]>('/team/proposals/mine'),
-  teamWithdrawProposal: (id: string) =>
-    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  teamPendingProposals: (category = '') =>
-    request<import('../types/glossary').Proposal[]>(
+  }) => capabilities.isAndroid
+    ? mobileCore.teamCreateProposal(p)
+    : request<import('../types/glossary').Proposal>('/team/proposals', {
+      method: 'POST', body: JSON.stringify(p),
+    }),
+  teamMyProposals: () => capabilities.isAndroid
+    ? mobileCore.teamMyProposals()
+    : request<import('../types/glossary').Proposal[]>('/team/proposals/mine'),
+  teamWithdrawProposal: (id: string) => capabilities.isAndroid
+    ? mobileCore.teamWithdrawProposal(id)
+    : request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  teamPendingProposals: (category = '') => capabilities.isAndroid
+    ? mobileCore.teamPendingProposals(category)
+    : request<import('../types/glossary').Proposal[]>(
       `/team/proposals${category ? `?category=${encodeURIComponent(category)}` : ''}`,
     ),
-  teamApproveProposal: (id: string, note = '') =>
-    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/approve`, {
+  teamApproveProposal: (id: string, note = '') => capabilities.isAndroid
+    ? mobileCore.teamApproveProposal(id, note)
+    : request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/approve`, {
       method: 'POST', body: JSON.stringify({ note }),
     }),
-  teamRejectProposal: (id: string, note: string) =>
-    request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/reject`, {
+  teamRejectProposal: (id: string, note: string) => capabilities.isAndroid
+    ? mobileCore.teamRejectProposal(id, note)
+    : request<{ status: string }>(`/team/proposals/${encodeURIComponent(id)}/reject`, {
       method: 'POST', body: JSON.stringify({ note }),
     }),
-  teamSetReviewer: (userId: string, categories: string[]) =>
-    request<{ userId: string; categories: string[] }>('/team/admin/reviewers', {
+  teamSetReviewer: (userId: string, categories: string[]) => capabilities.isAndroid
+    ? mobileCore.teamSetReviewer(userId, categories)
+    : request<{ userId: string; categories: string[] }>('/team/admin/reviewers', {
       method: 'POST', body: JSON.stringify({ userId, categories }),
     }),
-  teamListUsers: () =>
-    request<import('../types/glossary').TeamUser[]>('/team/admin/users'),
+  teamListUsers: () => capabilities.isAndroid
+    ? mobileCore.teamListUsers()
+    : request<import('../types/glossary').TeamUser[]>('/team/admin/users'),
 
   // account self-service
-  teamChangePassword: (oldPassword: string, newPassword: string) =>
-    request<{ status: string }>('/team/account/password', {
+  teamChangePassword: (oldPassword: string, newPassword: string) => capabilities.isAndroid
+    ? mobileCore.teamChangePassword(oldPassword, newPassword)
+    : request<{ status: string }>('/team/account/password', {
       method: 'POST', body: JSON.stringify({ oldPassword, newPassword }),
     }),
-  teamUpdateProfile: (displayName: string, avatarColor?: string) =>
-    request<import('../types/glossary').TeamUser>('/team/account/profile', {
+  teamUpdateProfile: (displayName: string, avatarColor?: string) => capabilities.isAndroid
+    ? mobileCore.teamUpdateProfile(displayName, avatarColor)
+    : request<import('../types/glossary').TeamUser>('/team/account/profile', {
       method: 'POST',
       body: JSON.stringify(avatarColor === undefined ? { displayName } : { displayName, avatarColor }),
     }),
-  teamAccountUsers: () =>
-    request<import('../types/glossary').TeamUser[]>('/team/account/users'),
+  teamAccountUsers: () => capabilities.isAndroid
+    ? mobileCore.teamAccountUsers()
+    : request<import('../types/glossary').TeamUser[]>('/team/account/users'),
 
   // admin user management
-  teamCreateUser: (username: string, password: string, role: string, displayName: string) =>
-    request<import('../types/glossary').TeamUser>('/team/admin/users', {
+  teamCreateUser: (username: string, password: string, role: string, displayName: string) => capabilities.isAndroid
+    ? mobileCore.teamCreateUser(username, password, role, displayName)
+    : request<import('../types/glossary').TeamUser>('/team/admin/users', {
       method: 'POST', body: JSON.stringify({ username, password, role, displayName }),
     }),
-  teamSetUserRole: (id: string, role: string) =>
-    request<{ id: string; role: string }>(`/team/admin/users/${encodeURIComponent(id)}/role`, {
+  teamSetUserRole: (id: string, role: string) => capabilities.isAndroid
+    ? mobileCore.teamSetUserRole(id, role)
+    : request<{ id: string; role: string }>(`/team/admin/users/${encodeURIComponent(id)}/role`, {
       method: 'POST', body: JSON.stringify({ role }),
     }),
-  teamSetUserStatus: (id: string, status: string) =>
-    request<{ id: string; status: string }>(`/team/admin/users/${encodeURIComponent(id)}/status`, {
+  teamSetUserStatus: (id: string, status: string) => capabilities.isAndroid
+    ? mobileCore.teamSetUserStatus(id, status)
+    : request<{ id: string; status: string }>(`/team/admin/users/${encodeURIComponent(id)}/status`, {
       method: 'POST', body: JSON.stringify({ status }),
     }),
-  teamResetUserPassword: (id: string, newPassword: string) =>
-    request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}/reset-password`, {
+  teamResetUserPassword: (id: string, newPassword: string) => capabilities.isAndroid
+    ? mobileCore.teamResetUserPassword(id, newPassword)
+    : request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}/reset-password`, {
       method: 'POST', body: JSON.stringify({ newPassword }),
     }),
-  teamDeleteUser: (id: string) =>
-    request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  teamDeleteUser: (id: string) => capabilities.isAndroid
+    ? mobileCore.teamDeleteUser(id)
+    : request<{ status: string }>(`/team/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Bulk-upload the entire LOCAL glossary to the server (superadmin only; the
   // server upserts by entry ID and bumps the version once so every client re-syncs).
@@ -637,8 +730,9 @@ export const api = {
   // (as [] when absent) so the older entries-only path keeps working unchanged.
   // 完全替换线上术语库（管理员）：服务器删掉上传里没有的行、其余 upsert，
   // 单事务原子完成；空 entries 服务端直接拒绝（防误清空）。
-  teamGlossaryReplace: (data: import('../types/glossary').GlossaryData) =>
-    request<{ deleted: number; written: number; entries: number; appellations: number; grammar: number; version: number }>(
+  teamGlossaryReplace: (data: import('../types/glossary').GlossaryData) => capabilities.isAndroid
+    ? mobileCore.teamGlossaryReplace(data)
+    : request<{ deleted: number; written: number; entries: number; appellations: number; grammar: number; version: number }>(
       '/team/admin/glossary/replace', {
         method: 'POST',
         timeoutMs: LONG_MUTATION_TIMEOUT_MS,
@@ -648,8 +742,9 @@ export const api = {
           grammar: data.grammar ?? [],
         }),
       }),
-  teamBulkImport: (data: import('../types/glossary').GlossaryData) =>
-    request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
+  teamBulkImport: (data: import('../types/glossary').GlossaryData) => capabilities.isAndroid
+    ? mobileCore.teamBulkImport(data)
+    : request<{ upserted: number; version: number }>('/team/admin/glossary/bulk-import', {
       method: 'POST',
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
       body: JSON.stringify({

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -24,13 +23,18 @@ import (
 
 func main() {
 	port := flag.Int("port", 9800, "server port")
-	host := flag.String("host", "127.0.0.1", "interface to bind; 127.0.0.1 keeps the sidecar local-only. Use 0.0.0.0 to deliberately expose it to the LAN.")
+	host := flag.String("host", "127.0.0.1", "loopback interface to bind in development TCP mode (localhost, 127.0.0.1, or ::1)")
 	authToken := flag.String("auth-token", "", "capability token required in TCP mode on mutating requests (X-Sekai-Token header)")
 	dir := flag.String("dir", ".", "base directory for read-only resources (images)")
 	dataDir := flag.String("data-dir", "", "base directory for writable data (catalog, settings); defaults to --dir")
 	ipcMode := flag.Bool("ipc", false, "serve over stdio framing (Tauri sekai:// custom scheme) instead of binding TCP; release transport. No TCP port, no capability token.")
 	flag.Parse()
 	validatedAuthToken, err := authTokenForTransport(*ipcMode, *authToken)
+	if err != nil {
+		log.Printf("Refusing to start: %v", err)
+		return
+	}
+	validatedHost, err := hostForTransport(*ipcMode, *host)
 	if err != nil {
 		log.Printf("Refusing to start: %v", err)
 		return
@@ -90,7 +94,7 @@ func main() {
 		return
 	}
 
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	addr := net.JoinHostPort(validatedHost, strconv.Itoa(*port))
 	log.Printf("SekaiText server starting on %s", addr)
 	log.Printf("Resource directory: %s", cfg.BaseDir)
 	log.Printf("Data directory: %s", cfg.DataBaseDir)
@@ -115,7 +119,7 @@ func main() {
 	// Keep Host validation outside the router so hostile authorities are rejected
 	// before CORS, authentication, logging, or any route. IPC does not use this
 	// handler because its authority is synthesized inside the private frame transport.
-	httpServer := &http.Server{Handler: trustedLoopbackHost(tcpAddr.Port)(router)}
+	httpServer := newTCPHTTPServer(trustedLoopbackHost(tcpAddr.Port)(router))
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- httpServer.Serve(ln) }()
 	var serveErr error
@@ -131,6 +135,15 @@ func main() {
 	}
 }
 
+func newTCPHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+}
+
 func authTokenForTransport(ipcMode bool, raw string) (string, error) {
 	if ipcMode {
 		return "", nil
@@ -139,6 +152,29 @@ func authTokenForTransport(ipcMode bool, raw string) (string, error) {
 		return "", errors.New("TCP mode requires a non-empty --auth-token")
 	}
 	return raw, nil
+}
+
+// hostForTransport keeps the development HTTP server process-local. Host-header
+// validation alone cannot prove the peer is local when a listener is bound to a
+// LAN/wildcard address because a remote client can send Host: localhost. Release
+// IPC ignores --host entirely and does not create a network listener.
+func hostForTransport(ipcMode bool, raw string) (string, error) {
+	if ipcMode {
+		return "", nil
+	}
+	host := strings.TrimSpace(raw)
+	if strings.EqualFold(host, "localhost") {
+		return "localhost", nil
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || addr.Zone() != "" {
+		return "", errors.New("TCP mode requires a loopback --host (localhost, 127.0.0.1, or ::1)")
+	}
+	addr = addr.Unmap()
+	if addr != netip.MustParseAddr("127.0.0.1") && addr != netip.IPv6Loopback() {
+		return "", errors.New("TCP mode requires a loopback --host (localhost, 127.0.0.1, or ::1)")
+	}
+	return addr.String(), nil
 }
 
 func trustedLoopbackHost(expectedPort int) func(http.Handler) http.Handler {

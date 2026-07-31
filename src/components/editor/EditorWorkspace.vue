@@ -187,6 +187,10 @@ const editTimers = new Map<number, ReturnType<typeof setTimeout>>()
 const pendingEdits = new Map<number, { text: string; revision: number }>()
 const composingRows = new Set<number>()
 const compositionWaiters = new Map<number, Set<() => void>>()
+// Browser-owned focused DOM may intentionally differ from the backend-normalized
+// model. Track the last text actually observed from user input so a save flush
+// does not mistake that unchanged DOM for a brand-new edit after normalization.
+const focusedDomTexts = new Map<number, string>()
 let editSessionRow = -1
 let editSessionSnapshotTaken = false
 let workspaceUnmounted = false
@@ -348,6 +352,7 @@ function handleTextChange(row: number, newText: string) {
 // blur 包装：清编辑态（恢复外层选中框）再走原提交逻辑。
 function onEditBlur(e: Event, idx: number) {
   onBlur(e, idx)
+  focusedDomTexts.delete(idx)
   if (editingRow.value === idx) editingRow.value = -1
   if (editSessionRow === idx) {
     editSessionRow = -1
@@ -356,9 +361,19 @@ function onEditBlur(e: Event, idx: number) {
 }
 
 function materializeTextEdit(idx: number, newText: string): boolean {
-  // Real-change guard: blurring without an actual edit must not mark the
-  // document dirty or trigger a diff recompute.
-  if (editor.talks[idx]?.text === newText) return false
+  const previousDomText = focusedDomTexts.get(idx)
+  // Keep the browser-owned draft marker current even when another synchronous
+  // path already copied the same text into the model.
+  if (editor.talks[idx]?.text === newText) {
+    focusedDomTexts.set(idx, newText)
+    return false
+  }
+  // A backend response may normalize punctuation while the contenteditable stays
+  // focused. Its DOM deliberately remains untouched to preserve the Selection.
+  // If that DOM text has not changed since the last real input, do not write it
+  // back over the normalized model and enqueue the same request forever.
+  if (previousDomText !== undefined && previousDomText === newText) return false
+  focusedDomTexts.set(idx, newText)
   // Snapshot the PRE-edit state here — before the in-place commit below — so the
   // first undo actually reverts this edit. pushSnapshot deep-clones on capture,
   // and the debounced handleTextChange runs AFTER the commit; snapshotting there
@@ -392,6 +407,14 @@ function materializeTextEdit(idx: number, newText: string): boolean {
   editor.markUnsaved()
   handleTextChange(idx, newText)
   return true
+}
+
+function onEditInput(e: Event, idx: number) {
+  // Keep the model/recovery graph current while a non-IME edit still owns focus.
+  // Composition updates are partial candidate states and commit once, atomically,
+  // in compositionend instead.
+  if (composingRows.has(idx)) return
+  materializeTextEdit(idx, (e.target as HTMLElement).textContent ?? '')
 }
 
 function onBlur(e: Event, idx: number) {
@@ -683,9 +706,10 @@ function focusNext(e: KeyboardEvent) {
 const selectedRow = ref(-1)
 const editingRow = ref(-1)
 
-function onEditFocus(gidx: number) {
+function onEditFocus(e: FocusEvent, gidx: number) {
   selectedRow.value = gidx
   editingRow.value = gidx
+  focusedDomTexts.set(gidx, (e.target as HTMLElement).textContent ?? '')
   editSessionRow = gidx
   editSessionSnapshotTaken = false
 }
@@ -799,6 +823,7 @@ onUnmounted(() => {
   for (const t of editTimers.values()) clearTimeout(t)
   editTimers.clear()
   pendingEdits.clear()
+  focusedDomTexts.clear()
 })
 
 function onSourceEnter(e: MouseEvent, talk: DstTalk) {
@@ -972,7 +997,8 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                           class="leading-relaxed outline-none rounded px-1 -mx-1"
                           style="font-size: var(--editor-font-size)"
                           :class="{ 'cursor-text': isEditableTalk(item.talk) }"
-                          @focus="onEditFocus(item.globalIdx)"
+                          @focus="onEditFocus($event, item.globalIdx)"
+                          @input="onEditInput($event, item.globalIdx)"
                           @blur="onEditBlur($event, item.globalIdx)"
                           @compositionstart="onCompositionStart(item.globalIdx)"
                           @compositionend="onCompositionEnd($event, item.globalIdx)"
@@ -1175,6 +1201,38 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
   border-radius: 2px;
 }
+@media (max-width: 767px) {
+  .editor-workspace-panel {
+    border-radius: 0.5rem;
+  }
+  .editor-workspace-head,
+  .editor-row-group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor-workspace-head > :last-child {
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
+  .editor-title-input {
+    min-width: 0;
+  }
+  .editor-row-group {
+    min-height: 0;
+  }
+  .editor-source-cell {
+    padding: 0.75rem;
+    border-bottom: 1px dashed var(--color-border);
+    background: color-mix(in oklch, var(--color-surface) 95%, var(--color-bg));
+  }
+  .editor-dest-cell {
+    border-left: 0;
+  }
+  .editor-translation-row,
+  .editor-baseline-row {
+    padding: 0.75rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .workspace-swap-enter-active,
   .workspace-swap-leave-active { transition: none; }

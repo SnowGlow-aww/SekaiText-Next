@@ -21,14 +21,16 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPCACHE/sekaitext/live2d/objects/**"
+        ]
+      }
     }
   },
-  "plugins": {
-    "shell": {
-      "open": true
-    }
-  },
+  "plugins": {},
   "bundle": {
     "active": true,
     "targets": [

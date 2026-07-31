@@ -244,6 +244,7 @@ function roleLabel(role: string) {
     <div v-else class="space-y-3">
       <p class="app-help">
         连接团队术语库服务器：登录后你的新增/修改会作为提案提交审核；也可只读连接，免登录浏览并自动同步。
+        仅接受 HTTPS；自签名部署请先把签发 CA 安装为系统或用户受信任证书，应用不会跳过证书校验。
       </p>
       <div>
         <label class="app-label">服务器地址</label>

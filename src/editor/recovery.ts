@@ -1,5 +1,6 @@
 import type { DstTalk, EditorMode, SourceTalk } from '../types/translation'
 import type { DocMeta, EditorModeState } from '../stores/editor'
+import { capabilities } from '../platform/capabilities'
 
 export interface RecoveryModeSave {
   // `talks` is the file-serializable destination list consumed by the backend.
@@ -191,6 +192,13 @@ function readRecoveryRawUnchecked(): RecoveryRawSidecar | null {
 // previous backend snapshot even when their serialized text is identical.
 export function stageRecoveryRaw(request: RecoverySaveRequestV2): string | null {
   if (typeof localStorage === 'undefined') return null
+  if (capabilities.isAndroid) {
+    // Android's authoritative recovery record already contains the complete
+    // editor graph. Keeping the desktop sidecar as well doubles localStorage
+    // usage and can make both writes fail at the browser quota boundary.
+    forgetRecoveryRaw()
+    return null
+  }
   const associationId = createAssociationId()
   let previous: string | null = null
   try {
@@ -289,7 +297,9 @@ export function buildRecoverySaveRequest(
 
 export function recoveryModes(result: RecoveryLoadResult): RecoveryStoredMode[] {
   if (result.modes?.length) {
-    const raw = readRecoveryRaw()
+    // Mobile recovery is already lossless and must not be overridden by a stale
+    // desktop raw sidecar left by an older build.
+    const raw = capabilities.isAndroid ? null : readRecoveryRaw()
     return result.modes.map(mode => {
       const match = raw?.modes.find(candidate =>
         raw.activeMode === (result.activeMode ?? 0)

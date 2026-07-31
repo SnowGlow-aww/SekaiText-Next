@@ -12,6 +12,33 @@ import (
 // newReadonlyTeam builds a connected-but-not-logged-in TeamService pointed at
 // serverURL (readonly mode), skipping the session-restore network path since the
 // temp dataDir has no session file.
+type dataThenErrorReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *dataThenErrorReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+func TestReadBoundedResponseRejectsOverflowAndReadErrors(t *testing.T) {
+	if got, err := readBoundedResponse(strings.NewReader("1234"), 4); err != nil || string(got) != "1234" {
+		t.Fatalf("exact-limit read = %q, %v", got, err)
+	}
+	if _, err := readBoundedResponse(strings.NewReader("12345"), 4); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("overflow error = %v", err)
+	}
+	reader := &dataThenErrorReader{data: []byte(`{"version":7}`), err: io.ErrUnexpectedEOF}
+	if _, err := readBoundedResponse(reader, 1024); err == nil || !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("transport read error = %v", err)
+	}
+}
+
 func newReadonlyTeam(t *testing.T, serverURL string) *TeamService {
 	t.Helper()
 	svc := NewTeamService(t.TempDir())
@@ -241,6 +268,66 @@ func TestCDNSoftErrorFallsBackDirect(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"id":"srv"`) {
 		t.Fatalf("export 未回退服务器直连, got %s", raw)
+	}
+}
+
+func TestFetchExportRejectsDirectPayloadWithoutFullSnapshotArrays(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/glossary/export" {
+			_, _ = io.WriteString(w, `{"error":"soft failure"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	svc := newReadonlyTeam(t, server.URL)
+	if _, err := svc.FetchExport(1); err == nil || !strings.Contains(err.Error(), "full snapshot arrays") {
+		t.Fatalf("FetchExport error = %v, want invalid full-snapshot shape", err)
+	}
+}
+
+func TestTeamRemoteFailuresDoNotExposeResponseText(t *testing.T) {
+	const sensitive = "access-secret refresh-secret server-stack-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/glossary/version":
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":"`+sensitive+`"}`)
+		case "/api/glossary/export":
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":"`+sensitive+`"}`)
+		case "/api/proposals/mine":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"`+sensitive+`","accessToken":"nested-secret"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	svc := newReadonlyTeam(t, server.URL)
+	if _, err := svc.RemoteVersion(); err == nil || err.Error() != "remote glossary version failed (HTTP 502)" || strings.Contains(err.Error(), sensitive) {
+		t.Fatalf("RemoteVersion error = %v", err)
+	}
+	if _, err := svc.FetchExport(1); err == nil || err.Error() != "remote glossary export failed (HTTP 429)" || strings.Contains(err.Error(), sensitive) {
+		t.Fatalf("FetchExport error = %v", err)
+	}
+
+	svc.mu.Lock()
+	svc.access = "local-access"
+	svc.mu.Unlock()
+	body, status, err := svc.Proxy(http.MethodGet, "/api/proposals/mine", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusForbidden || string(body) != `{"error":"remote team request failed (HTTP 403)"}` {
+		t.Fatalf("Proxy result: status=%d body=%s", status, body)
+	}
+	if strings.Contains(string(body), sensitive) || strings.Contains(string(body), "nested-secret") {
+		t.Fatalf("Proxy exposed remote response text: %s", body)
 	}
 }
 

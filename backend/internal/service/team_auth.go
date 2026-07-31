@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 )
 
@@ -17,13 +16,17 @@ type tokenResp struct {
 	AccessToken  string    `json:"accessToken"`
 	RefreshToken string    `json:"refreshToken"`
 	User         *TeamUser `json:"user"`
-	Error        string    `json:"error"`
 }
 
 // Login authenticates against the selected team server.
 func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, error) {
 	t.sessionMu.Lock()
 	t.mu.Lock()
+	if t.invalidated {
+		t.mu.Unlock()
+		t.sessionMu.Unlock()
+		return nil, ErrStaleTeamSession
+	}
 	t.sessionEpoch++
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
@@ -38,14 +41,13 @@ func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, er
 		return nil, fmt.Errorf("connect failed: %w", err)
 	}
 	defer resp.Body.Close()
+	raw, readErr := readBoundedResponse(resp.Body, maxTeamConfigBytes)
+	if resp.StatusCode != http.StatusOK {
+		return nil, remoteErr("login", resp.StatusCode)
+	}
 	var tr tokenResp
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	_ = json.Unmarshal(raw, &tr)
-	if resp.StatusCode != http.StatusOK || tr.AccessToken == "" {
-		if tr.Error != "" {
-			return nil, errors.New(tr.Error)
-		}
-		return nil, fmt.Errorf("login failed (HTTP %d)", resp.StatusCode)
+	if readErr != nil || json.Unmarshal(raw, &tr) != nil || tr.AccessToken == "" || tr.RefreshToken == "" {
+		return nil, errors.New("login failed: invalid authentication response")
 	}
 	t.sessionMu.Lock()
 	t.mu.Lock()
@@ -69,6 +71,11 @@ func (t *TeamService) Login(serverURL, username, password string) (*TeamUser, er
 func (t *TeamService) Connect(serverURL string) error {
 	t.sessionMu.Lock()
 	t.mu.Lock()
+	if t.invalidated {
+		t.mu.Unlock()
+		t.sessionMu.Unlock()
+		return ErrStaleTeamSession
+	}
 	t.sessionEpoch++
 	epoch := t.sessionEpoch
 	t.mu.Unlock()
@@ -101,14 +108,37 @@ func (t *TeamService) Connect(serverURL string) error {
 	return t.persist()
 }
 
-// doRefresh exchanges the refresh token for a new access token.
-func (t *TeamService) doRefresh() error {
+// RefreshSessionIfNeeded lazily exchanges a restored refresh token for an
+// access token. It is safe for concurrent status, sync, and authenticated calls:
+// only one exchange runs, and waiters reuse the access token it produced.
+// Readonly connections (no refresh token) are already usable and return nil.
+func (t *TeamService) RefreshSessionIfNeeded() error {
 	t.mu.RLock()
+	if t.access != "" || t.refresh == "" {
+		t.mu.RUnlock()
+		return nil
+	}
 	epoch := t.sessionEpoch
+	t.mu.RUnlock()
+
+	teamRefreshMu.Lock()
+	defer teamRefreshMu.Unlock()
+
+	t.mu.RLock()
+	if t.sessionEpoch != epoch {
+		t.mu.RUnlock()
+		return ErrStaleTeamSession
+	}
+	if t.access != "" || t.refresh == "" {
+		t.mu.RUnlock()
+		return nil
+	}
 	t.mu.RUnlock()
 	return t.doRefreshFor(epoch)
 }
 
+// doRefreshFor exchanges the current refresh token for a new access token,
+// provided the captured session generation is still active.
 func (t *TeamService) doRefreshFor(epoch uint64) error {
 	t.mu.RLock()
 	if t.sessionEpoch != epoch {
@@ -123,13 +153,14 @@ func (t *TeamService) doRefreshFor(epoch uint64) error {
 	body, _ := json.Marshal(map[string]string{"refreshToken": refresh})
 	resp, err := client.Post(url+"/api/auth/refresh", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return errors.New("refresh failed: request could not be completed")
 	}
 	defer resp.Body.Close()
+	raw, readErr := readBoundedResponse(resp.Body, maxTeamConfigBytes)
 	var tr tokenResp
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	_ = json.Unmarshal(raw, &tr)
-	if resp.StatusCode == http.StatusOK && tr.AccessToken != "" {
+	parseErr := json.Unmarshal(raw, &tr)
+	if resp.StatusCode == http.StatusOK && readErr == nil && parseErr == nil &&
+		tr.AccessToken != "" && tr.RefreshToken != "" {
 		t.mu.Lock()
 		if t.sessionEpoch != epoch || t.serverURL != url || t.client != client {
 			t.mu.Unlock()
@@ -154,19 +185,15 @@ func (t *TeamService) doRefreshFor(epoch uint64) error {
 		}
 		t.access, t.refresh, t.user = "", "", nil
 		t.mu.Unlock()
-		persistErr := t.persist()
-		if tr.Error != "" {
-			return errors.Join(errors.New(tr.Error), persistErr)
-		}
-		return errors.Join(errors.New("refresh rejected"), persistErr)
+		return errors.Join(remoteErr("refresh", resp.StatusCode), t.persist())
 	}
-	// Transient failure (5xx/429/gateway blip, or a malformed 200 with no token):
-	// the refresh token was NOT rejected, so keep the session intact and just
-	// return an error. A later request can retry instead of forcing a re-login.
-	if tr.Error != "" {
-		return errors.New(tr.Error)
+	// Transient failures keep the refresh token intact so a later request can
+	// retry instead of forcing a re-login. The server-provided error body is
+	// deliberately ignored because this error crosses frontend boundaries.
+	if resp.StatusCode != http.StatusOK {
+		return remoteErr("refresh", resp.StatusCode)
 	}
-	return fmt.Errorf("refresh failed (HTTP %d)", resp.StatusCode)
+	return errors.New("refresh failed: invalid authentication response")
 }
 
 // Logout clears the auth tokens and user but keeps the serverURL so the app

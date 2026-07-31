@@ -73,6 +73,67 @@ describe('recovery autosave', () => {
     expect(apiMock.recoveryClear).toHaveBeenCalledTimes(2)
   })
 
+  it('can persist the first mutation immediately and coalesce a trailing burst', async () => {
+    const editor = useEditorStore()
+    editor.setTalks([talk('first')], [talk('first')], [])
+    const autoSave = useAutoSave(30_000)
+    autoSave.start()
+
+    editor.markUnsaved()
+    autoSave.schedule(1_000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apiMock.recoverySave).toHaveBeenCalledTimes(1)
+
+    editor.talks[0].text = 'second'
+    editor.dstTalks[0].text = 'second'
+    editor.markUnsaved()
+    autoSave.schedule(1_000)
+    editor.talks[0].text = 'third'
+    editor.dstTalks[0].text = 'third'
+    editor.markUnsaved()
+    autoSave.schedule(1_000)
+
+    await vi.advanceTimersByTimeAsync(999)
+    expect(apiMock.recoverySave).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(apiMock.recoverySave).toHaveBeenCalledTimes(2)
+    expect(apiMock.recoverySave).toHaveBeenLastCalledWith(expect.objectContaining({
+      modes: [expect.objectContaining({
+        talks: [expect.objectContaining({ text: 'third' })],
+      })],
+    }))
+    autoSave.stop()
+  })
+
+  it('reports background persistence failures without repeating the same error toast', async () => {
+    const editor = useEditorStore()
+    editor.setTalks([talk('draft')], [talk('draft')], [])
+    editor.markUnsaved()
+    apiMock.recoverySave
+      .mockRejectedValueOnce(new DOMException('quota', 'QuotaExceededError'))
+      .mockRejectedValueOnce(new DOMException('quota', 'QuotaExceededError'))
+      .mockResolvedValueOnce(undefined)
+    const onError = vi.fn()
+    const autoSave = useAutoSave(30_000, undefined, onError)
+    autoSave.start()
+
+    autoSave.schedule(100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onError).toHaveBeenCalledOnce()
+    expect(autoSave.lastError.value?.name).toBe('QuotaExceededError')
+
+    await vi.advanceTimersByTimeAsync(100)
+    autoSave.schedule(100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onError).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(100)
+    autoSave.schedule(100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(autoSave.lastError.value).toBeNull()
+    autoSave.stop()
+  })
+
   it('writes a final dirty snapshot when stopped before the first interval', async () => {
     const editor = useEditorStore()
     editor.setTalks([talk('draft')], [talk('draft')], [])

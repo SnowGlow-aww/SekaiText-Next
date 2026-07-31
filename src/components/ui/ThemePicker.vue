@@ -8,6 +8,7 @@ import { ACCENT_GROUPS, ACCENT_NAME_BY_COLOR } from '../../data/characterColors'
 import type { ThemeMode } from '../../stores/app'
 import type { Settings } from '../../types/api'
 import SkSelect from './SkSelect.vue'
+import { capabilities } from '../../platform/capabilities'
 
 const app = useAppStore()
 const settings = useSettingsStore()
@@ -30,11 +31,18 @@ const modes: { value: ThemeMode; label: string; icon: typeof Monitor }[] = [
 
 // Live2D dock placement (left intentionally omitted — that edge is the nav).
 // Effective only with the Live2D plugin installed; harmless otherwise.
-const live2dPositionOptions = [
+const live2dPositionOptions = computed(() => [
   { value: 'top', label: '顶部' },
   { value: 'bottom', label: '底部' },
-  { value: 'window', label: '独立窗口' },
-]
+  ...(capabilities.supportsDetachedLive2DWindow
+    ? [{ value: 'window', label: '独立窗口' }]
+    : []),
+])
+
+const effectiveLive2dPosition = computed(() => {
+  const saved = editableSettings.value.live2dPosition || 'window'
+  return saved === 'window' && !capabilities.supportsDetachedLive2DWindow ? 'bottom' : saved
+})
 
 const currentName = computed(() => ACCENT_NAME_BY_COLOR[app.accentColor.toLowerCase()] ?? '自定义')
 
@@ -128,7 +136,7 @@ async function onBgFile(e: Event) {
         <div class="h-9 flex items-center">
           <SkSelect
             class="w-[200px]"
-            :model-value="editableSettings.live2dPosition || 'window'"
+            :model-value="effectiveLive2dPosition"
             @update:model-value="editableSettings.live2dPosition = $event as string"
             :options="live2dPositionOptions"
           />

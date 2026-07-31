@@ -57,6 +57,7 @@ type TeamService struct {
 	syncMu       sync.Mutex
 	sessionMu    sync.Mutex
 	sessionEpoch uint64
+	invalidated  bool
 	serverURL    string
 	access       string
 	refresh      string
@@ -113,7 +114,7 @@ func (t *TeamService) resetServerCachesLocked(serverURL string) {
 	t.snapshotBase, t.snapshotBaseFor, t.snapshotBaseEpoch = "", "", 0
 }
 
-// NewTeamService creates the service and attempts to restore a prior session.
+// NewTeamService creates the service and best-effort refreshes a prior session.
 func NewTeamService(dataDir string) *TeamService {
 	return NewTeamServiceWithRootCAs(dataDir, nil)
 }
@@ -121,6 +122,17 @@ func NewTeamService(dataDir string) *TeamService {
 // NewTeamServiceWithRootCAs uses the supplied trust pool instead of the system
 // pool. Callers providing a private team CA remain subject to hostname checks.
 func NewTeamServiceWithRootCAs(dataDir string, teamRootCAs *x509.CertPool) *TeamService {
+	return newTeamService(dataDir, teamRootCAs, true)
+}
+
+// NewTeamServiceWithRootCAsDeferredRefresh loads persisted session metadata but
+// performs no network I/O. Mobile startup uses this constructor and refreshes on
+// explicit status/sync or the first authenticated request.
+func NewTeamServiceWithRootCAsDeferredRefresh(dataDir string, teamRootCAs *x509.CertPool) *TeamService {
+	return newTeamService(dataDir, teamRootCAs, false)
+}
+
+func newTeamService(dataDir string, teamRootCAs *x509.CertPool, refreshOnRestore bool) *TeamService {
 	t := &TeamService{
 		dataDir:            dataDir,
 		syncDir:            fsutil.SyncDir,
@@ -129,6 +141,9 @@ func NewTeamServiceWithRootCAs(dataDir string, teamRootCAs *x509.CertPool) *Team
 	}
 	t.cdnClient = newSnapshotHTTPClient()
 	t.restore()
+	if refreshOnRestore {
+		_ = t.RefreshSessionIfNeeded()
+	}
 	return t
 }
 
@@ -158,12 +173,29 @@ func (t *TeamService) restore() {
 	t.refresh = p.RefreshToken
 	t.client = client
 	t.mu.Unlock()
-	// Best-effort: doRefresh clears and persists credentials only for a terminal
-	// 401/403 rejection. Network, 5xx, rate-limit, and malformed-response errors
-	// retain the refresh token so startup does not destroy a retryable session.
-	if p.RefreshToken != "" {
-		_ = t.doRefresh()
-	}
+	// Do not contact the network here. Android constructs this service during
+	// cold start; RefreshSessionIfNeeded performs the exchange lazily and keeps
+	// transiently-failing refresh credentials available for a later retry.
+}
+
+// Invalidate retires a façade-owned service before InitializeTeam installs its
+// replacement. It first drains any rotating-token refresh, then advances the
+// epoch; together with the persist lock this ensures no retired operation can
+// write the shared session file after the method returns.
+func (t *TeamService) Invalidate() {
+	teamRefreshMu.Lock()
+	defer teamRefreshMu.Unlock()
+	t.persistMu.Lock()
+	defer t.persistMu.Unlock()
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	t.mu.Lock()
+	t.sessionEpoch++
+	t.invalidated = true
+	t.resetServerCachesLocked("")
+	t.serverURL, t.access, t.refresh, t.user = "", "", "", nil
+	t.client = nil
+	t.mu.Unlock()
 }
 
 func (t *TeamService) persist() error {
@@ -172,6 +204,10 @@ func (t *TeamService) persist() error {
 	t.persistMu.Lock()
 	defer t.persistMu.Unlock()
 	t.mu.RLock()
+	if t.invalidated {
+		t.mu.RUnlock()
+		return ErrStaleTeamSession
+	}
 	p := teamPersist{
 		ServerURL:    t.serverURL,
 		RefreshToken: t.refresh,

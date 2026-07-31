@@ -13,6 +13,12 @@ import (
 	"sekaitext/backend/internal/model"
 )
 
+// Character2DPublishGuard wraps publication of the package-global character2d
+// lookup. A guard that permits publication must invoke publish synchronously
+// while its authorization remains valid. A nil guard preserves the desktop
+// behavior and publishes immediately.
+type Character2DPublishGuard func(publish func())
+
 // ListManager manages story metadata (events, cards, main story, etc.).
 type ListManager struct {
 	updateMu sync.Mutex // single-flights UpdateAll so two CDN refreshes can't race-append the slices below
@@ -40,9 +46,10 @@ type ListManager struct {
 	// the per-event InferredVoiceIDs.prefix (single value), this allows one
 	// event to be reachable by multiple voice prefixes (e.g. a WL event known
 	// both as wl_shuffle_03 via area talks and wl_3rd_group3 via its assetName).
-	voiceClues  map[string]int
-	flashbackMu sync.Mutex
-	flashbacks  map[*FlashbackAnalyzer]struct{}
+	voiceClues              map[string]int
+	character2DPublishGuard Character2DPublishGuard
+	flashbackMu             sync.Mutex
+	flashbacks              map[*FlashbackAnalyzer]struct{}
 
 	catalogDir string
 	DBurl      string
@@ -171,6 +178,15 @@ func NewListManager(catalogDir string) *ListManager {
 	return lm
 }
 
+// SetCharacter2DPublishGuard installs a scope around package-global character2d
+// publication. Mobile configures this before exposing a new ListManager so a
+// superseded runtime cannot publish after a cross-root reinitialization.
+func (lm *ListManager) SetCharacter2DPublishGuard(guard Character2DPublishGuard) {
+	lm.mu.Lock()
+	lm.character2DPublishGuard = guard
+	lm.mu.Unlock()
+}
+
 func (lm *ListManager) registerFlashbackAnalyzer(fb *FlashbackAnalyzer) {
 	lm.flashbackMu.Lock()
 	if lm.flashbacks == nil {
@@ -269,6 +285,19 @@ const (
 	StoryLabelGreet           = "主界面语音"
 	StoryLabelSpecial         = "特殊剧情"
 )
+
+// CatalogState reports whether a complete, generation-backed catalog is
+// available and the currently published generation. Legacy top-level JSON files
+// remain readable for desktop compatibility, but they are not proof that Android
+// has an atomically published catalog generation.
+func (lm *ListManager) CatalogState() (ready bool, generation uint64) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	ready = lm.generation > 0 && len(lm.Events) > 0 && len(lm.Festivals) > 0 &&
+		len(lm.Cards) > 0 && len(lm.MainStory) > 0 && len(lm.AreaTalks) > 0 &&
+		len(lm.Specials) > 0
+	return ready, lm.generation
+}
 
 // GetStoryTypes returns available story type names (Chinese labels).
 func (lm *ListManager) GetStoryTypes() []string {

@@ -42,6 +42,19 @@ src-tauri/binaries/
 # Rust/Tauri build output
 src-tauri/target/
 
+# Machine-local Android SDK/JDK paths. Copy .cargo/config.android.example.toml
+# to .cargo/config.toml when building Android locally.
+.cargo/config.toml
+
+# Rebuilt by `npm run android:core`; do not commit generated gomobile binaries
+# or local Android library intermediates.
+src-tauri/mobile/android/.tauri/
+src-tauri/mobile/android/build/
+src-tauri/mobile/android/libs/mobilecore.aar
+src-tauri/mobile/android/libs/mobilecore.next.aar
+src-tauri/mobile/android/libs/mobilecore-sources.jar
+src-tauri/mobile/android/libs/mobilecore.next-sources.jar
+
 backend/server.exe
 backend/*.exe
 

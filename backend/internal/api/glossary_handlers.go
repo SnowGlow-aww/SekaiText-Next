@@ -141,6 +141,8 @@ func (h *Handler) GlossaryReload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
 }
 
+const maxRemoteGlossarySnapshotBytes = 32 << 20
+
 // GlossarySync pulls a JSON GlossaryData payload from a remote URL and merges it
 // (Origin=remote). This is the seam for future server-side central distribution.
 func (h *Handler) GlossarySync(w http.ResponseWriter, r *http.Request) {
@@ -188,13 +190,17 @@ func (h *Handler) GlossarySync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "remote returned "+resp.Status)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteGlossarySnapshotBytes+1))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "read failed: "+err.Error())
 		return
 	}
-	var gd model.GlossaryData
-	if err := json.Unmarshal(body, &gd); err != nil {
+	if len(body) > maxRemoteGlossarySnapshotBytes {
+		writeError(w, http.StatusBadGateway, "remote payload exceeds 32 MiB limit")
+		return
+	}
+	gd, err := service.DecodeGlossarySnapshot(body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid remote payload: "+err.Error())
 		return
 	}

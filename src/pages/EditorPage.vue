@@ -26,6 +26,8 @@ import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
 import { commitDocumentMutation } from '../editor/documentMutation'
 import { saveDirectoryCoordinator } from '../editor/saveDirectoryCoordinator'
+import { capabilities } from '../platform/capabilities'
+import { mobileCore } from '../platform/mobileCore'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -45,7 +47,14 @@ const workspace = ref<{
   flushPendingEdit: () => Promise<void>
   flushPendingEditForDeactivation: () => Promise<void>
 } | null>(null)
-const autoSave = useAutoSave(30000, () => workspace.value?.flushPendingEdit())
+const autoSave = useAutoSave(
+  30000,
+  () => workspace.value?.flushPendingEdit(),
+  error => {
+    console.error('[Recovery] background snapshot failed', error)
+    toast.show('自动恢复快照写入失败；请尽快保存文档并检查可用存储空间', 'error', 8000)
+  },
+)
 
 // Which edge (if any) the Live2D dock occupies around the workspace. Shown only
 // when the user picked a docked placement (not 独立窗口), the panel is toggled
@@ -62,7 +71,8 @@ const dockSide = computed<'top' | 'right' | 'bottom' | null>(() => {
   return p
 })
 
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+const isTauri = capabilities.isTauri
+const isDesktop = capabilities.isDesktop
 
 function doUndo() {
   workspace.value?.cancelPendingEdit()
@@ -105,7 +115,10 @@ function writeTxtAutosave(): Promise<void> {
     await doWriteTxtAutosave()
   })
 }
-watch(() => editor.mutationSeq, scheduleTxtAutosave)
+watch(() => editor.mutationSeq, () => {
+  scheduleTxtAutosave()
+  if (capabilities.isAndroid) autoSave.schedule()
+})
 // Programmatic title changes (open/import/path sync) do not necessarily bump the
 // mutation sequence, so a bound managed document still watches the title itself.
 watch(() => editor.titleOverride, () => {
@@ -148,7 +161,7 @@ function canonicalSavePath(): string | null {
   const d = editor.docMeta
   const type = d ? d.type : story.selectedType
   const indexLabel = d ? d.indexLabel : story.selectedIndexLabel
-  if (isTauri && base && type && indexLabel) {
+  if (isDesktop && base && type && indexLabel) {
     const sep = (s: string) => s.replace(/[/\\]/g, '_')
     return `${base}/${sep(type)}/${sep(indexLabel)}/${canonicalFileName()}`
   }
@@ -182,6 +195,34 @@ function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
 }
 async function doWriteTxtAutosave() {
   if (editor.talks.length === 0 || !isTauri) return
+  // Android documents are opaque SAF content URIs. They can be updated only
+  // while the picker grant is alive; directory creation and renaming remain
+  // desktop-only.
+  if (capabilities.isAndroid) {
+    const uri = editor.currentFilePath
+    if (!uri.startsWith('content://')) return
+    const mode = editor.currentMode
+    const saveVersion = editor.captureSaveVersion()
+    const seq = editor.mutationSeq
+    try {
+      const [{ writeTextFile }, serialized] = await Promise.all([
+        import('@tauri-apps/plugin-fs'),
+        mobileCore.serializeTranslation({
+          talks: JSON.parse(JSON.stringify(editor.dstTalks)),
+          saveN: app.saveN,
+          meta: buildSaveMeta(),
+        }),
+      ])
+      await writeTextFile(uri, serialized.content)
+      if (editor.currentMode !== mode || editor.documentRevision !== saveVersion.documentRevision) return
+      if (editor.mutationSeq === seq && editor.markSavedIfUnchanged(saveVersion)) {
+        await autoSave.syncNow().catch(() => {})
+      }
+    } catch (e) {
+      console.warn('[Autosave] Android 文档写入失败', uri, e)
+    }
+    return
+  }
   // 定时器可能在切模式后才触发：进入 await 前把本槽位的一切快照下来，写完回来
   // 若槽位已换人（loadModeState 换掉了整套状态），不得把路径/脏标记写进新模式。
   const mode = editor.currentMode
@@ -324,7 +365,9 @@ function deactivate() {
 onMounted(async () => {
   // One-time setup only (registering onCloseRequested on every activation would
   // stack duplicate handlers); the listeners/autosave live in activate().
-  if (!isTauri) return
+  // Mobile uses the Android activity/back lifecycle; desktop-only window close
+  // interception would require permissions Android intentionally does not grant.
+  if (!isDesktop) return
   try {
     const win = getCurrentWindow()
     await win.onCloseRequested(async (event) => {
@@ -520,10 +563,24 @@ async function handleOpen() {
     ]
     const fileMode = (result.meta?.mode ?? prefixMode ?? 0) as 0 | 1 | 2
     const deriving = fileMode !== app.editorMode
-    editor.currentFilePath = deriving ? '' : (result.filePath || result.fileName || '')
-    // 新文档会话：先清掉上一个文档的身份快照，标签解析成功后再重新绑定。
-    // 留着旧快照会让这个文件保存时套上一个剧情的名字/目录。
-    editor.docMeta = null
+    editor.currentFilePath = deriving || capabilities.isAndroid
+      ? ''
+      : (result.filePath || result.fileName || '')
+    // Preserve metadata embedded by older files even when Android intentionally
+    // leaves the temporary SAF URI unbound. Label resolution may replace it with
+    // a richer snapshot below; otherwise Save As still keeps the document's own
+    // identity instead of borrowing unrelated navigator state.
+    editor.docMeta = result.meta?.type ? {
+      saveTitle: label,
+      chapterTitle: titlePart,
+      type: result.meta.type,
+      sort: result.meta.sort || '',
+      index: result.meta.index,
+      indexLabel: result.meta.index,
+      chapter: result.meta.chapter,
+      source: result.meta.source,
+      scenarioId: result.meta.scenarioId,
+    } : null
     editor.markSaved()
     await autoSave.syncNow().catch(() => {})
     undo.clear()
@@ -623,7 +680,25 @@ async function saveCurrentMode(saveAs: boolean) {
   // 保存 = 直接写当前文档本体（已打开/已保存过的文件），不再弹对话框重建文件。
   // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。
   const bound = editor.currentFilePath
-  if (!saveAs && isTauri && bound && /[/\\]/.test(bound)) {
+  if (!saveAs && capabilities.isAndroid && bound.startsWith('content://')) {
+    try {
+      const [{ writeTextFile }, serialized] = await Promise.all([
+        import('@tauri-apps/plugin-fs'),
+        mobileCore.serializeTranslation({ talks: dstTalks, saveN: app.saveN, meta }),
+      ])
+      await writeTextFile(bound, serialized.content)
+      await finishCurrentSave(version)
+      console.log('[Save] saved Android document in place', { uri: bound })
+      toast.show('已保存', 'success')
+      return
+    } catch (e: any) {
+      console.warn('[Save] Android in-place save failed, falling back to dialog', {
+        uri: bound,
+        error: e?.message || String(e),
+      })
+    }
+  }
+  if (!saveAs && isDesktop && bound && /[/\\]/.test(bound)) {
     // 同 autosave：规范名（标题译文/模式标签）变了就先就地改名再写。
     let target = resolveBoundTarget() || { path: bound }
     try {
@@ -646,7 +721,7 @@ async function saveCurrentMode(saveAs: boolean) {
     }
   }
   // 首次落盘也不问位置：直接按 <保存根目录>/<类型>/<索引>/ 分级自动建档并绑定。
-  if (!saveAs && isTauri) {
+  if (!saveAs && isDesktop) {
     const canonical = canonicalSavePath()
     if (canonical) {
       try {
@@ -1003,6 +1078,42 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
   padding: 0.75rem 0.9rem 0.9rem;
   background-image: linear-gradient(135deg, color-mix(in oklch, var(--color-base-content) 1.2%, transparent) 0 1px, transparent 1px 100%);
   background-size: 2.9rem 2.9rem;
+}
+
+@media (max-width: 767px) {
+  .workspace-contextbar {
+    max-height: 38vh;
+    min-height: auto;
+    padding: 0.6rem;
+    overflow: auto;
+  }
+  .workspace-contextbar > .w-px {
+    display: none;
+  }
+  .editor-commandbar {
+    padding-inline: 0.55rem;
+  }
+  .editor-toolbar-row {
+    align-items: stretch;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.4rem;
+  }
+  .editor-toolbar-row > .w-px {
+    display: none;
+  }
+  .editor-mode-tabs {
+    min-height: 2.5rem;
+    justify-content: space-around;
+    gap: 0.5rem;
+  }
+  .editor-mode-tab {
+    flex: 1;
+    text-align: center;
+  }
+  .editor-stage {
+    padding: 0.45rem;
+  }
 }
 
 /* Toolbar toggle chip — on/off view options (闪回/术语/同步/搜索/对比) */

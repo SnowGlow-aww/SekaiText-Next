@@ -19,6 +19,7 @@ import { appWelcomeTour } from '../onboarding/tours'
 import { useFileDialog } from '../composables/useFileDialog'
 import AppPageHeader from '../components/ui/AppPageHeader.vue'
 import type { Settings } from '../types/api'
+import { capabilities } from '../platform/capabilities'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -59,17 +60,23 @@ watch(() => settings.loading, (loading, wasLoading) => {
   draftBase.value = latest
 })
 
-const settingsSections = [
+const settingsSections = computed(() => [
   { id: 'settings-appearance', label: '外观', icon: Palette },
   { id: 'settings-editor', label: '编辑器', icon: SlidersHorizontal },
-  { id: 'settings-files', label: '保存与下载', icon: Save },
+  ...(capabilities.supportsDesktopDirectories
+    ? [{ id: 'settings-files', label: '保存与下载', icon: Save }]
+    : []),
   { id: 'settings-network', label: '网络与调试', icon: Wifi },
   { id: 'settings-shortcuts', label: '快捷键', icon: Keyboard },
-  { id: 'settings-local', label: '本地文件', icon: FolderOpen },
-  { id: 'settings-plugins', label: '插件', icon: Puzzle },
+  ...(capabilities.supportsDesktopDirectories
+    ? [{ id: 'settings-local', label: '本地文件', icon: FolderOpen }]
+    : []),
+  ...(capabilities.supportsPlugins
+    ? [{ id: 'settings-plugins', label: '插件', icon: Puzzle }]
+    : []),
   { id: 'settings-about', label: '关于', icon: Info },
-]
-const activeSettingsSection = ref(settingsSections[0].id)
+])
+const activeSettingsSection = ref(settingsSections.value[0].id)
 const settingsPage = ref<HTMLElement | null>(null)
 let settingsScrollRaf = 0
 let scrollingToSettingsSection: string | null = null
@@ -93,13 +100,13 @@ function updateActiveSettingsSection() {
   if (!scroller) return
   const atPageBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
   if (atPageBottom) {
-    activeSettingsSection.value = settingsSections[settingsSections.length - 1].id
+    activeSettingsSection.value = settingsSections.value[settingsSections.value.length - 1].id
     return
   }
 
   const threshold = settingsNavigationOffset()
-  let current = settingsSections[0].id
-  for (const section of settingsSections) {
+  let current = settingsSections.value[0].id
+  for (const section of settingsSections.value) {
     const el = document.getElementById(section.id)
     if (el && el.getBoundingClientRect().top <= threshold) current = section.id
   }
@@ -164,7 +171,7 @@ async function checkUpdate() {
 // settings visit from the last successfully persisted state.
 onMounted(() => {
   resetDraft()
-  plugins.refresh().catch(() => {})
+  if (capabilities.supportsPlugins) plugins.refresh().catch(() => {})
 })
 
 async function togglePlugin(id: string, local: boolean, event: Event) {
@@ -205,7 +212,7 @@ async function uninstallPlugin(id: string, name: string) {
   }
 }
 
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+const isTauri = capabilities.isTauri
 const { pickDirectory } = useFileDialog()
 
 async function browseJsonDownloadDir() {
@@ -262,7 +269,11 @@ function restartTour() {
 // 角色头像材质：状态即 chr-custom 目录是否存在，无设置项。
 const chrIcon = ref<{ active: boolean; count: number }>({ active: false, count: 0 })
 const chrIconBusy = ref(false)
-onMounted(() => { api.chrIconCustomStatus().then((s) => { chrIcon.value = s }).catch(() => {}) })
+onMounted(() => {
+  if (capabilities.supportsDesktopDirectories) {
+    api.chrIconCustomStatus().then((s) => { chrIcon.value = s }).catch(() => {})
+  }
+})
 
 async function importChrIcons() {
   if (!isTauri || chrIconBusy.value) return
@@ -468,7 +479,7 @@ onUnmounted(() => {
         </div>
         <ThemePicker :settings-model="draft" />
 
-        <div class="mt-4 pt-4 border-t border-[var(--color-border)] flex items-center justify-between gap-3">
+        <div v-if="capabilities.supportsDesktopDirectories" class="mt-4 pt-4 border-t border-[var(--color-border)] flex items-center justify-between gap-3">
           <div>
             <div class="text-sm font-medium">角色头像材质</div>
             <div class="app-help mt-0.5">
@@ -557,7 +568,7 @@ onUnmounted(() => {
       </section>
 
       <!-- ====== 下载 ====== -->
-      <section id="settings-files" class="app-card p-5 scroll-mt-24">
+      <section v-if="capabilities.supportsDesktopDirectories" id="settings-files" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><Download :size="15" /></span>
           <div class="section-title">下载</div>
@@ -578,7 +589,7 @@ onUnmounted(() => {
       </section>
 
       <!-- ====== 文稿保存路径 ====== -->
-      <section class="app-card p-5">
+      <section v-if="capabilities.supportsDesktopDirectories" class="app-card p-5">
         <div class="flex items-center gap-2 mb-1.5">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-primary/12 text-primary"><FolderOpen :size="15" /></span>
           <div class="section-title">文稿保存路径</div>
@@ -690,7 +701,7 @@ onUnmounted(() => {
       </section>
 
       <!-- ====== 本地文件 ====== -->
-      <section id="settings-local" class="app-card p-5 scroll-mt-24">
+      <section v-if="capabilities.supportsDesktopDirectories" id="settings-local" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center gap-2 mb-4">
           <span class="grid place-items-center w-7 h-7 rounded-lg bg-info/12 text-info"><FolderOpen :size="15" /></span>
           <div class="section-title">本地文件</div>
@@ -707,7 +718,7 @@ onUnmounted(() => {
       </section>
 
       <!-- ====== 插件管理 ====== -->
-      <section id="settings-plugins" class="app-card p-5 scroll-mt-24">
+      <section v-if="capabilities.supportsPlugins" id="settings-plugins" class="app-card p-5 scroll-mt-24">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
             <span class="grid place-items-center w-7 h-7 rounded-lg bg-secondary/12 text-secondary"><Puzzle :size="15" /></span>
@@ -777,7 +788,7 @@ onUnmounted(() => {
         <div class="text-sm font-medium">SekaiText Next by 雪莹ちゃん</div>
         <div class="flex items-center flex-wrap gap-2 mt-2" data-tour="set-about">
           <span class="app-help font-mono mr-1">v{{ appVersion }}</span>
-          <button @click="checkUpdate" :disabled="checking"
+          <button v-if="capabilities.supportsAppUpdater" @click="checkUpdate" :disabled="checking"
             class="btn btn-xs btn-ghost border border-[var(--color-border)] gap-1">
             <RotateCcw :size="12" :class="checking ? 'animate-spin' : ''" />
             {{ checking ? '检查中…' : '检查更新' }}

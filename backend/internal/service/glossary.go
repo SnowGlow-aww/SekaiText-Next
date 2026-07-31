@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,8 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"sekaitext/backend/internal/fsutil"
 	"sekaitext/backend/internal/model"
 )
 
@@ -32,21 +35,42 @@ type GlossaryStore struct {
 	path     string // {dataDir}/resources/glossary/glossary.json
 	lastMod  time.Time
 	stopPoll chan struct{}
+
+	writeFileAtomic func(string, []byte, os.FileMode) error
+	now             func() time.Time
+}
+
+var glossaryBackupSequence atomic.Uint64
+
+func (s *GlossaryStore) writeAtomic(path string, data []byte, perm os.FileMode) error {
+	if s.writeFileAtomic != nil {
+		return s.writeFileAtomic(path, data, perm)
+	}
+	return fsutil.WriteFileAtomic(path, data, perm)
 }
 
 // WriteSyncBackup 把一次下行同步拉到的服务器全量 JSON 滚动存档到
-// {glossary目录}/backups/glossary-时间戳.json，保留最近 10 份——误覆盖/误合并后
-// 可从任一近期服务器状态回滚（也可直接把备份文件重新上传至线上）。
+// {glossary目录}/backups/glossary-高精度时间戳-序号.json，保留最近 10 份——
+// 误覆盖/误合并后可从任一近期服务器状态回滚（也可直接把备份文件重新上传至线上）。
 func (s *GlossaryStore) WriteSyncBackup(raw []byte) {
 	dir := filepath.Join(filepath.Dir(s.path), "backups")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
 	}
-	name := "glossary-" + time.Now().Format("20060102-150405") + ".json"
-	if err := os.WriteFile(filepath.Join(dir, name), raw, 0644); err != nil {
-		return
+	name := fmt.Sprintf(
+		"glossary-%s_%09d-%020d.json",
+		now.Format("20060102-150405"),
+		now.Nanosecond(),
+		glossaryBackupSequence.Add(1),
+	)
+	if err := s.writeAtomic(filepath.Join(dir, name), raw, 0o644); err != nil {
+		if !fsutil.IsWriteCommitted(err) {
+			return
+		}
+		log.Printf("[glossary] sync backup durability warning: %v", err)
 	}
-	// 修剪：按文件名排序（时间戳命名即时间序），只留最近 10 份
+	// 修剪：按文件名排序（高精度时间戳 + 定宽序号即时间序），只留最近 10 份。
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -145,25 +169,17 @@ func (s *GlossaryStore) persist() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return err
-	}
-	// Write to a sibling temp file and atomically rename into place: a mid-write
-	// failure (disk full / crash) then leaves the previous good file untouched
-	// instead of a truncated half-file that the mtime poller would reload as
-	// corrupt state. Combined with callers rolling back memory on a persist
-	// error, this keeps the memory==disk invariant.
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	writeErr := s.writeAtomic(s.path, data, 0o644)
+	if writeErr != nil && !fsutil.IsWriteCommitted(writeErr) {
+		return writeErr
 	}
 	if info, err := os.Stat(s.path); err == nil {
 		s.lastMod = info.ModTime()
+	}
+	if writeErr != nil {
+		// The rename already published these bytes. Treat the write as committed so
+		// CRUD/import callers do not roll memory back behind the visible disk file.
+		log.Printf("[glossary] persistence durability warning: %v", writeErr)
 	}
 	return nil
 }
@@ -474,19 +490,13 @@ func (s *GlossaryStore) DeleteEntry(id string) (bool, error) {
 // guards the "after sync only one entry shows" wipe: a smaller/incomplete import
 // must never drop a user's locally-built library.
 //
-// Remote SYNC (OriginRemote) treats the server as authoritative for the rows IT
-// owns, so stale entries ARE pruned: a local OriginRemote entry absent from the
-// incoming set is deleted (a term removed on the team server disappears on the
-// next sync — without this, deleting upstream was meaningless). The prune is
-// deliberately scoped to avoid the historical data loss:
-//   - OriginUser (hand-authored) rows are never touched.
-//   - OriginImport (file-imported) rows are never touched — a separate local
-//     library, not this server's to delete.
-//   - It is skipped entirely when the incoming set is EMPTY, so a wrong URL or a
-//     momentarily-empty server can't wipe the synced library (the original
-//     data-loss trigger). A non-empty payload is trusted as the user syncs
-//     deliberately; the pruned count is returned so the UI can surface it.
-// Appellations/grammar fully replace, but only when the import carries them.
+// Remote SYNC (OriginRemote) treats the server export as authoritative for the
+// rows IT owns, so stale OriginRemote entries are pruned even when the exported
+// entries array is empty. OriginUser and OriginImport rows are never overwritten
+// or deleted; they are local data outside the server's authority. Appellations
+// and grammar are also full-snapshot sections in a remote export, so an empty or
+// omitted section clears the previous remote snapshot. File imports remain
+// additive and replace those sections only when they actually carry rows.
 // Returns the number of stale remote entries pruned.
 func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations []model.Appellation, grammar []model.GrammarUsage, origin string) (int, error) {
 	// Stamp + id the incoming entries.
@@ -511,10 +521,11 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 		incoming[imported[i].ID] = true
 	}
 
-	// Remote sync prunes stale remote-origin rows (see doc). Skipped on an empty
-	// payload so an error/misconfig can't wipe the synced library.
+	// A remote export is a full authoritative snapshot for remote-owned rows.
+	// Empty entries therefore means "remove every previously synced remote row",
+	// while local user/import rows remain untouched.
 	pruned := 0
-	if origin == model.OriginRemote && len(imported) > 0 {
+	if origin == model.OriginRemote {
 		kept := s.entries[:0]
 		for _, e := range s.entries {
 			if e.Origin == model.OriginRemote && !incoming[e.ID] {
@@ -532,20 +543,22 @@ func (s *GlossaryStore) MergeImport(imported []model.GlossaryEntry, appellations
 	}
 	for _, e := range imported {
 		if idx, ok := byID[e.ID]; ok {
-			if s.entries[idx].Origin == model.OriginUser {
-				continue // local user entry wins; never clobbered by an import
+			existingOrigin := s.entries[idx].Origin
+			if existingOrigin == model.OriginUser ||
+				(origin == model.OriginRemote && existingOrigin != model.OriginRemote) {
+				continue // remote/import data never clobbers locally-owned rows
 			}
-			s.entries[idx] = e // refresh the existing import/remote row in place
+			s.entries[idx] = e // refresh the existing row in place
 			continue
 		}
 		s.entries = append(s.entries, e)
 		byID[e.ID] = len(s.entries) - 1
 	}
 
-	if len(appellations) > 0 {
+	if origin == model.OriginRemote || len(appellations) > 0 {
 		s.appellations = appellations
 	}
-	if len(grammar) > 0 {
+	if origin == model.OriginRemote || len(grammar) > 0 {
 		// Stamp ids; grammar fully replaces (no user-authored grammar). Include
 		// the row index so rows sharing the same Item with a blank Index don't
 		// collide (the id must be unique for frontend v-for :key / row identity).

@@ -1,0 +1,5 @@
+include ':app'
+include ':sekai-mobile'
+project(':sekai-mobile').projectDir = new File(rootDir, '../../mobile/android')
+
+apply from: 'tauri.settings.gradle'

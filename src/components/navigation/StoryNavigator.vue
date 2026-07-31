@@ -21,6 +21,7 @@ import { useDownloadFloat } from '../../composables/useDownloadFloat'
 import { clearUndoHistory } from '../../composables/useUndo'
 import SkSelect from '../ui/SkSelect.vue'
 import { syncRecoveryNow } from '../../composables/useAutoSave'
+import { capabilities } from '../../platform/capabilities'
 
 const sourceOptions = [
   { value: 'haruki', label: 'HarukiBot NEO' },
@@ -78,7 +79,7 @@ function unitName(key: string): string {
 }
 
 debug.log('StoryNavigator mounted, fetching types...')
-onMounted(() => {
+onMounted(async () => {
   loadUnitDict()
   const t0 = performance.now()
   const doFetch = async () => {
@@ -96,13 +97,32 @@ onMounted(() => {
     }
     debug.log('无法加载故事类型', 'error')
   }
-  doFetch()
-  // Auto-pull metadata once per app launch so the catalog is fresh on startup —
-  // but only when the host page opts in (editor). The Live2D player skips this.
+
+  // Desktop and browser development keep the existing once-per-launch refresh.
+  // Android first validates its persisted generation and finishes the initial
+  // catalog download before fetching selector data, avoiding startup races.
   if (props.autoPull && !autoPulledOnce) {
-    autoPulledOnce = true
-    handleRefresh()
+    if (capabilities.isAndroid) {
+      try {
+        const status = await api.storyCatalogStatus()
+        // A recreated Android Activity may attach while the Go runtime is still
+        // refreshing. Rejoin that progress loop instead of exhausting the short
+        // type-fetch retry window and leaving empty selectors until remount.
+        if (!status.ready || status.updating) {
+          if (await handleRefresh()) autoPulledOnce = true
+        } else {
+          autoPulledOnce = true
+        }
+      } catch (error: any) {
+        debug.log(`检查移动端剧情目录失败: ${error.message || error}`, 'warn')
+      }
+    } else {
+      autoPulledOnce = true
+      void handleRefresh()
+    }
   }
+
+  await doFetch()
 })
 
 
@@ -133,24 +153,54 @@ watch(() => story.selectedIndex, (idx) => {
   }
 })
 
-async function handleRefresh() {
+async function reloadNavigationAfterCatalogUpdate() {
+  await story.fetchTypes()
+  const type = story.selectedType
+  if (!type) return
+  await story.fetchSorts(type)
+  if (story.selectedType !== type) return
+
+  const sort = story.selectedSort
+  if (story.sorts.length === 0) {
+    await story.fetchIndex(type, '')
+  } else if (sort) {
+    await story.fetchIndex(type, sort)
+  }
+  if (story.selectedType !== type || story.selectedSort !== sort) return
+
+  const index = story.selectedIndex
+  if (index && index !== '-') {
+    await story.fetchChapters(type, sort, index)
+  }
+}
+
+async function handleRefresh(): Promise<boolean> {
+  if (refreshing.value) return false
   refreshing.value = true
   const taskId = dlFloat.add('拉取元数据')
   dlFloat.start(taskId)
   try {
     await api.update()
     let done = false
+    let failure = ''
     while (!done) {
       await new Promise(r => setTimeout(r, 500))
       const progress = await api.updateProgress()
       if (progress.total > 0) {
         dlFloat.progress(taskId, progress.current, progress.total, Math.round((progress.current / progress.total) * 100))
       }
+      if (progress.status === 'error' || progress.error) {
+        failure = progress.error || progress.message || '元数据更新失败'
+      }
       done = progress.done
     }
+    if (failure) throw new Error(failure)
+    await reloadNavigationAfterCatalogUpdate()
     dlFloat.done(taskId, '元数据已拉取')
+    return true
   } catch (e: any) {
     dlFloat.fail(taskId, e.message || '拉取失败')
+    return false
   } finally {
     refreshing.value = false
   }
@@ -221,10 +271,10 @@ async function handleLoad() {
 </script>
 
 <template>
-  <div class="flex items-center gap-2 flex-wrap">
+  <div class="story-navigator flex items-center gap-2 flex-wrap">
     <SkSelect
       size="sm"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
       :model-value="story.selectedType"
       @update:model-value="story.selectedType = $event as string"
       :options="story.storyTypes.map(t => ({ value: t, label: unitName(t) }))"
@@ -234,7 +284,7 @@ async function handleLoad() {
     <SkSelect
       v-if="story.sorts?.length"
       size="sm"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
       :model-value="story.selectedSort"
       @update:model-value="story.selectedSort = $event as string"
       :options="story.sorts.map(s => ({ value: s.value, label: s.label }))"
@@ -243,7 +293,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
       :model-value="story.selectedIndex"
       @update:model-value="story.selectedIndex = $event as string"
       :options="displayIndices.map(i => ({ value: i.value, label: i.label }))"
@@ -252,7 +302,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
       :model-value="story.selectedChapter"
       @update:model-value="story.selectedChapter = $event as number"
       :options="story.chapters.map(c => ({ value: c.number, label: c.label }))"
@@ -261,7 +311,7 @@ async function handleLoad() {
 
     <SkSelect
       size="sm"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
       :model-value="story.selectedSource"
       @update:model-value="story.selectedSource = $event as string"
       :options="sourceOptions"
@@ -279,7 +329,7 @@ async function handleLoad() {
     <button
       @click="handleLoad"
       class="btn btn-sm btn-brand gap-1.5"
-      :disabled="story.loading || editor.documentBusy || !story.selectedType || story.selectedChapter < 0"
+      :disabled="story.loading || refreshing || editor.documentBusy || !story.selectedType || story.selectedChapter < 0"
     >
       <span v-if="story.loading" class="loading loading-spinner loading-sm" />
       <Download v-else :size="15" />
@@ -288,13 +338,30 @@ async function handleLoad() {
 
     <!-- 打开译文保存根目录（目录不存在时后端先建再开）——用户从这里直达自己的文稿 -->
     <button
+      v-if="!capabilities.isAndroid"
       @click="openSaveDir"
       class="btn btn-sm btn-ghost border border-[var(--color-border)] gap-1.5"
       title="在文件管理器中打开译文保存目录"
-      :disabled="editor.documentBusy"
+      :disabled="editor.documentBusy || refreshing"
     >
       <FolderOpen :size="15" />
       文稿目录
     </button>
   </div>
 </template>
+
+<style scoped>
+@media (max-width: 767px) {
+  .story-navigator {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    width: 100%;
+  }
+  .story-navigator :deep(.sk-select),
+  .story-navigator :deep(.sk-select-root),
+  .story-navigator > button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+</style>
