@@ -78,6 +78,44 @@ describe('EditorWorkspace focused edit materialization', () => {
     app.unmount()
   })
 
+  it('does not repaint the focused contenteditable or reset its caret after an IME commit', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const editor = useEditorStore()
+    const story = useStoryStore()
+    editor.setTalks([talk('旧文本')], [talk('旧文本')], [])
+    story.sourceTalks = [{ speaker: '场景', text: 'source', charIndex: 0 }]
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp(EditorWorkspace)
+    app.use(pinia)
+    app.mount(container)
+    await nextTick()
+
+    const editable = container.querySelector<HTMLElement>('[contenteditable="true"][data-gidx="0"]')!
+    Object.defineProperty(editable, 'isContentEditable', { configurable: true, value: true })
+    editable.focus()
+    editable.dispatchEvent(new Event('compositionstart', { bubbles: true }))
+    editable.textContent = '前中文后'
+
+    const textNode = editable.firstChild!
+    const range = document.createRange()
+    range.setStart(textNode, 3)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    editable.dispatchEvent(new Event('compositionend', { bubbles: true }))
+    await nextTick()
+
+    expect(editor.talks[0].text).toBe('前中文后')
+    expect(editable.firstChild).toBe(textNode)
+    expect(selection.anchorNode).toBe(textNode)
+    expect(selection.anchorOffset).toBe(3)
+    app.unmount()
+  })
+
   it('materializes active IME text without waiting when the route deactivates', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

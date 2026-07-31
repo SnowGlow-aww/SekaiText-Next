@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch, onActivated, onDeactivated, onMounted, onUnmounted, nextTick } from 'vue'
+import {
+  computed,
+  ref,
+  watch,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  nextTick,
+  type ObjectDirective,
+} from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useStoryStore } from '../../stores/story'
 import { useEditorStore } from '../../stores/editor'
@@ -19,6 +29,22 @@ import { commitRebasedDocumentMutation, DocumentMutationQueue } from '../../edit
 
 const iconErrors = ref<Set<number>>(new Set())
 const workspaceRef = ref<HTMLElement | null>(null)
+
+// `v-html` rewrites a contenteditable's innerHTML whenever reactive text changes.
+// IME candidate commits update the model on compositionend while the field still
+// owns the browser Selection, so that rewrite destroys the active text node and
+// WebKit moves the caret to offset 0. Keep the DOM browser-owned for the entire
+// focused edit session; once focus leaves, refresh the rendered diff/search
+// highlights from the latest model value.
+const vEditableHtml: ObjectDirective<HTMLElement, string> = {
+  beforeMount(el, binding) {
+    el.innerHTML = binding.value
+  },
+  updated(el, binding) {
+    if (el.ownerDocument.activeElement === el) return
+    if (el.innerHTML !== binding.value) el.innerHTML = binding.value
+  },
+}
 
 // Preserve the editor scroll position when navigating away (settings, Live2D,
 // etc.) and back. The scroll offset is captured LIVE on every scroll — by the
@@ -952,7 +978,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                           @compositionend="onCompositionEnd($event, item.globalIdx)"
                           @keydown.enter="focusNext"
                           @keydown.esc="onEditableEsc($event, item.globalIdx)"
-                          v-html="renderHighlight(item.talk)"
+                          v-editable-html="renderHighlight(item.talk)"
                         ></div>
                         <div v-if="item.talk.message" class="text-xs text-error mt-0.5">
                           {{ item.talk.message }}
