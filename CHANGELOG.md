@@ -1,3 +1,44 @@
+# SekaiText Next v5.9.7 更新日志
+
+> 自动轴机兼容性与稳定性修复版本：取消翻译文本对角色命名、冒号格式和行数的强制匹配，并确保打轴模板、字体与阈值资源全程使用安装包内置文件。
+
+## 🎬 自动轴机兼容性
+- **取消翻译硬校验**：翻译角色名不需要与日文 scenario 一致；是否使用全角冒号、对话/效果行类型和总行数也不再作为启动打轴的门槛。
+- **按现有内容尽力套用**：有角色名的翻译会更新角色名与正文；无角色名的行只更新正文并保留日文原名；缺失行保留原文，多余行忽略，类型不一致时也不会崩溃。
+- **修正错误分类**：翻译格式或内容差异不再被包装成“模板/字体资源缺失且无法联网下载”，实际异常会按原原因返回。
+
+## 📦 内置资源与内核
+- 自动轴机的字体、模板、菜单图与阈值清单继续随 **SekaiCoreEngine** 内置发布；启动时只进行本地文件大小与 MD5 校验，**不会联网下载资源**。
+- 若内置资源确实缺失或损坏，应用会明确提示重新安装或更新内核，而不是要求联网补下载。
+- 内置 **SekaiCoreEngine 2.3.11**，主程序发布工作流固定到经过验证的引擎提交，避免重新运行工作流时意外打入不同版本。
+
+## 🛠️ 稳定性、安全与平台维护
+- 加强编辑器聚焦草稿、自动保存、页面离开和 IME 组合输入的状态协调，避免未失焦内容丢失、重复提交或旧异步结果覆盖新文档。
+- 加固团队模式、术语库同步、应用更新、内置 Live2D 资源和本地 IPC 的并发、权限、输入边界与资源生命周期处理。
+- 补齐 Android 移动端运行时、原生桥接及 APK 构建/签名/验证工具链；本次公开桌面安装包仍为 macOS Apple Silicon 与 Windows x64。
+
+## 📦 发布与更新
+- 主程序、Tauri、Cargo 与后端版本统一更新至 `5.9.7`。
+- macOS Apple Silicon 与 Windows x64 安装包发布到 GitHub Release 和 OSS/CDN。
+- `app-release.json` 使用 Ed25519 签名，并记录安装包 SHA-256 与文件大小；官网与下载页同步到 `5.9.7`。
+
+## ✅ 验证
+- 主程序前端与发布脚本测试全部通过（93 项 Vitest、55 项 Node 测试），生产构建、官网 12 页面校验及 npm 安全审计通过。
+- Go 后端与术语服务器通过 race 测试和 `go vet`；Tauri 通过锁定依赖 Rust 测试与 Release 检查。
+- Android arm64 Release APK 实际构建成功，并通过签名状态、ABI、应用标识、版本、权限、网络安全、DEX 类与内嵌配置校验。
+- SekaiCoreEngine 2.3.11 Release 构建和 LineEditSelfTest 通过，Core/Engine/App 的 NuGet 漏洞检查均为 0。
+- AutoTiming、Live2D、插件市场及两份 Moe 镜像的测试、生产构建与依赖审计通过。
+
+## English Summary
+- Removed strict auto-timing translation matching. Speaker names, full-width colons, line types, and line counts no longer need to mirror the Japanese scenario.
+- Translation lines are applied on a best-effort basis: missing lines keep the source text, extra lines are ignored, unnamed lines preserve the original speaker, and type mismatches no longer crash the run.
+- VideoProcess fonts, templates, menu assets, and thresholds are validated exclusively from the bundled installation. Auto-timing never downloads these resources at startup.
+- Bundled **SekaiCoreEngine 2.3.11** and pinned the release workflow to its verified commit.
+- Included editor, team/glossary, update, Live2D, IPC, and Android runtime reliability and security improvements.
+- Verified frontend and release tests, production and website builds, race-enabled Go suites, locked Rust checks, a real Android release APK, engine self-tests, and npm/NuGet advisory scans.
+
+---
+
 # SekaiText Next v5.9.0 更新日志
 
 > 全应用工作台焕新，并集中修复编辑器文档切换、官网部署和正式发布链路中的数据安全与可靠性问题。
