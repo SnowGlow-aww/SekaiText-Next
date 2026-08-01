@@ -180,7 +180,7 @@ func (t *TeamService) snapshot() string {
 // discoverSnapshotBase asks the team server where its CDN snapshot lives via the
 // public GET /api/config. Returns "" for old servers (404), unreachable servers,
 // or an unparseable/empty payload — callers then fall back to direct endpoints.
-// Goes through the team client because the server may be self-signed.
+// Goes through the origin-scoped team client because the server may use a private CA.
 func (t *TeamService) discoverSnapshotBase(server string, client *http.Client) string {
 	if client == nil {
 		return ""
@@ -211,7 +211,7 @@ func (t *TeamService) discoverSnapshotBase(server string, client *http.Client) s
 }
 
 // getCDN performs a clean GET against the public CDN (real certificate, default
-// cdnClient — never the self-signed-tolerant t.client). It deliberately sends no
+// cdnClient — never the private-CA-aware t.client). It deliberately sends no
 // If-None-Match: the CDN serves gzip variants whose ETag differs from the identity
 // ETag, so a conditional request would mismatch and defeat caching. Freshness rides
 // on the object's short CDN TTL (version.json) plus the ?v= cache key (export.json).

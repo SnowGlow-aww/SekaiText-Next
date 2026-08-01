@@ -3,8 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
@@ -23,6 +26,56 @@ func testServerRoots(t *testing.T, servers ...*httptest.Server) *x509.CertPool {
 		roots.AddCert(server.Certificate())
 	}
 	return roots
+}
+
+func TestOfficialTeamRootIsValidAndOriginScoped(t *testing.T) {
+	block, rest := pem.Decode(officialTeamRootPEM)
+	if block == nil || block.Type != "CERTIFICATE" || len(rest) != 0 {
+		t.Fatal("embedded official team root is not one canonical PEM certificate")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cert.IsCA || cert.Subject.CommonName != "Caddy Local Authority - 2026 ECC Root" {
+		t.Fatalf("unexpected embedded root identity: subject=%q isCA=%v", cert.Subject, cert.IsCA)
+	}
+	sum := sha256.Sum256(cert.Raw)
+	if got := hex.EncodeToString(sum[:]); got != "d2e9b36c337e7203d30b8741ab523822fe35b0d31e6dc2519d5f998c0f190925" {
+		t.Fatalf("embedded official root fingerprint = %s", got)
+	}
+
+	serverURL, client, err := newTeamHTTPClient(officialTeamServerOrigin+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serverURL != officialTeamServerOrigin {
+		t.Fatalf("normalized official server URL = %q", serverURL)
+	}
+	roots := client.Transport.(*http.Transport).TLSClientConfig.RootCAs
+	if roots == nil {
+		t.Fatal("official server client did not receive the embedded trust root")
+	}
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}); err != nil {
+		t.Fatalf("embedded root is not trusted by the official server client: %v", err)
+	}
+
+	for _, raw := range []string{
+		"https://8.140.254.217",
+		"https://8.140.254.217:443",
+		"https://8.140.254.217.evil.example:8443",
+	} {
+		_, otherClient, err := newTeamHTTPClient(raw, nil)
+		if err != nil {
+			t.Fatalf("newTeamHTTPClient(%q): %v", raw, err)
+		}
+		if got := otherClient.Transport.(*http.Transport).TLSClientConfig.RootCAs; got != nil {
+			t.Fatalf("embedded official root leaked to non-official origin %q", raw)
+		}
+	}
 }
 
 func TestTeamLoginRejectsUntrustedCertificate(t *testing.T) {

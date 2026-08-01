@@ -43,8 +43,9 @@ type TeamService struct {
 	// client is scoped to the selected server origin and verifies its certificate.
 	// Redirects are restricted to that same origin.
 	client *http.Client
-	// teamRootCAs is nil in production so Go uses the system trust store. Tests
-	// inject a private CA to exercise trusted TLS without changing process trust.
+	// teamRootCAs is nil in production so Go uses the system trust store, augmented
+	// only for the exact first-party origin by its embedded public CA. Tests inject
+	// a private CA to exercise trusted TLS without changing process trust.
 	teamRootCAs *x509.CertPool
 	// cdnClient only permits public HTTPS destinations and never carries team
 	// credentials. snapshotURLAllowed is a dependency seam for local unit tests;

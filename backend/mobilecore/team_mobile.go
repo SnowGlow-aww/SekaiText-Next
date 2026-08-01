@@ -132,7 +132,7 @@ func InitializeTeam(dataDir string) error {
 
 // initializeTeamWithRootCAs is a test seam for trusted local TLS fixtures.
 // Production always passes nil so TeamService uses the platform trust store,
-// including user-installed roots exposed by the operating system.
+// including user-installed roots, plus the exact-origin first-party public CA.
 func initializeTeamWithRootCAs(dataDir string, rootCAs *x509.CertPool) error {
 	if strings.TrimSpace(dataDir) == "" {
 		return fmt.Errorf("initialize mobile team: data directory is required")

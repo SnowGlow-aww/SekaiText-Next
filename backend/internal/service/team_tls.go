@@ -32,8 +32,9 @@ func normalizeTeamServerURL(raw string) (string, error) {
 }
 
 // newTeamHTTPClient verifies the team server against the supplied roots, or the
-// system trust store (including custom installed CAs) when roots is nil. Redirects
-// cannot leave the selected origin, so credentials never reach another server.
+// system trust store (including custom installed CAs) when roots is nil. The
+// first-party server additionally receives its exact-origin embedded public CA.
+// Redirects cannot leave the selected origin, so credentials never reach another server.
 func newTeamHTTPClient(rawServerURL string, rootCAs *x509.CertPool) (string, *http.Client, error) {
 	serverURL, err := normalizeTeamServerURL(rawServerURL)
 	if err != nil {
@@ -41,10 +42,14 @@ func newTeamHTTPClient(rawServerURL string, rootCAs *x509.CertPool) (string, *ht
 	}
 
 	origin, _ := url.Parse(serverURL)
+	trustedRoots, err := teamRootCAsForServer(serverURL, rootCAs)
+	if err != nil {
+		return "", nil, err
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		RootCAs:    rootCAs,
+		RootCAs:    trustedRoots,
 		ServerName: origin.Hostname(),
 	}
 	return serverURL, &http.Client{
