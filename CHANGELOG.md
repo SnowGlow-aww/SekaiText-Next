@@ -1,3 +1,31 @@
+# SekaiText Next v5.9.8 更新日志
+
+> **P0 团队模式热修复**：修复 5.9.7 无法登录使用 Caddy 内部 CA 的官方团队术语服务器的问题。
+
+## 👥 团队模式
+- 修复连接 `https://8.140.254.217:8443` 时出现 `Caddy Local Authority ... certificate is not trusted`，导致登录与只读连接在 TLS 握手阶段被阻断的问题。
+- 随应用内置官方服务器的**公开根证书**，并只对官方服务器的精确来源地址启用；Caddy 的短期叶证书和中间证书正常轮换后仍可继续验证。
+- 失败期间账号密码并未发送到远程服务器：证书校验发生在 HTTP 登录请求之前。
+
+## 🔒 安全边界
+- 没有恢复 `InsecureSkipVerify`，也没有全局跳过证书校验。
+- 继续验证 TLS 证书链、服务器 IP SAN、有效期和主机名，并继续禁止携带凭据的请求跨来源重定向。
+- 内置 CA 不会用于其他端口、相似域名或第三方团队服务器；自建私有 CA 仍需由操作系统或用户显式信任。
+- 安装包只包含公开的 `root.crt`，不包含 Caddy 根私钥或任何服务器密钥。
+
+## ✅ 验证
+- 使用内置根证书通过真实 Go `TeamService` 连接官方服务器，并成功读取当前术语库版本。
+- 官方根证书 SHA-256 指纹固定为 `D2:E9:B3:6C:33:7E:72:03:D3:0B:87:41:AB:52:38:22:FE:35:B0:D3:1E:6D:C2:51:9D:5F:99:8C:0F:19:09:25`。
+- Go race 测试、`go vet`、后端构建、前端与发布脚本测试、生产构建和 npm 安全审计全部通过。
+
+## English Summary
+- Fixed the 5.9.7 team-mode regression that rejected the official glossary server's Caddy internal CA before login.
+- Bundled only the official server's public root certificate and scoped it to the exact `https://8.140.254.217:8443` origin.
+- Kept full certificate-chain, hostname, validity, and redirect verification; TLS verification is never disabled globally.
+- Confirmed with a live Go `TeamService` connection that the official server validates successfully without sending credentials through an untrusted channel.
+
+---
+
 # SekaiText Next v5.9.7 更新日志
 
 > 自动轴机兼容性与稳定性修复版本：取消翻译文本对角色命名、冒号格式和行数的强制匹配，并确保打轴模板、字体与阈值资源全程使用安装包内置文件。
