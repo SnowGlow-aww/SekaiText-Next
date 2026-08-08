@@ -56,6 +56,20 @@ test('tag releases deploy the website after manifest publication', () => {
   assert.match(website, /run: npm run deploy:oss/)
 })
 
+test('manual recovery builds and publishes an existing immutable tag without moving it', () => {
+  assert.match(release, /workflow_dispatch:\n\s+inputs:\n\s+tag:/)
+  assert.ok(
+    release.match(/ref: \$\{\{ inputs\.tag \|\| github\.ref \}\}/g)?.length >= 4,
+    'every app-source checkout must use the requested recovery tag',
+  )
+  assert.match(release, /RECOVERY_TAG: \$\{\{ inputs\.tag \}\}/)
+  assert.match(release, /RELEASE_TAG: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}/)
+  assert.match(release, /tag_name: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}/)
+  assert.match(release, /tag: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}/)
+  assert.match(release, /autobuild-2026-07-31-14-10\/ffmpeg-n8\.1\.2-34-g9b6c8969e0-win64-gpl-8\.1\.zip/)
+  assert.match(release, /cc4156d51387566ea8ba653fc3a04897bdf812fddf652428d9030bbf7ae24835/)
+})
+
 test('all external workflow actions are pinned to full commit SHAs', () => {
   for (const [name, source] of [['release', release], ['manifest', manifest]]) {
     for (const match of source.matchAll(/^\s*-\s+uses:\s+([^\s#]+)/gm)) {

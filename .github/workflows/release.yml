@@ -4,6 +4,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing stable release tag to recover without moving it (e.g. v5.9.9)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -17,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -64,8 +71,12 @@ jobs:
         run: node scripts/verify-plugin-market.mjs
       - name: Verify release versions
         shell: bash
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          if [[ -n "$RECOVERY_TAG" ]]; then
+            node scripts/sync-version.mjs --check --tag "$RECOVERY_TAG"
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             node scripts/sync-version.mjs --check --tag "$GITHUB_REF_NAME"
           else
             node scripts/sync-version.mjs --check
@@ -125,6 +136,8 @@ jobs:
       ENGINE_DIR: ${{ github.workspace }}/engine-src/SekaiToolsEngine/bin/Release/net10.0/${{ matrix.rid }}/publish
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       # Auto-timing/压制 engine source (SnowGlow-aww/SekaiTools-Avalonia). The whole solution
       # is needed: SekaiToolsEngine has ProjectReferences to Core/Base/DataFetch/Platform and
@@ -201,10 +214,11 @@ jobs:
           grep -q -- enable-libass "$GITHUB_WORKSPACE/ffver.txt" && echo "libass OK" || { echo "::error::ffmpeg missing libass"; exit 1; }
           echo "FFMPEG_BIN=$FF" >> "$GITHUB_ENV"
 
-      # Windows x64: BtbN static GPL build pinned to one n8.1 autobuild, matching the
-      # macOS stable channel. The former ffmpeg-master-latest (git master nightly) shipped a
-      # build whose stderr periodic stats never appear on real Windows hw pipelines (dxva2+QSV),
-      # blanking suppress progress — never ship nightlies. Uses pwsh so
+      # Windows x64: BtbN static GPL build pinned to the retained month-end n8.1 autobuild,
+      # matching the macOS stable channel. Daily autobuild tags are pruned and cannot be used
+      # for reproducible release recovery. The former ffmpeg-master-latest (git master nightly)
+      # shipped a build whose stderr periodic stats never appear on real Windows hw pipelines
+      # (dxva2+QSV), blanking suppress progress — never ship nightlies. Uses pwsh so
       # `curl.exe` (not the Invoke-WebRequest alias) and Expand-Archive avoid tar/unzip pitfalls.
       # shell: pwsh is pinned explicitly so Out-File -Encoding utf8 writes NO BOM (PowerShell 7),
       # avoiding a BOM corrupting the FFMPEG_BIN line written to $GITHUB_ENV under Windows PowerShell 5.1.
@@ -212,9 +226,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          curl.exe -fL --retry 3 -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-18-13-13/ffmpeg-n8.1.2-22-g94138f6973-win64-gpl-8.1.zip"
+          curl.exe -fL --retry 3 -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-gpl-8.1.zip"
           $actual = (Get-FileHash -Algorithm SHA256 ffmpeg.zip).Hash.ToLowerInvariant()
-          $expected = '764716fa5cff555431791945f15db61c0aa85cc61023bfe36668f32f2b256b62'
+          $expected = 'cc4156d51387566ea8ba653fc3a04897bdf812fddf652428d9030bbf7ae24835'
           if ($actual -ne $expected) { Write-Error "ffmpeg.zip SHA-256 mismatch: $actual"; exit 1 }
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $bin = (Get-ChildItem -Path ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
@@ -334,11 +348,13 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -348,12 +364,13 @@ jobs:
       - name: Reject retries after an app manifest has been published
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           SEKAITEXT_APP_UPDATE_PUBLIC_KEYS: ${{ vars.SEKAITEXT_APP_UPDATE_PUBLIC_KEYS }}
         run: node scripts/check-release-mutable.mjs
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           overwrite_files: false
           files: |
@@ -364,20 +381,22 @@ jobs:
 
   manifest:
     needs: release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     permissions:
       contents: write
     uses: ./.github/workflows/release-manifest.yml
     with:
-      tag: ${{ github.ref_name }}
+      tag: ${{ inputs.tag || github.ref_name }}
     secrets: inherit
 
   website:
     needs: manifest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
