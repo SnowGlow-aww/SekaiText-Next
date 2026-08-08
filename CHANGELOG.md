@@ -1,3 +1,45 @@
+# SekaiText Next v5.9.9 更新日志
+
+> **投入使用前稳定性修复**：将文件打开、剧情恢复和合意稿导入统一改成候选事务，并集中修复桌面 Live2D 黑屏/无声、剧情跳转、恢复快照和自动轴机生命周期问题。
+
+## 📝 文档与剧情事务
+- 打开翻译文件时，文件解析、剧情身份反解、原文加载、行对齐和文本比较全部在本地候选状态完成；所有步骤成功前不再清空当前文档、原文、路径或撤销状态。
+- 任何失败、空译文、空原文、缺失 `scenarioId`、空对齐结果或过期异步请求都会 fail-closed，不再显示虚假的“已打开”。
+- 编辑器内容、原文、剧情身份、标题、路径、metadata、撤销栈和恢复状态改为一次性原子提交。
+- 合意稿导入和自动恢复使用同一套候选校验；内嵌 metadata 与当前章节或场景不一致时直接拒绝，清理恢复快照失败时保留旧文档并等待重试。
+
+## 🧭 通用剧情身份反解
+- 覆盖普通活动、World Link、主线、活动/联动/生日/Festival/初始/升级卡面、三类地图对话和特殊剧情，不再针对单个文件名写特判。
+- `event211-airi 前篇` 可精确复用当前已载入的活动卡面剧情，也可在冷启动时反解到活动卡面 211 的真实章节。
+- 当前剧情复用要求完整 canonical identity 和 `scenarioId` 一致；天然有歧义的旧文件名、Festival 卡面碰撞和虚拟歌手升级卡隐藏坐标全部 fail-closed，避免静默绑定到错误原文。
+- 主线导航值和加载坐标统一，区域对话初始/升级/追加边界按真实 catalog 分类。
+
+## 🎭 Live2D 桌面播放器
+- 修复 WebP 背景和 MP3 语音/BGM 通过桌面代理加载时可能黑屏或无声的问题，并为无扩展名代理音频显式指定格式和超时清理。
+- 剧情源、章节和跳转请求纳入完整播放 identity；切换来源、快速连续跳转或重复点击时，不再沿用旧剧情或把过期异步结果写回新舞台。
+- 加强 PIXI/Cubism 舞台尺寸、keep-alive、暂停/恢复、自动播放、模型加载、BGM/语音和纹理生命周期清理，避免旧 ticker、模型或循环音频泄漏。
+- 编辑器行跳转在剧情或 `scenarioId` 缺失时给出明确错误，不再静默无响应。
+- 内置 Live2D 插件同步至 `1.3.2`，最低主程序版本为 `5.9.9`。
+
+## 🎬 自动轴机与恢复可靠性
+- 自动轴机轮询、任务切换、页面离开和完成回调加入 generation 防护，旧任务响应不能覆盖新任务或重复弹出完成提示。
+- 修复长行分轴帧未正确落地以及 TimingSelfTest 假绿；真实 780 帧视频自测验证快速连续台词起始帧和分轴边界，误差不超过 1 帧。
+- Android 在文档事务繁忙期间产生的首次脏修改不再丢失恢复快照；IndexedDB 清理失败会保留待重试状态，而不是误报成功。
+
+## ✅ 验证
+- 主程序 178 项 Vitest 与 55 项发布/平台脚本测试通过，`vue-tsc`、Vite 生产构建、Go race 测试和 `go vet` 全部通过。
+- generation 21 生产 catalog 完整矩阵通过；1915 项独立 identity round-trip 为 0 mismatch，33 个 Festival 碰撞和 18 个虚拟歌手升级卡碰撞全部 fail-closed。
+- Live2D 13 项测试、类型检查、生产构建和桌面实机模型/BGM/语音验证通过；AutoTiming 13 项测试、类型检查、生产构建和 TimingSelfTest 通过。
+
+## English Summary
+- Reworked file opening, recovery, and baseline import into fail-closed candidate transactions that publish editor state only after translation, source rows, story identity, alignment, comparison, and recovery cleanup all succeed.
+- Added production-wide story identity resolution for every supported story type while refusing ambiguous legacy, Festival, area-talk, and virtual-singer upgrade-card identities.
+- Fixed desktop Live2D background/audio proxying, source-aware jumps, rapid story switching, keep-alive behavior, and PIXI/Cubism/Howler lifecycle cleanup; the bundled plugin is now 1.3.2 and requires host 5.9.9.
+- Hardened auto-timing task generations and separator estimation, recovery scheduling, and IndexedDB cleanup failure handling.
+- Passed the full frontend, backend race/vet, production catalog matrix, Live2D, auto-timing, and frame-level timing self-test gates.
+
+---
+
 # SekaiText Next v5.9.8 更新日志
 
 > **P0 团队模式热修复**：修复 5.9.7 无法登录使用 Caddy 内部 CA 的官方团队术语服务器的问题。

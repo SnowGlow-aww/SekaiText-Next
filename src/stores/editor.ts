@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { DstTalk, SourceTalk, EditorMode } from '../types/translation'
+import { canonicalStoryIdentity, parseDocumentFileName } from '../editor/documentFileName'
 
 // 文档身份快照：载入内容时从 story store 拷一份，此后保存命名/元数据一律读快照。
 // story 的选择状态是全局的，载入后再去下载页/其它模式拉别的剧情就会被改走——
@@ -113,23 +114,38 @@ export const useEditorStore = defineStore('editor', () => {
   const sourceTalks = ref<SourceTalk[]>([])
 
   const currentFilePath = ref('')
-  // User-editable title segment shown in the 译文 header input. Replaces ONLY
-  // the chapter-title part of the saved filename (the 【模式】<saveTitle> prefix
-  // and .txt suffix stay fixed). Empty = fall back to the story's chapterTitle.
+  // User-editable title segment shown in the 译文 header input. The saved file
+  // always keeps the canonical SaveTitle + ChapterTitle identity; a differing
+  // user title is encoded separately as 【标题】<title>. Empty falls back to the
+  // canonical chapter title.
   // Part of the per-mode document identity (cached in ModeState like docMeta):
   // each mode slot names its own file.
   const titleOverride = ref('')
 
-  // 从既有规范命名（【模式】<剧本标号> <标题>.txt）回同步标题段。绑定到已存在
-  // 文件（恢复、保存对话框选路径）时调用——否则 titleOverride 空值会让下一次
-  // 保存把文件名改回日文原标题。
+  // 从规范名或旧版托管名回同步用户标题。新格式把 canonical 身份与
+  // 【标题】后缀分开；旧格式只在完整 docMeta 已知时按完整 SaveTitle 截取，
+  // 不再用第一个空格猜测（SaveTitle 本身允许含空格）。
   function syncTitleFromPath(path: string) {
-    const base = path.split(/[/\\]/).pop() || ''
-    if (!base.startsWith('【')) return
-    const stripped = base.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
-    const label = stripped.split(/\s+/)[0] || ''
-    const titlePart = stripped.slice(label.length).trim()
-    if (titlePart) titleOverride.value = titlePart
+    const parsed = parseDocumentFileName(path)
+    if (!parsed.rawName.startsWith('【')) return
+    if (parsed.hasExplicitTitle) {
+      titleOverride.value = parsed.titlePart
+      return
+    }
+    const meta = docMeta.value
+    if (!meta) return
+    const exactIdentity = canonicalStoryIdentity(meta.saveTitle, meta.chapterTitle)
+    if (parsed.canonical === exactIdentity
+      || (meta.chapterTitle === '特殊篇' && parsed.canonical === `${meta.saveTitle.trim()} 其他`)) {
+      titleOverride.value = meta.chapterTitle.trim()
+      return
+    }
+    const saveTitle = meta.saveTitle.trim()
+    const prefix = `${saveTitle} `
+    if (saveTitle && parsed.canonical.startsWith(prefix)) {
+      const legacyTitle = parsed.canonical.slice(prefix.length).trim()
+      if (legacyTitle) titleOverride.value = legacyTitle
+    }
   }
   const hasUnsavedChanges = ref(false)
   const majorClue = ref<string | null>(null)

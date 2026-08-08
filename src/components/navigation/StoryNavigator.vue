@@ -20,7 +20,7 @@ import { useDebugLog } from '../../composables/useDebugLog'
 import { useDownloadFloat } from '../../composables/useDownloadFloat'
 import { clearUndoHistory } from '../../composables/useUndo'
 import SkSelect from '../ui/SkSelect.vue'
-import { syncRecoveryNow } from '../../composables/useAutoSave'
+import { clearRecovery } from '../../editor/recoveryCoordinator'
 import { capabilities } from '../../platform/capabilities'
 
 const sourceOptions = [
@@ -218,7 +218,7 @@ async function handleLoad() {
   debug.log(`载入按钮点击 loading=${story.loading} selectedType="${story.selectedType}"`)
   if (editor.documentBusy) return
   if (!(await confirmDiscardUnsaved())) return
-  const operation = editor.beginDocumentOperation()
+  const operation = editor.beginDocumentOperation(false)
   if (operation === null) return
   const taskId = dlFloat.add('载入故事')
   dlFloat.start(taskId)
@@ -227,39 +227,50 @@ async function handleLoad() {
     // Fetch both halves before committing either. If template creation fails,
     // the previous source, translation, file binding and metadata stay intact.
     const loadedStory = await story.fetchStory()
-    const dstTalks = loadedStory.sourceTalks.length > 0
-      ? await api.translationCreate({
-        sourceTalks: loadedStory.sourceTalks,
-        jp: false,
-      })
-      : []
+    if (!loadedStory.scenarioId?.trim() || !Array.isArray(loadedStory.sourceTalks) || loadedStory.sourceTalks.length === 0) {
+      throw new Error('剧情原文或 scenarioId 为空，未载入')
+    }
+    const dstTalks = await api.translationCreate({
+      sourceTalks: loadedStory.sourceTalks,
+      jp: false,
+    })
+    if (!Array.isArray(dstTalks) || dstTalks.length === 0) {
+      throw new Error('译文模板为空，未载入')
+    }
     if (!editor.isCurrentDocumentOperation(operation)) return
 
-    if (loadedStory.sourceTalks.length > 0) {
-      debug.log(`故事载入成功 ${loadedStory.sourceTalks.length}行`)
-      story.applyStory(loadedStory)
-      editor.clearAll()
-      editor.setSourceTalks(loadedStory.sourceTalks)
-      editor.setTalks(dstTalks, dstTalks, [])
-      editor.majorClue = null
-      // 新文档会话：命名/元数据快照跟内容走（此后别处再拉别的剧情不影响本文档），
-      // 并解除上一个文档的路径绑定与标题覆盖——否则新剧情的译文会继续写进上一个
-      // 剧情已绑定的文件（用户反馈：后篇内容被存进前篇的文件，改文件名也拦不住，
-      // 因为下次保存按旧绑定路径重建）。
-      editor.docMeta = story.snapshotDocMeta()
-      editor.currentFilePath = ''
-      editor.titleOverride = ''
-      // Fresh template = clean state; keeping the OLD document's dirty flag
-      // would let the 30s autosave overwrite the recovery file with this
-      // near-empty template.
-      editor.markSaved()
-      await syncRecoveryNow().catch(() => {})
-      clearUndoHistory()
-      dlFloat.done(taskId, `已载入 ${loadedStory.sourceTalks.length} 行`)
-    } else {
-      debug.log('故事载入返回0行', 'warn')
-      dlFloat.done(taskId, '载入完成（0行）')
+    // Recovery cleanup is the final asynchronous commit prerequisite. If it
+    // fails, the old editor/story/undo state remains untouched. No asynchronous
+    // work remains after advanceDocumentOperation, so the state swap below is a
+    // single synchronous commit.
+    try {
+      await clearRecovery()
+    } catch (error: any) {
+      throw new Error('自动恢复快照清理失败，未载入', { cause: error })
     }
+    if (!editor.advanceDocumentOperation(operation)) return
+
+    debug.log(`故事载入成功 ${loadedStory.sourceTalks.length}行`)
+    story.applyStory(loadedStory)
+    editor.clearAll()
+    editor.setSourceTalks(loadedStory.sourceTalks)
+    editor.setTalks(dstTalks, dstTalks, [])
+    editor.majorClue = null
+    // 新文档会话：命名/元数据快照跟内容走（此后别处再拉别的剧情不影响本文档），
+    // 并解除上一个文档的路径绑定与标题覆盖——否则新剧情的译文会继续写进上一个
+    // 剧情已绑定的文件（用户反馈：后篇内容被存进前篇的文件，改文件名也拦不住，
+    // 因为下次保存按旧绑定路径重建）。
+    editor.docMeta = story.snapshotDocMeta()
+    editor.currentFilePath = ''
+    editor.titleOverride = ''
+    // Fresh template = clean state; keeping the OLD document's dirty flag
+    // would let the 30s autosave overwrite the recovery file with this template.
+    editor.markSaved()
+    clearUndoHistory()
+    if (editor.talks.length === 0 || editor.sourceTalks.length === 0 || !story.scenarioId) {
+      throw new Error('载入后的文档不可用')
+    }
+    dlFloat.done(taskId, `已载入 ${loadedStory.sourceTalks.length} 行`)
   } catch (e: any) {
     debug.log('载入失败: ' + e.message, 'error')
     dlFloat.fail(taskId, e.message || '载入失败')

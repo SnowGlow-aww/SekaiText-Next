@@ -94,7 +94,15 @@ export const mobileCore = {
   },
 
   resolveStoryLabel: (label: string) =>
-    invokeJson<{ ok: boolean; storyType: string; index: string; indexLabel: string; chapter: number }>(
+    invokeJson<{
+      ok: boolean
+      storyType: string
+      index: string
+      indexLabel: string
+      chapter: number
+      matchKind?: 'exact' | 'legacy'
+      reason?: 'not-found' | 'exact-ambiguous' | 'legacy-ambiguous'
+    }>(
       'mobile_resolve_story_label',
       { requestJson: JSON.stringify({ label }) },
     ),

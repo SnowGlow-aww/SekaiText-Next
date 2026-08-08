@@ -234,13 +234,15 @@ func (h *Handler) ResolveLabel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	storyType, index, indexLabel, chapter, ok := h.lm.ResolveLabel(req.Label)
+	storyType, index, indexLabel, chapter, ok, matchKind, reason := h.lm.ResolveLabelDetailed(req.Label)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         ok,
 		"storyType":  storyType,
 		"index":      index,
 		"indexLabel": indexLabel,
 		"chapter":    chapter,
+		"matchKind":  matchKind,
+		"reason":     reason,
 	})
 }
 
@@ -606,13 +608,14 @@ var live2dAllowedHosts = []string{
 // 镜像回源会把音频持久化进自家 OSS 桶白吃存储（桶里曾因此长出 43MB 的
 // sekai-jp-assets/sound/；用户拍板：背景等图片可以镜像，只有音频不写）。
 // Non-exmeaning URLs (sekai.best model_list/motion) pass through unchanged.
-func live2dCDNUpstream(url string) string {
-	const exm = "https://storage2.exmeaning.com/"
-	const cdn = "https://sakimizuki.accr.cc/"
-	if rest, ok := strings.CutPrefix(url, exm); ok && !strings.Contains(rest, "/sound/") {
-		return cdn + rest
+func live2dCDNUpstream(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "storage2.exmeaning.com") ||
+		(u.Port() != "" && u.Port() != "443") || strings.HasPrefix(u.Path, "/sekai-jp-assets/sound/") {
+		return rawURL
 	}
-	return url
+	u.Host = "sakimizuki.accr.cc"
+	return u.String()
 }
 
 // live2dLocalPath maps an upstream CDN asset URL to its path inside the local
@@ -624,34 +627,20 @@ func live2dCDNUpstream(url string) string {
 //	exmeaning  .../live2d/model/{rest}        -> {root}/model/{rest}
 //	sekai.best .../live2d/motion/{rest}       -> {root}/motion/{rest}
 //	either     .../live2d/model_list.json     -> {root}/model_list.json
-func live2dLocalPath(root, url string) string {
+func live2dLocalPath(root, rawURL string) string {
 	if root == "" {
 		return ""
 	}
-	// Strip protocol+host, keep the path.
-	noScheme := url
-	if i := strings.Index(noScheme, "://"); i >= 0 {
-		noScheme = noScheme[i+3:]
-	}
-	slash := strings.IndexByte(noScheme, '/')
-	if slash < 0 {
+	rel, ok := live2dMirrorRelativePath(rawURL)
+	if !ok {
 		return ""
 	}
-	path := noScheme[slash+1:] // e.g. sekai-live2d-assets/live2d/model/...
-	// Find the "live2d/" segment and take everything after it.
-	marker := "live2d/"
-	idx := strings.Index(path, marker)
-	if idx < 0 {
+	canonicalRoot := live2dRootKey(root)
+	local := filepath.Join(canonicalRoot, filepath.FromSlash(rel))
+	if !live2dPathWithinRoot(canonicalRoot, local) {
 		return ""
 	}
-	rest := path[idx+len(marker):] // model/... | motion/... | model_list.json
-	if rest == "" || strings.Contains(rest, "..") {
-		return ""
-	}
-	if rest == "model_list.json" || strings.HasPrefix(rest, "model/") || strings.HasPrefix(rest, "motion/") {
-		return filepath.Join(root, filepath.FromSlash(rest))
-	}
-	return ""
+	return local
 }
 
 // Live2DProxy streams a Live2D asset (model3.json / moc3 / textures / motions)
@@ -663,37 +652,31 @@ func live2dLocalPath(root, url string) string {
 // Local-first: if the asset exists in the local mirror (config.Live2DLocalDir),
 // it is served from disk and the CDN is not contacted at all.
 func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("url")
-	if url == "" {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
 		writeError(w, http.StatusBadRequest, "missing url")
 		return
 	}
-	if !live2dHostAllowed(url) {
+	if !live2dHostAllowed(rawURL) {
 		writeError(w, http.StatusForbidden, "url host not allowed")
 		return
 	}
 
-	// Try the local mirror first.
-	if local := live2dLocalPath(h.cfg.Live2DLocalDir, url); local != "" {
-		if info, err := os.Stat(local); err == nil && !info.IsDir() && info.Size() > 0 {
-			if info.Size() > maxLive2DAssetBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "live2d asset exceeds response limit")
-				return
-			}
-			if live2dCachedFileValid(local, url) {
-				f, err := os.Open(local)
-				if err != nil {
-					writeError(w, http.StatusInternalServerError, "open local live2d asset: "+err.Error())
-					return
-				}
-				defer f.Close()
-				w.Header().Set("Content-Type", live2dContentType(local))
-				w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
-				w.Header().Set("X-Live2D-Source", "local")
-				w.WriteHeader(http.StatusOK)
-				io.Copy(w, f)
-				return
-			}
+	// Try the local mirror first. The helper reads, bounds, validates, and returns
+	// the exact bytes that are served, so a later file mutation cannot turn a
+	// validated cache hit into an unvalidated response.
+	if local := live2dLocalPath(h.cfg.Live2DLocalDir, rawURL); local != "" {
+		if body, err := live2dReadCachedFile(h.cfg.Live2DLocalDir, local, rawURL); err == nil {
+			w.Header().Set("Content-Type", live2dContentType(rawURL))
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Live2D-Source", "local")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+			return
+		} else if errors.Is(err, errLive2DAssetTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "live2d asset exceeds response limit")
+			return
 		}
 	}
 
@@ -701,8 +684,13 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 	// above only vets the INITIAL url, so a compromised/misconfigured CDN returning a
 	// 3xx to an internal address (169.254.169.254, 127.0.0.1, …) would otherwise be
 	// followed by the shared downloader — the same SSRF the sync path guards against.
-	// live2dSyncHTTP re-runs live2dHostAllowed on every redirect hop.
-	resp, err := live2dSyncHTTP.Get(live2dCDNUpstream(url))
+	// live2dSyncHTTP re-runs the complete host/port/path policy on every redirect hop.
+	upstreamURL := live2dCDNUpstream(rawURL)
+	if !live2dHostAllowed(upstreamURL) {
+		writeError(w, http.StatusBadGateway, "upstream URL is not an allowed Live2D path")
+		return
+	}
+	resp, err := live2dSyncHTTP.Get(upstreamURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+err.Error())
 		return
@@ -717,13 +705,14 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "upstream asset invalid: "+err.Error())
 		return
 	}
-	if !live2dAssetBodyValid(url, body) {
+	if !live2dAssetBodyValid(rawURL, body) {
 		writeError(w, http.StatusBadGateway, "upstream response content does not match asset type")
 		return
 	}
 
-	w.Header().Set("Content-Type", live2dContentType(url))
+	w.Header().Set("Content-Type", live2dContentType(rawURL))
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Live2D-Source", "cdn")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
@@ -741,6 +730,10 @@ func live2dContentType(path string) string {
 		return "application/json"
 	case strings.HasSuffix(path, ".png"):
 		return "image/png"
+	case strings.HasSuffix(path, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(path, ".mp3"):
+		return "audio/mpeg"
 	case strings.HasSuffix(path, ".moc3"):
 		return "application/octet-stream"
 	default:

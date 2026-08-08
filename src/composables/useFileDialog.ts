@@ -37,7 +37,7 @@ export function useFileDialog() {
       const result = await api.translationLoad(path)
       return { talks: result.talks, meta: result.meta, filePath: path }
     } else {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const input = document.createElement('input')
         input.type = 'file'
         input.accept = '.txt'
@@ -48,8 +48,11 @@ export function useFileDialog() {
             const content = await file.text()
             const result = await api.translationLoadContent(content)
             resolve({ talks: result.talks, meta: result.meta, fileName: file.name })
-          } catch {
-            resolve(null)
+          } catch (error) {
+            // A selected file that cannot be read or parsed is a real open
+            // failure, not picker cancellation. Reject so EditorPage can keep
+            // the current document and show its normal “打开失败” feedback.
+            reject(error)
           }
         }
         // The file picker fires no `change` event when the user cancels, so the

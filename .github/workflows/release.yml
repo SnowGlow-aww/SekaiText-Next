@@ -135,7 +135,7 @@ jobs:
           repository: SnowGlow-aww/SekaiTools-Avalonia
           # Pin the exact engine revision used by this app release. Moving-branch checkouts
           # can silently bundle a different sidecar when a rerun happens days later.
-          ref: 74035f5d70ccab0442ebe667155edde686c8e683
+          ref: b9f773dca5c77173e7d5e98a8329ec67bcbc7a39
           path: engine-src
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -149,7 +149,15 @@ export const api = {
 
   resolveLabel: (label: string) => capabilities.isAndroid
     ? mobileCore.resolveStoryLabel(label)
-    : request<{ ok: boolean; storyType: string; index: string; indexLabel: string; chapter: number }>(
+    : request<{
+      ok: boolean
+      storyType: string
+      index: string
+      indexLabel: string
+      chapter: number
+      matchKind?: 'exact' | 'legacy'
+      reason?: 'not-found' | 'exact-ambiguous' | 'legacy-ambiguous'
+    }>(
       '/story/resolve-label',
       { method: 'POST', body: JSON.stringify({ label }) },
     ),

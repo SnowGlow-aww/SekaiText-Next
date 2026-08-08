@@ -12,13 +12,16 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,13 +43,16 @@ import (
 // on-disk location. model_list + motion stay on sekai.best — it sits behind
 // Cloudflare and can't be mirror-fetched from the mainland.
 const (
-	live2dSekaiBest           = "https://storage.sekai.best/sekai-live2d-assets"
-	live2dExmeaning           = "https://sakimizuki.accr.cc/sekai-jp-assets"
-	maxLive2DAssetBytes int64 = 128 << 20
-	live2dTaskGrace           = 5 * time.Minute
-	live2dTaskMaxAge          = 60 * time.Minute
-	live2dTaskSweep           = time.Minute
+	live2dSekaiBest               = "https://storage.sekai.best/sekai-live2d-assets"
+	live2dExmeaning               = "https://sakimizuki.accr.cc/sekai-jp-assets"
+	maxLive2DAssetBytes     int64 = 128 << 20
+	maxLive2DMPEGFrameBytes       = 16 << 10
+	live2dTaskGrace               = 5 * time.Minute
+	live2dTaskMaxAge              = 60 * time.Minute
+	live2dTaskSweep               = time.Minute
 )
+
+var errLive2DAssetTooLarge = errors.New("live2d asset exceeds response limit")
 
 type live2dSyncTask struct {
 	progress   *model.Live2DSyncProgress
@@ -724,14 +730,14 @@ func (h *Handler) live2dFetchOnce(ctx context.Context, url string) ([]byte, erro
 
 func readLive2DBoundedBody(r io.Reader, contentLength, limit int64) ([]byte, error) {
 	if contentLength > limit {
-		return nil, fmt.Errorf("response exceeds %d byte limit", limit)
+		return nil, fmt.Errorf("%w: %d byte limit", errLive2DAssetTooLarge, limit)
 	}
 	body, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("response exceeds %d byte limit", limit)
+		return nil, fmt.Errorf("%w: %d byte limit", errLive2DAssetTooLarge, limit)
 	}
 	return body, nil
 }
@@ -747,6 +753,10 @@ func live2dAssetBodyValid(rawURL string, body []byte) bool {
 		return json.Valid(body)
 	case strings.HasSuffix(path, ".png"):
 		return len(body) >= 8 && string(body[:8]) == "\x89PNG\r\n\x1a\n"
+	case strings.HasSuffix(path, ".webp"):
+		return live2dWebPBodyValid(body)
+	case strings.HasSuffix(path, ".mp3"):
+		return live2dMP3BodyValid(body)
 	case strings.HasSuffix(path, ".moc3"):
 		return len(body) >= 4 && string(body[:4]) == "MOC3"
 	default:
@@ -754,13 +764,271 @@ func live2dAssetBodyValid(rawURL string, body []byte) bool {
 	}
 }
 
-func live2dCachedFileValid(path, rawURL string) bool {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxLive2DAssetBytes {
+// live2dWebPBodyValid parses every RIFF chunk and requires one complete static
+// VP8 or VP8L image chunk. VP8X-only shells, animated containers, malformed
+// image headers, truncated chunks, and trailing bytes are rejected.
+func live2dWebPBodyValid(body []byte) bool {
+	if len(body) < 20 || string(body[:4]) != "RIFF" || string(body[8:12]) != "WEBP" {
 		return false
 	}
-	body, err := os.ReadFile(path)
-	return err == nil && live2dAssetBodyValid(rawURL, body)
+	riffEnd := uint64(binary.LittleEndian.Uint32(body[4:8])) + 8
+	if riffEnd != uint64(len(body)) {
+		return false
+	}
+
+	foundImage := false
+	for offset := uint64(12); offset < riffEnd; {
+		if riffEnd-offset < 8 {
+			return false
+		}
+		chunkSize := uint64(binary.LittleEndian.Uint32(body[offset+4 : offset+8]))
+		dataStart := offset + 8
+		dataEnd := dataStart + chunkSize
+		if dataEnd < dataStart || dataEnd > riffEnd {
+			return false
+		}
+		chunk := body[dataStart:dataEnd]
+		switch string(body[offset : offset+4]) {
+		case "VP8X":
+			if len(chunk) != 10 || chunk[0]&0x02 != 0 {
+				return false
+			}
+		case "VP8 ":
+			if foundImage || !live2dVP8ChunkValid(chunk) {
+				return false
+			}
+			foundImage = true
+		case "VP8L":
+			if foundImage || !live2dVP8LChunkValid(chunk) {
+				return false
+			}
+			foundImage = true
+		}
+		offset = dataEnd + chunkSize%2
+		if offset > riffEnd {
+			return false
+		}
+	}
+	return foundImage
+}
+
+func live2dVP8ChunkValid(chunk []byte) bool {
+	if len(chunk) < 11 || chunk[0]&1 != 0 || string(chunk[3:6]) != "\x9d\x01\x2a" {
+		return false
+	}
+	frameTag := uint32(chunk[0]) | uint32(chunk[1])<<8 | uint32(chunk[2])<<16
+	firstPartitionSize := uint64(frameTag >> 5)
+	width := binary.LittleEndian.Uint16(chunk[6:8]) & 0x3fff
+	height := binary.LittleEndian.Uint16(chunk[8:10]) & 0x3fff
+	return width > 0 && height > 0 && firstPartitionSize >= 4 && firstPartitionSize <= uint64(len(chunk)-10)
+}
+
+func live2dVP8LChunkValid(chunk []byte) bool {
+	if len(chunk) < 10 || chunk[0] != 0x2f {
+		return false
+	}
+	header := binary.LittleEndian.Uint32(chunk[1:5])
+	return header>>29 == 0
+}
+
+// live2dMP3BodyValid parses an optional ID3v2 tag, then requires a complete MPEG
+// audio frame whose size is computed from its version, layer, bitrate, sample
+// rate, and padding fields. ID3-only and four-byte frame-header shells fail.
+func live2dMP3BodyValid(body []byte) bool {
+	offset := 0
+	if len(body) >= 3 && string(body[:3]) == "ID3" {
+		var ok bool
+		offset, ok = live2dID3v2End(body)
+		if !ok {
+			return false
+		}
+	}
+	frameLength, ok := live2dMPEGFrameLength(body[offset:])
+	return ok && frameLength <= len(body)-offset
+}
+
+func live2dID3v2End(body []byte) (int, bool) {
+	if len(body) < 10 || string(body[:3]) != "ID3" {
+		return 0, false
+	}
+	version := body[3]
+	if version < 2 || version > 4 || body[4] == 0xff {
+		return 0, false
+	}
+	switch version {
+	case 2:
+		if body[5]&0x3f != 0 {
+			return 0, false
+		}
+	case 3:
+		if body[5]&0x1f != 0 {
+			return 0, false
+		}
+	case 4:
+		if body[5]&0x0f != 0 {
+			return 0, false
+		}
+	}
+	for _, b := range body[6:10] {
+		if b&0x80 != 0 {
+			return 0, false
+		}
+	}
+	tagSize := int(body[6])<<21 | int(body[7])<<14 | int(body[8])<<7 | int(body[9])
+	end := 10 + tagSize
+	if version == 4 && body[5]&0x10 != 0 {
+		end += 10
+		if end > len(body) {
+			return 0, false
+		}
+		footer := body[end-10 : end]
+		if string(footer[:3]) != "3DI" || footer[3] != body[3] || footer[4] != body[4] ||
+			footer[5] != body[5] || !bytesEqual(footer[6:10], body[6:10]) {
+			return 0, false
+		}
+	}
+	return end, end <= len(body)
+}
+
+func live2dMPEGFrameLength(body []byte) (int, bool) {
+	if len(body) < 4 || body[0] != 0xff || body[1]&0xe0 != 0xe0 || body[3]&0x03 == 0x02 {
+		return 0, false
+	}
+	versionBits := (body[1] >> 3) & 0x03
+	layerBits := (body[1] >> 1) & 0x03
+	bitrateIndex := (body[2] >> 4) & 0x0f
+	sampleRateIndex := (body[2] >> 2) & 0x03
+	if versionBits == 1 || layerBits == 0 || bitrateIndex == 0 || bitrateIndex == 0x0f || sampleRateIndex == 3 {
+		return 0, false
+	}
+
+	var sampleRates [3]int
+	switch versionBits {
+	case 3:
+		sampleRates = [3]int{44100, 48000, 32000}
+	case 2:
+		sampleRates = [3]int{22050, 24000, 16000}
+	case 0:
+		sampleRates = [3]int{11025, 12000, 8000}
+	}
+	sampleRate := sampleRates[sampleRateIndex]
+	bitrate := live2dMPEGBitrate(versionBits, layerBits, bitrateIndex) * 1000
+	if bitrate == 0 {
+		return 0, false
+	}
+	padding := int((body[2] >> 1) & 1)
+	var frameLength int
+	switch layerBits {
+	case 3: // Layer I
+		frameLength = (12*bitrate/sampleRate + padding) * 4
+	case 2: // Layer II
+		frameLength = 144*bitrate/sampleRate + padding
+	case 1: // Layer III
+		coefficient := 144
+		if versionBits != 3 {
+			coefficient = 72
+		}
+		frameLength = coefficient*bitrate/sampleRate + padding
+	}
+	return frameLength, frameLength >= 4 && frameLength <= maxLive2DMPEGFrameBytes
+}
+
+func live2dMPEGBitrate(versionBits, layerBits, bitrateIndex byte) int {
+	index := int(bitrateIndex)
+	if versionBits == 3 {
+		switch layerBits {
+		case 3:
+			return [...]int{0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448}[index]
+		case 2:
+			return [...]int{0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384}[index]
+		case 1:
+			return [...]int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}[index]
+		}
+	}
+	if layerBits == 3 {
+		return [...]int{0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256}[index]
+	}
+	return [...]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}[index]
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func live2dPathWithinRoot(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func live2dReadCachedFile(root, path, rawURL string) ([]byte, error) {
+	if root == "" || path == "" {
+		return nil, os.ErrNotExist
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	canonicalRoot := live2dRootKey(root)
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	var rel string
+	switch {
+	case live2dPathWithinRoot(absoluteRoot, absolutePath):
+		rel, err = filepath.Rel(absoluteRoot, absolutePath)
+	case live2dPathWithinRoot(canonicalRoot, absolutePath):
+		rel, err = filepath.Rel(canonicalRoot, absolutePath)
+	default:
+		return nil, fmt.Errorf("cached live2d asset escapes configured root")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// os.Root resolves each component beneath an opened directory handle and
+	// rejects symlinks that escape it, including concurrent replacement races.
+	rootHandle, err := os.OpenRoot(canonicalRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer rootHandle.Close()
+	f, err := rootHandle.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("cached live2d asset is not a non-empty regular file")
+	}
+	body, err := readLive2DBoundedBody(f, info.Size(), maxLive2DAssetBytes)
+	if err != nil {
+		return nil, err
+	}
+	if !live2dAssetBodyValid(rawURL, body) {
+		return nil, fmt.Errorf("cached live2d asset content does not match asset type")
+	}
+	return body, nil
+}
+
+func live2dCachedFileValid(path, rawURL string, roots ...string) bool {
+	root := filepath.Dir(path)
+	if len(roots) > 0 && roots[0] != "" {
+		root = roots[0]
+	}
+	_, err := live2dReadCachedFile(root, path, rawURL)
+	return err == nil
 }
 
 // live2dSekaiFallback maps an exmeaning/CDN model-body URL to its sekai.best
@@ -798,7 +1066,7 @@ func (h *Handler) live2dDownload(ctx context.Context, task *model.Live2DSyncProg
 		return err
 	}
 	defer unlock()
-	if live2dCachedFileValid(dst, url) {
+	if live2dCachedFileValid(dst, url, root) {
 		return nil
 	}
 	body, err := h.live2dFetch(ctx, url)
@@ -814,6 +1082,11 @@ func (h *Handler) live2dStore(task *model.Live2DSyncProgress, root, url string, 
 	dst := live2dLocalPath(root, url)
 	if dst == "" {
 		return fmt.Errorf("url not mirrorable: %s", url)
+	}
+	canonicalRoot := live2dRootKey(root)
+	canonicalParent := live2dRootKey(filepath.Dir(dst))
+	if !live2dPathWithinRoot(canonicalRoot, canonicalParent) {
+		return fmt.Errorf("live2d mirror destination escapes configured root")
 	}
 	if err := fsutil.WriteFileAtomic(dst, body, 0o644); err != nil {
 		return err
@@ -895,7 +1168,7 @@ func (h *Handler) live2dFetchAndMirror(ctx context.Context, task *model.Live2DSy
 		return nil, err
 	}
 	defer unlock()
-	if data, err := os.ReadFile(dst); err == nil && live2dAssetBodyValid(url, data) {
+	if data, err := live2dReadCachedFile(root, dst, url); err == nil {
 		return data, nil
 	}
 	body, err := h.live2dFetch(ctx, url)
@@ -952,22 +1225,130 @@ func validateLive2DModelList(entries []live2dModelListEntry) ([]live2dModelRef, 
 	return unique, nil
 }
 
-// live2dHostAllowed reports whether rawURL targets a known Live2D asset CDN.
-// Parsing instead of string-prefix matching prevents hosts such as
-// storage.sekai.best.attacker.invalid from passing the check.
+// live2dHostAllowed enforces the complete proxy policy: exact HTTPS origin
+// (default port 443 only), canonical path, and a reviewed Live2D/scenario-media
+// path family. Redirects call the same function for every hop.
 func live2dHostAllowed(rawURL string) bool {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
+		u.Fragment != "" || u.RawQuery != "" || u.RawPath != "" || u.Path == "" ||
+		strings.Contains(u.Path, "\\") || pathpkg.Clean(u.Path) != u.Path {
 		return false
 	}
+
 	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	originAllowed := false
 	for _, allowed := range live2dAllowedHosts {
-		a, err := url.Parse(allowed)
-		if err == nil && hostname == strings.ToLower(a.Hostname()) {
+		a, parseErr := url.Parse(allowed)
+		if parseErr != nil {
+			continue
+		}
+		allowedPort := a.Port()
+		if allowedPort == "" {
+			allowedPort = "443"
+		}
+		if hostname == strings.ToLower(a.Hostname()) && port == allowedPort {
+			originAllowed = true
+			break
+		}
+	}
+	return originAllowed && live2dPathAllowed(hostname, u.Path)
+}
+
+func live2dPathAllowed(hostname, path string) bool {
+	switch hostname {
+	case "storage.sekai.best":
+		return live2dLive2DPathAllowed(path, "/sekai-live2d-assets/live2d/") ||
+			live2dJPAssetPathAllowed(path, "/sekai-jp-assets/")
+	case "sakimizuki.accr.cc", "storage2.exmeaning.com", "storage.exmeaning.com":
+		return live2dJPAssetPathAllowed(path, "/sekai-jp-assets/")
+	case "assets.unipjsk.com":
+		return live2dStorySourcePathAllowed(path, "")
+	case "sekai-assets-bdf29c81.seiunx.net":
+		return live2dStorySourcePathAllowed(path, "/jp-assets")
+	default:
+		return false
+	}
+}
+
+func live2dLive2DPathAllowed(path, prefix string) bool {
+	if path == prefix+"model_list.json" {
+		return true
+	}
+	return live2dPathHasExtension(path, prefix+"model/", ".json", ".model3", ".physics3", ".moc3", ".png", ".webp") ||
+		live2dPathHasExtension(path, prefix+"motion/", ".json", ".motion3")
+}
+
+func live2dJPAssetPathAllowed(path, prefix string) bool {
+	return live2dPathHasExtension(path, prefix+"live2d/model/", ".json", ".model3", ".physics3", ".moc3", ".png", ".webp") ||
+		live2dPathHasExtension(path, prefix+"scenario/background/", ".webp") ||
+		live2dPathHasExtension(path, prefix+"sound/scenario/bgm/", ".mp3") ||
+		live2dPathHasExtension(path, prefix+"sound/scenario/voice/", ".mp3") ||
+		live2dPathHasExtension(path, prefix+"sound/card_scenario/voice/", ".mp3") ||
+		live2dPathHasExtension(path, prefix+"character/member/", ".json") ||
+		live2dPathHasExtension(path, prefix+"event_story/", ".json") ||
+		live2dPathHasExtension(path, prefix+"scenario/unitstory/", ".json") ||
+		live2dPathHasExtension(path, prefix+"scenario/actionset/", ".json") ||
+		live2dPathHasExtension(path, prefix+"scenario/special/", ".json")
+}
+
+func live2dStorySourcePathAllowed(path, prefix string) bool {
+	return live2dPathHasExtension(path, prefix+"/startapp/character/member/", ".json") ||
+		live2dPathHasExtension(path, prefix+"/ondemand/event_story/", ".json") ||
+		live2dPathHasExtension(path, prefix+"/startapp/scenario/unitstory/", ".json") ||
+		live2dPathHasExtension(path, prefix+"/startapp/scenario/actionset/", ".json") ||
+		live2dPathHasExtension(path, prefix+"/startapp/scenario/special/", ".json")
+}
+
+func live2dPathHasExtension(path, prefix string, extensions ...string) bool {
+	if !strings.HasPrefix(path, prefix) || len(path) == len(prefix) {
+		return false
+	}
+	rel := strings.TrimPrefix(path, prefix)
+	if !live2dSafeModelPath(rel) {
+		return false
+	}
+	lower := strings.ToLower(path)
+	for _, extension := range extensions {
+		if strings.HasSuffix(lower, extension) {
 			return true
 		}
 	}
 	return false
+}
+
+func live2dMirrorRelativePath(rawURL string) (string, bool) {
+	if !live2dHostAllowed(rawURL) {
+		return "", false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+	var prefix string
+	switch strings.ToLower(u.Hostname()) {
+	case "storage.sekai.best":
+		prefix = "/sekai-live2d-assets/live2d/"
+	case "sakimizuki.accr.cc", "storage2.exmeaning.com", "storage.exmeaning.com":
+		prefix = "/sekai-jp-assets/live2d/"
+	default:
+		return "", false
+	}
+	if !strings.HasPrefix(u.Path, prefix) {
+		return "", false
+	}
+	rel := strings.TrimPrefix(u.Path, prefix)
+	if rel == "model_list.json" {
+		return rel, true
+	}
+	if (strings.HasPrefix(rel, "model/") || strings.HasPrefix(rel, "motion/")) && live2dSafeModelPath(rel) {
+		return rel, true
+	}
+	return "", false
 }
 
 // live2dModelComplete reports whether dir holds a fully-mirrored model body: the
@@ -981,8 +1362,8 @@ func live2dHostAllowed(rawURL string) bool {
 // and a motionless model is still usable (matches live2dSyncModel's "never fatal").
 func live2dModelComplete(dir, modelFile string) bool {
 	bmdPath := filepath.Join(dir, "buildmodeldata.json")
-	bmdBody, err := os.ReadFile(bmdPath)
-	if err != nil || !live2dAssetBodyValid("buildmodeldata.json", bmdBody) {
+	bmdBody, err := live2dReadCachedFile(dir, bmdPath, "buildmodeldata.json")
+	if err != nil {
 		return false
 	}
 	var bmd live2dBuildModelData
@@ -995,8 +1376,8 @@ func live2dModelComplete(dir, modelFile string) bool {
 	}
 	model3Name := baseName + ".model3"
 	model3Path := filepath.Join(dir, model3Name)
-	model3Body, err := os.ReadFile(model3Path)
-	if err != nil || !live2dAssetBodyValid(model3Name, model3Body) {
+	model3Body, err := live2dReadCachedFile(dir, model3Path, model3Name)
+	if err != nil {
 		return false
 	}
 	var m3 live2dModel3
@@ -1008,7 +1389,7 @@ func live2dModelComplete(dir, modelFile string) bool {
 		if !live2dSafeModelPath(rel) {
 			return false
 		}
-		return live2dCachedFileValid(filepath.Join(dir, filepath.FromSlash(rel)), rel)
+		return live2dCachedFileValid(filepath.Join(dir, filepath.FromSlash(rel)), rel, dir)
 	}
 	if !validAsset(baseName + ".moc3") {
 		return false

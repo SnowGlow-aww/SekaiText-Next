@@ -54,6 +54,7 @@ describe('Android recovery storage', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     localStorage.clear()
     Object.defineProperty(window, '__SEKAI_PLATFORM__', {
       configurable: true,
@@ -113,6 +114,43 @@ describe('Android recovery storage', () => {
     await expect(saveRecovery(recoveryRequest())).rejects.toMatchObject({ name: 'QuotaExceededError' })
     expect(localStorage.getItem(MOBILE_RECOVERY_KEY)).toBeNull()
     expect(localStorage.getItem(RAW_RECOVERY_KEY)).toBeNull()
+  })
+
+  it('propagates IndexedDB clear failures and leaves recovery cleanup pending for retry', async () => {
+    const deleteError = new Error('IndexedDB delete failed')
+    const database = {
+      objectStoreNames: { contains: () => true },
+      transaction: vi.fn(() => {
+        const request: Record<string, any> = { error: deleteError }
+        const transaction: Record<string, any> = {
+          error: deleteError,
+          objectStore: () => ({
+            delete: () => {
+              queueMicrotask(() => request.onerror?.())
+              return request
+            },
+          }),
+        }
+        return transaction
+      }),
+      close: vi.fn(),
+    }
+    const indexedDBMock = {
+      open: vi.fn(() => {
+        const request: Record<string, any> = { result: database, error: null }
+        queueMicrotask(() => request.onsuccess?.())
+        return request
+      }),
+    }
+    vi.stubGlobal('indexedDB', indexedDBMock)
+    localStorage.setItem(MOBILE_RECOVERY_KEY, JSON.stringify({ exists: true, savedAt: new Date().toISOString() }))
+
+    const { clearRecovery, hasPendingRecoveryClear } = await import('../editor/recoveryCoordinator')
+    await expect(clearRecovery()).rejects.toBe(deleteError)
+
+    expect(localStorage.getItem(MOBILE_RECOVERY_KEY)).toBeNull()
+    expect(hasPendingRecoveryClear()).toBe(true)
+    expect(database.close).toHaveBeenCalledOnce()
   })
 
   it('removes an older snapshot when a larger replacement exhausts quota', async () => {

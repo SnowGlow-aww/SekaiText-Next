@@ -359,11 +359,14 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 
 	switch storyType {
 	case StoryLabelMainStory:
-		for _, unit := range mainStory {
+		for unitIdx, unit := range mainStory {
 			name := model.UnitDict[unit.Unit]
 			indices = append(indices, model.StoryIndex{
 				Label: name,
-				Value: name,
+				// GetJsonPath addresses main-story entries by their catalog
+				// position. Keep the display label human-readable, but make the
+				// value round-trip through the same numeric coordinate.
+				Value: strconv.Itoa(unitIdx),
 			})
 		}
 
@@ -380,21 +383,10 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 	case StoryLabelCardSpecial:
 		for i := len(festivals) - 1; i >= 0; i-- {
 			f := festivals[i]
-			var label string
-			if f.Collaboration != "" {
-				label = f.Collaboration
-			} else if f.IsBirthday {
-				idx := f.ID
-				year := 2021 + (idx+2)/4
-				month := (idx+2)%4*3 + 1
-				label = "Birthday " + strconv.Itoa(year) + " " + padZero(month) + "-" + padZero(month+2)
-			} else {
-				idx := f.ID
-				year := 2021 + idx/4
-				month := idx%4*3 + 1
-				label = "Festival " + strconv.Itoa(year) + " " + padZero(month)
-			}
-			indices = append(indices, model.StoryIndex{Label: label, Value: strconv.Itoa(len(festivals) - 1 - i)})
+			indices = append(indices, model.StoryIndex{
+				Label: festivalIndexLabel(f),
+				Value: strconv.Itoa(len(festivals) - 1 - i),
+			})
 		}
 
 	case StoryLabelCardInit, StoryLabelCardUpgrade:
@@ -469,8 +461,8 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 
 	switch storyType {
 	case StoryLabelMainStory:
-		unitIdx := idx
-		if unitIdx >= 0 && unitIdx < len(mainStory) {
+		unitIdx, valid := mainStoryIndex(mainStory, index)
+		if valid {
 			for ci, chapter := range mainStory[unitIdx].Chapters {
 				var epNo int
 				if unitIdx == 0 {
@@ -513,9 +505,6 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 					)
 				}
 			}
-			if len(chapters) > 0 {
-				chapters = chapters[:len(chapters)-1]
-			}
 		}
 
 	case StoryLabelCardSpecial:
@@ -534,9 +523,6 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 						model.StoryChapter{Number: n + 2, Label: "-"},
 					)
 				}
-			}
-			if len(chapters) > 0 {
-				chapters = chapters[:len(chapters)-1]
 			}
 		}
 
@@ -657,15 +643,12 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 
 	switch storyType {
 	case StoryLabelMainStory:
-		unitIdx := idx
-		if unitIdx < 0 || unitIdx >= len(mainStory) {
+		unitIdx, valid := mainStoryIndex(mainStory, index)
+		if !valid {
 			return model.JsonPathResult{}
 		}
 		unit := mainStory[unitIdx]
 		ch := unit.Chapters
-		if unitIdx == 0 {
-			chapterIdx = (chapterIdx + 1) * 4 / 5
-		}
 		if chapterIdx < 0 || chapterIdx >= len(ch) {
 			return model.JsonPathResult{}
 		}
@@ -698,7 +681,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		return model.JsonPathResult{
 			URL:          url,
 			FileName:     chapter + ".json",
-			SaveTitle:    strings.Join(lm.processChapterID(lm.eventReverseIndex(ev), strings.Split(chapter, "_")[1:]), "-"),
+			SaveTitle:    lm.eventChapterSaveTitle(ev, ev.Chapters[chapterIdx]),
 			ChapterTitle: ev.Chapters[chapterIdx].Title,
 		}
 
@@ -800,7 +783,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		// The index dropdown emits contiguous Values 0..25, so idx maps directly
 		// to CharacterDict[idx]; the 1-based card character id is idx+1.
 		charId := idx + 1
-		if charId < 1 || charId > len(model.CharacterDict) {
+		if charId < 1 || charId > 26 || charId > len(model.CharacterDict) {
 			return model.JsonPathResult{}
 		}
 		var levelupcards []int
@@ -810,36 +793,11 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 				break
 			}
 		}
-		if levelupcards == nil {
+		cardSlot, valid := upgradeCardSlotIndex(idx, chapterIdx, len(levelupcards))
+		if !valid {
 			return model.JsonPathResult{}
 		}
-		if charId < 1 || charId > len(levelupcards) {
-			return model.JsonPathResult{}
-		}
-		cardID := levelupcards[charId-1]
-		// Virtual singer special VS chapters
-		if charId >= 21 && chapterIdx > 2 {
-			vsIdx := 30 - 6 + chapterIdx/3
-			var lvIdx int
-			if charId == 22 { // Rin
-				lvIdx = len(model.CharacterDict) - 4
-			} else if charId == 23 { // Len
-				lvIdx = len(model.CharacterDict) - 3
-			} else if charId == 24 { // MEIKO
-				lvIdx = len(model.CharacterDict) - 5
-			} else if charId == 25 { // KAITO
-				lvIdx = len(model.CharacterDict) - 2
-			} else if charId == 26 { // Miku_band
-				lvIdx = len(model.CharacterDict) - 1
-			} else { // Miku (21)
-				lvIdx = vsIdx
-			}
-			// Guard against a short/partial levelup festival card list.
-			if lvIdx < 0 || lvIdx >= len(levelupcards) {
-				return model.JsonPathResult{}
-			}
-			cardID = levelupcards[lvIdx]
-		}
+		cardID := levelupcards[cardSlot]
 		if cardID < 1 || cardID > len(cards) {
 			return model.JsonPathResult{}
 		}
@@ -964,8 +922,12 @@ func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) []Cha
 		}
 
 		// Filter by type
+		// AddEventID == 1 is the initial-release boundary in the production
+		// catalog. Keep it in exactly one candidate set: initial. Upgrade
+		// begins with the following event so a cold TalkID identity cannot be
+		// surfaced by both navigators.
 		isInit := talkType == "init" && at.AddEventID <= 1 && at.Type != "limited"
-		isUpgrade := talkType == "upgrade" && at.AddEventID > 0 && at.Type != "limited"
+		isUpgrade := talkType == "upgrade" && at.AddEventID > 1 && at.Type != "limited"
 		isExtra := talkType == "extra" && at.Type == "limited"
 
 		if !isInit && !isUpgrade && !isExtra {
@@ -989,6 +951,27 @@ func parseIndex(index string) int {
 	return i
 }
 
+// mainStoryIndex accepts the current numeric catalog coordinate and the old
+// display-name value emitted by pre-5.9.8 clients. New index options use the
+// numeric value; a unique legacy name remains loadable, while duplicate legacy
+// labels fail closed instead of selecting the first catalog entry.
+func mainStoryIndex(mainStory []MainStoryEntry, index string) (int, bool) {
+	if i, err := strconv.Atoi(strings.TrimSpace(index)); err == nil {
+		return i, i >= 0 && i < len(mainStory)
+	}
+	matched := -1
+	for i, unit := range mainStory {
+		if index != unit.Unit && index != model.UnitDict[unit.Unit] {
+			continue
+		}
+		if matched >= 0 {
+			return 0, false
+		}
+		matched = i
+	}
+	return matched, matched >= 0
+}
+
 func padZero(n int) string {
 	if n < 10 {
 		return "0" + strconv.Itoa(n)
@@ -1010,60 +993,317 @@ func (lm *ListManager) eventReverseIndex(ev *EventEntry) int {
 	return 0
 }
 
-// ResolveLabel reverse-maps a filename label (the SaveTitle segment, e.g.
-// "3rd-group3-01" or "198-06") back to the story coordinates GetJsonPath needs.
-// Returns storyType, index (event ID as string), indexLabel, chapterIdx (0-based)
-// and ok. indexLabel 是索引下拉框的完整标签（"<ID> <标题>"），文稿目录用它命名——
-// 只回裸 ID 会让同一活动出现「208」和「208 褪せない今を、彩って」两个文件夹。
-// Only event stories are resolved; other label shapes return ok=false so the
-// caller falls back to manual selection.
-func (lm *ListManager) ResolveLabel(label string) (storyType, index, indexLabel string, chapterIdx int, ok bool) {
+type storyLabelResolution struct {
+	storyType  string
+	index      string
+	indexLabel string
+	chapter    int
+}
+
+func canonicalIdentityMatches(identity, saveTitle, chapterTitle string) bool {
+	identity = strings.TrimSpace(identity)
+	saveTitle = strings.TrimSpace(saveTitle)
+	chapterTitle = strings.TrimSpace(chapterTitle)
+	if identity == "" || saveTitle == "" {
+		return false
+	}
+	if chapterTitle == "" {
+		return identity == saveTitle
+	}
+	if identity == saveTitle+" "+chapterTitle {
+		return true
+	}
+	// Older chapter lists called the third card slot "其他", while GetJsonPath
+	// has always emitted the canonical ChapterTitle "特殊篇". Preserve that one
+	// bounded alias without accepting a chaptered story by SaveTitle alone.
+	return chapterTitle == "特殊篇" && identity == saveTitle+" 其他"
+}
+
+func legacyIdentityMatches(identity, saveTitle string) bool {
+	identity = strings.TrimSpace(identity)
+	saveTitle = strings.TrimSpace(saveTitle)
+	if identity == "" || saveTitle == "" {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(identity, saveTitle+" ")
+	return ok && strings.TrimSpace(suffix) != ""
+}
+
+func appendStoryLabelResolution(resolutions *[]storyLabelResolution, candidate storyLabelResolution) {
+	for _, current := range *resolutions {
+		if current == candidate {
+			return
+		}
+	}
+	*resolutions = append(*resolutions, candidate)
+}
+
+func appendStoryLabelMatch(
+	exactResolutions, legacyResolutions *[]storyLabelResolution,
+	identity, saveTitle, chapterTitle string,
+	candidate storyLabelResolution,
+) {
+	if canonicalIdentityMatches(identity, saveTitle, chapterTitle) {
+		appendStoryLabelResolution(exactResolutions, candidate)
+		return
+	}
+	if legacyIdentityMatches(identity, saveTitle) {
+		appendStoryLabelResolution(legacyResolutions, candidate)
+	}
+}
+
+func (lm *ListManager) eventChapterSaveTitle(ev *EventEntry, chapter EventChapter) string {
+	parts := strings.Split(chapter.AssetName, "_")
+	return strings.Join(lm.processChapterID(lm.eventReverseIndex(ev), parts[1:]), "-")
+}
+
+func festivalIndexLabel(f FestivalEntry) string {
+	if f.Collaboration != "" {
+		return f.Collaboration
+	}
+	if f.IsBirthday {
+		year := 2021 + (f.ID+2)/4
+		month := (f.ID+2)%4*3 + 1
+		return "Birthday " + strconv.Itoa(year) + " " + padZero(month) + "-" + padZero(month+2)
+	}
+	year := 2021 + f.ID/4
+	month := f.ID%4*3 + 1
+	return "Festival " + strconv.Itoa(year) + " " + padZero(month)
+}
+
+func canonicalAreaTalkCharacter(entry AreaTalkEntry) (index, indexLabel string, ok bool) {
+	characterID := 0
+	for _, candidate := range entry.CharacterIDs {
+		if candidate >= 1 && candidate <= 26 && (characterID == 0 || candidate < characterID) {
+			characterID = candidate
+		}
+	}
+	if characterID == 0 {
+		return "", "", false
+	}
+	return strconv.Itoa(characterID - 1), model.CharacterDict[characterID-1].NameJ, true
+}
+
+// ResolveLabel reverse-maps the complete canonical filename identity back to
+// GetJsonPath coordinates. Every candidate is generated from the published
+// catalog using the same SaveTitle/ChapterTitle rules as GetJsonPath; nothing is
+// inferred from a first whitespace-delimited token. A unique exact match is
+// required. Card identities without a chapter, duplicate special titles, and
+// duplicate area-talk TalkIDs therefore fail closed instead of loading another
+// story. Cold area talks use the deterministic "character" sort (the frontend
+// supplies it for the three area-talk labels) and the lowest valid participant.
+func (lm *ListManager) ResolveLabelDetailed(label string) (storyType, index, indexLabel string, chapterIdx int, ok bool, matchKind, reason string) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return "", "", "", 0, false
+	identity := strings.TrimSpace(label)
+	if identity == "" {
+		return "", "", "", 0, false, "", "not-found"
 	}
 
 	events := lm.Events
+	cards := lm.Cards
+	festivals := lm.Festivals
+	mainStory := lm.MainStory
+	areaTalks := lm.AreaTalks
+	specials := lm.Specials
+	exactResolutions := make([]storyLabelResolution, 0, 2)
+	legacyResolutions := make([]storyLabelResolution, 0, 2)
 
-	// Strategy 1: WL events keep an assetName-derived label (assetName
-	// wl_3rd_group3_01 -> label 3rd-group3-01), so reconstruct "wl_<underscored>"
-	// and match the chapter assetName directly. NOTE: we must NOT try an
-	// "event_<underscored>" candidate here — ordinary-event assetNames are named
-	// by the internal kdyicr id (event_204_01 belongs to the event whose
-	// kdyicr=204, i.e. list position 202), while the numeric label encodes the
-	// 1-based list position. Matching event_<label> would cross-wire the two
-	// numbering schemes (e.g. label "204-01" wrongly loading event 202). Ordinary
-	// events are handled by Strategy 2 instead.
-	underscored := strings.ReplaceAll(label, "-", "_")
-	for _, cand := range []string{"wl_" + underscored, underscored} {
-		for ei := range events {
-			for ci, ch := range events[ei].Chapters {
-				if ch.AssetName == cand {
-					ev := &events[ei]
-					return StoryLabelEvent, strconv.Itoa(ev.ID), strconv.Itoa(ev.ID) + " " + ev.Title, ci, true
+	// Activity stories, including World Link, are matched against the exact
+	// SaveTitle transformation used by GetJsonPath. This avoids crossing ordinary
+	// event reverse indices with kdyicr IDs while still accepting WL asset labels.
+	for eventIdx := range events {
+		ev := &events[eventIdx]
+		for chapter := range ev.Chapters {
+			entry := ev.Chapters[chapter]
+			idx := strconv.Itoa(ev.ID)
+			appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, lm.eventChapterSaveTitle(ev, entry), entry.Title, storyLabelResolution{
+				storyType:  StoryLabelEvent,
+				index:      idx,
+				indexLabel: idx + " " + ev.Title,
+				chapter:    chapter,
+			})
+		}
+	}
+
+	// Main-story SaveTitles come from chapter asset names. Navigation and source
+	// loading both use the exact catalog chapter coordinate for every group,
+	// including the 20 VIRTUAL SINGER chapters.
+	for unitIdx, unit := range mainStory {
+		for catalogChapter, chapter := range unit.Chapters {
+			appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, strings.ReplaceAll(chapter.AssetName, "_", "-"), chapter.Title, storyLabelResolution{
+				storyType:  StoryLabelMainStory,
+				index:      strconv.Itoa(unitIdx),
+				indexLabel: model.UnitDict[unit.Unit],
+				chapter:    catalogChapter,
+			})
+		}
+	}
+
+	// Activity cards use only valid card slots, exactly like GetJsonPath.
+	for eventIdx := range events {
+		ev := &events[eventIdx]
+		validSlot := 0
+		for _, cardID := range ev.Cards {
+			if cardID < 1 || cardID > len(cards) {
+				continue
+			}
+			card := cards[cardID-1]
+			if card.CharacterID >= 1 && card.CharacterID <= len(model.CharacterDict) {
+				charName := model.CharacterDict[card.CharacterID-1].Name
+				saveTitle := "event" + padZero3(ev.ID) + "-" + charName
+				for offset := 0; offset < 3; offset++ {
+					chapter := validSlot*3 + offset
+					idx := strconv.Itoa(ev.ID)
+					appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, saveTitle, cardChapterTitle(chapter), storyLabelResolution{
+						storyType:  StoryLabelCardEvent,
+						index:      idx,
+						indexLabel: idx + " " + ev.Title,
+						chapter:    chapter,
+					})
 				}
 			}
+			validSlot++
 		}
 	}
 
-	// Strategy 2: "<eventReverseIndex>-<episode>" (ordinary events). Both parts
-	// numeric: the Nth event in list order, Mth chapter (1-based).
-	parts := strings.Split(label, "-")
-	if len(parts) == 2 {
-		rev, err1 := strconv.Atoi(parts[0])
-		ep, err2 := strconv.Atoi(parts[1])
-		if err1 == nil && err2 == nil && rev >= 1 && rev <= len(events) && ep >= 1 {
-			ev := &events[rev-1]
-			if ep <= len(ev.Chapters) {
-				return StoryLabelEvent, strconv.Itoa(ev.ID), strconv.Itoa(ev.ID) + " " + ev.Title, ep - 1, true
+	// Collaboration, birthday, and festival cards all share the festival catalog
+	// and differ only in fesSaveTitle. Preserve the reverse dropdown coordinate.
+	for festivalPos, festival := range festivals {
+		for cardSlot, cardID := range festival.Cards {
+			if cardID < 1 || cardID > len(cards) {
+				continue
+			}
+			card := cards[cardID-1]
+			if card.CharacterID < 1 || card.CharacterID > len(model.CharacterDict) {
+				continue
+			}
+			charName := model.CharacterDict[card.CharacterID-1].Name
+			for offset := 0; offset < 3; offset++ {
+				chapter := cardSlot*3 + offset
+				appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, fesSaveTitle(festival, charName), cardChapterTitle(chapter), storyLabelResolution{
+					storyType:  StoryLabelCardSpecial,
+					index:      strconv.Itoa(len(festivals) - 1 - festivalPos),
+					indexLabel: festivalIndexLabel(festival),
+					chapter:    chapter,
+				})
 			}
 		}
 	}
 
-	return "", "", "", 0, false
+	// Initial cards are fully catalog-bounded by the production character table;
+	// rarity is encoded in SaveTitle and the three chapter titles disambiguate it.
+	for characterIdx := 0; characterIdx < 26 && characterIdx < len(model.CharacterDict); characterIdx++ {
+		char := model.CharacterDict[characterIdx]
+		for rarity := 1; rarity <= 4; rarity++ {
+			saveTitle := "release-" + char.Name + "-" + padZero(rarity)
+			for offset := 0; offset < 3; offset++ {
+				chapter := (rarity-1)*3 + offset
+				appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, saveTitle, cardChapterTitle(chapter), storyLabelResolution{
+					storyType:  StoryLabelCardInit,
+					index:      strconv.Itoa(characterIdx),
+					indexLabel: char.NameJ,
+					chapter:    chapter,
+				})
+			}
+		}
+	}
+
+	// Upgrade cards surface one base three-part story per production character,
+	// but GetJsonPath also accepts bounded legacy VIRTUAL SINGER coordinates that
+	// load different cards under the same SaveTitle/chapter titles. Enumerate every
+	// distinct loadable target so those exact identities fail closed instead of
+	// silently resolving to the base card.
+	var levelUpCards []int
+	for _, festival := range festivals {
+		if festival.LevelUp {
+			levelUpCards = festival.Cards
+			break
+		}
+	}
+	for characterIdx := 0; characterIdx < 26 && characterIdx < len(model.CharacterDict) && characterIdx < len(levelUpCards); characterIdx++ {
+		char := model.CharacterDict[characterIdx]
+		saveTitle := "lvelup2023-" + char.Name
+		for _, chapter := range upgradeCardIdentityChapters(characterIdx, levelUpCards, cards) {
+			appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, saveTitle, cardChapterTitle(chapter), storyLabelResolution{
+				storyType:  StoryLabelCardUpgrade,
+				index:      strconv.Itoa(characterIdx),
+				indexLabel: char.NameJ,
+				chapter:    chapter,
+			})
+		}
+	}
+
+	// Area-talk SaveTitles contain only TalkID. Use one valid, deterministic
+	// navigator coordinate and reject duplicate TalkIDs across underlying rows.
+	// The catalog's historical filters overlap at AddEventID == 1, so classify
+	// that boundary as initial here; upgrade starts after the initial release.
+	for _, talk := range areaTalks {
+		saveTitle := "areatalk-" + talk.TalkID
+		if (!canonicalIdentityMatches(identity, saveTitle, "") && !legacyIdentityMatches(identity, saveTitle)) || talk.ScenarioID == "" || talk.ScenarioID == "none" {
+			continue
+		}
+		areaStoryType := ""
+		areaTalkType := ""
+		switch {
+		case talk.Type == "limited":
+			areaStoryType, areaTalkType = StoryLabelAreaTalkExtra, "extra"
+		case talk.AddEventID <= 1:
+			areaStoryType, areaTalkType = StoryLabelAreaTalkInit, "init"
+		case talk.AddEventID > 1:
+			areaStoryType, areaTalkType = StoryLabelAreaTalkUpgrade, "upgrade"
+		}
+		areaIndex, areaIndexLabel, valid := canonicalAreaTalkCharacter(talk)
+		if !valid || areaStoryType == "" {
+			continue
+		}
+		for chapter, entry := range lm.buildAreaTalkChapterScenario(areaTalkType, "character") {
+			if !entry.IsSeparator && entry.ID == talk.ID && entry.TalkID == talk.TalkID && entry.ScenarioID == talk.ScenarioID {
+				appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, saveTitle, "", storyLabelResolution{
+					storyType:  areaStoryType,
+					index:      areaIndex,
+					indexLabel: areaIndexLabel,
+					chapter:    chapter,
+				})
+			}
+		}
+	}
+
+	// Special-story titles are SaveTitles themselves and may contain spaces.
+	for specialIdx, special := range specials {
+		appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, special.Title, "", storyLabelResolution{
+			storyType:  StoryLabelSpecial,
+			index:      strconv.Itoa(specialIdx),
+			indexLabel: special.Title,
+			chapter:    0,
+		})
+	}
+
+	switch len(exactResolutions) {
+	case 1:
+		resolved := exactResolutions[0]
+		return resolved.storyType, resolved.index, resolved.indexLabel, resolved.chapter, true, "exact", ""
+	case 0:
+		// Continue to the bounded legacy-title fallback below.
+	default:
+		return "", "", "", 0, false, "", "exact-ambiguous"
+	}
+
+	switch len(legacyResolutions) {
+	case 1:
+		resolved := legacyResolutions[0]
+		return resolved.storyType, resolved.index, resolved.indexLabel, resolved.chapter, true, "legacy", ""
+	case 0:
+		return "", "", "", 0, false, "", "not-found"
+	default:
+		return "", "", "", 0, false, "", "legacy-ambiguous"
+	}
+}
+
+func (lm *ListManager) ResolveLabel(label string) (storyType, index, indexLabel string, chapterIdx int, ok bool) {
+	storyType, index, indexLabel, chapterIdx, ok, _, _ = lm.ResolveLabelDetailed(label)
+	return
 }
 
 // IndexLabel returns the full index-dropdown label for a selection（活动为
@@ -1097,6 +1337,73 @@ func (lm *ListManager) processChapterID(eventIndex int, chapterIDs []string) []s
 		return chapterIDs
 	}
 	return []string{strconv.Itoa(eventIndex), chapterIDs[1]}
+}
+
+// upgradeCardSlotIndex maps an upgrade-card navigator coordinate to the
+// LevelUp festival card slot used by GetJsonPath. Coordinates 0..2 are the
+// character's base card. Historical VIRTUAL SINGER documents may also carry a
+// second/world-specific three-part coordinate; those targets are loadable and
+// must participate in reverse-identity ambiguity checks even though the current
+// navigator exposes only the base three entries.
+func upgradeCardSlotIndex(characterIdx, chapterIdx, levelUpCardCount int) (int, bool) {
+	if characterIdx < 0 || characterIdx >= 26 || chapterIdx < 0 || levelUpCardCount <= 0 {
+		return 0, false
+	}
+	if chapterIdx < 3 {
+		if characterIdx >= levelUpCardCount {
+			return 0, false
+		}
+		return characterIdx, true
+	}
+
+	charID := characterIdx + 1
+	if charID < 21 {
+		return 0, false
+	}
+	var slot int
+	switch charID {
+	case 21: // Miku: one legacy group for each remaining VS/world card slot.
+		slot = 24 + chapterIdx/3
+	case 22: // Rin -> MMJ Miku slot.
+		slot = len(model.CharacterDict) - 4
+	case 23: // Len -> VBS Miku slot.
+		slot = len(model.CharacterDict) - 3
+	case 24: // Luka -> Leo/need Miku slot.
+		slot = len(model.CharacterDict) - 5
+	case 25: // MEIKO -> Wonderlands Miku slot.
+		slot = len(model.CharacterDict) - 2
+	case 26: // KAITO -> Nightcord Miku slot.
+		slot = len(model.CharacterDict) - 1
+	default:
+		return 0, false
+	}
+	if slot < 0 || slot >= levelUpCardCount {
+		return 0, false
+	}
+	return slot, true
+}
+
+// upgradeCardIdentityChapters enumerates one three-part coordinate for every
+// distinct loadable card target. Some legacy VS coordinates repeat the same
+// target forever; de-duplicate by card slot so the candidate set is finite while
+// still detecting canonical 前篇/后篇/特殊篇 collisions.
+func upgradeCardIdentityChapters(characterIdx int, levelUpCards []int, cards []CardEntry) []int {
+	chapters := make([]int, 0, 6)
+	seenSlots := make(map[int]bool)
+	for group := 0; group <= len(levelUpCards)+1; group++ {
+		chapter := group * 3
+		slot, ok := upgradeCardSlotIndex(characterIdx, chapter, len(levelUpCards))
+		if !ok || seenSlots[slot] {
+			break
+		}
+		seenSlots[slot] = true
+		cardID := levelUpCards[slot]
+		if cardID < 1 || cardID > len(cards) {
+			continue
+		}
+		chapters = append(chapters, chapter, chapter+1, chapter+2)
+	}
+	return chapters
 }
 
 func cardChapterTitle(chapterIdx int) string {

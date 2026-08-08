@@ -18,8 +18,13 @@ function normalizeBackgroundError(error: unknown): Error {
   return new Error(String(error))
 }
 
-export async function syncRecoveryNow(beforeCapture?: () => void | Promise<void>): Promise<void> {
+export async function syncRecoveryNow(
+  beforeCapture?: () => void | Promise<void>,
+  canCapture: () => boolean = () => true,
+): Promise<void> {
+  if (!canCapture()) return
   await beforeCapture?.()
+  if (!canCapture()) return
   const editor = useEditorStore()
   const app = useAppStore()
   const story = useStoryStore()
@@ -64,15 +69,17 @@ export function useAutoSave(
   let intervalSync: Promise<void> | null = null
   let syncRequested = false
   const syncNow = (capture: typeof beforeCapture = beforeCapture) => syncRecoveryNow(capture)
-  const needsSync = () => editor.hasAnyUnsaved() || hasPendingRecoveryClear()
+  const syncScheduled = () => syncRecoveryNow(beforeCapture, () => !editor.documentBusy)
+  const hasRecoveryWork = () => editor.hasAnyUnsaved() || hasPendingRecoveryClear()
+  const needsSync = () => !editor.documentBusy && hasRecoveryWork()
 
-  function runScheduledSync() {
-    if (!needsSync()) return
+  function runScheduledSync(): boolean {
+    if (!needsSync()) return false
     if (intervalSync) {
       syncRequested = true
-      return
+      return true
     }
-    intervalSync = syncNow()
+    intervalSync = syncScheduled()
       .then(() => {
         lastSaved.value = Date.now()
         lastError.value = null
@@ -93,6 +100,7 @@ export function useAutoSave(
           syncRequested = false
         }
       })
+    return true
   }
 
   function start() {
@@ -108,17 +116,32 @@ export function useAutoSave(
   function schedule(delayMs = 1_000) {
     if (!active) return
     if (changeTimer === null) {
-      runScheduledSync()
+      // A document transaction may mark the first Android mutation dirty before
+      // its finally block releases documentBusy. Preserve that missed immediate
+      // attempt as trailing work instead of silently waiting for the 30s interval.
+      const started = runScheduledSync()
+      changePending = !started && hasRecoveryWork()
     } else {
       changePending = true
       clearTimeout(changeTimer)
     }
-    changeTimer = setTimeout(() => {
+
+    const flushTrailing = () => {
       changeTimer = null
-      if (!changePending) return
+      if (!active || !changePending) return
+      if (editor.documentBusy) {
+        // Keep ownership of the pending first snapshot until the transaction is
+        // complete. A short bounded retry avoids both a busy spin and a 30s gap.
+        changeTimer = setTimeout(flushTrailing, Math.min(delayMs, 250))
+        return
+      }
       changePending = false
-      runScheduledSync()
-    }, delayMs)
+      if (!runScheduledSync() && hasRecoveryWork()) {
+        changePending = true
+        changeTimer = setTimeout(flushTrailing, Math.min(delayMs, 250))
+      }
+    }
+    changeTimer = setTimeout(flushTrailing, delayMs)
   }
 
   function stop() {

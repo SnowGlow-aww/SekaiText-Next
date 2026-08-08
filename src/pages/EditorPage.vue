@@ -24,8 +24,17 @@ import { useLive2dDockStore } from '../stores/live2dDock'
 import SpeakerCountDialog from '../components/dialogs/SpeakerCountDialog.vue'
 import SpeakerCheckDialog from '../components/dialogs/SpeakerCheckDialog.vue'
 import { usePluginRegistry } from '../plugin-host/registry'
+import { BaselineImportError, runBaselineImportTransaction } from '../editor/baselineImport'
 import { commitDocumentMutation } from '../editor/documentMutation'
+import {
+  OpenDocumentError,
+  cloneOpenDocument,
+  runOpenDocumentTransaction,
+} from '../editor/openDocument'
 import { saveDirectoryCoordinator } from '../editor/saveDirectoryCoordinator'
+import { clearRecovery } from '../editor/recoveryCoordinator'
+import { formatManagedDocumentFileName } from '../editor/documentFileName'
+import { completeManualSave, manualSaveFeedback, type ManualSaveOutcome } from '../editor/saveCoordinator'
 import { capabilities } from '../platform/capabilities'
 import { mobileCore } from '../platform/mobileCore'
 
@@ -143,16 +152,18 @@ function buildSaveMeta(): SaveMetadata | undefined {
     mode: app.editorMode,
   } : undefined
 }
-// 规范文件名：【模式】<剧本标号> <标题>.txt——保存对话框、自动建档共用一套。
+// 规范文件名：【模式】<SaveTitle> <ChapterTitle>【标题】<翻译标题>.txt。
+// canonical 身份永远保留在文件名主体，用户可编辑标题单独放在明确后缀里，
+// 这样保存时不会把翻译标题误当成剧情身份，冷启动也能通用反解。
 function canonicalFileName(): string {
   const modeLabel = EditorModeLabel[app.editorMode as 0 | 1 | 2]
   const d = editor.docMeta
-  const saveTitle = d ? d.saveTitle : story.saveTitle
-  const chapterTitle = d ? d.chapterTitle : story.chapterTitle
-  const title = (editor.titleOverride || chapterTitle || '').trim()
-  let fileName = '【' + modeLabel + '】' + (saveTitle || 'untitled')
-  if (title) fileName += ' ' + title
-  return fileName + '.txt'
+  return formatManagedDocumentFileName({
+    modeLabel,
+    saveTitle: d ? d.saveTitle : story.saveTitle,
+    chapterTitle: d ? d.chapterTitle : story.chapterTitle,
+    titleOverride: editor.titleOverride,
+  })
 }
 // 分层规范路径：<saveBaseDir>/<故事类型>/<索引名>/<规范文件名>。缺少根目录或
 // 未选剧情（网页端/全新空文档）时返回 null——此时只有恢复文件兜底。
@@ -518,123 +529,100 @@ async function handleOpen() {
   if (editor.hasAnyUnsaved()) {
     if (!(await confirm({ title: '打开文件', message: '有未保存的更改，打开新文件将丢弃它们。确定继续吗？', tone: 'danger', confirmText: '不保存并打开' }))) return
   }
-  const operation = editor.beginDocumentOperation()
+
+  // Do not advance documentRevision or clear any live state while the picker,
+  // resolver, source loader, aligner, or comparer is still working. The token
+  // only prevents other document actions from starting; the candidate remains
+  // entirely local until the final commit callback below.
+  const operation = editor.beginDocumentOperation(false)
   if (operation === null) return
-  story.loading = true
   try {
     const result = await fileDialog.openTranslation()
     if (!result) return
-    if (!editor.isCurrentDocumentOperation(operation)) return
-    workspace.value?.cancelPendingEdit()
-    editor.clearAll()
-    console.log('[Open] loaded file', { path: result.filePath || result.fileName, talkCount: result.talks.length, hasMeta: !!result.meta, mode: app.editorMode, fileMode: result.meta?.mode })
-    // Baseline fallback: in 校对/合意 modes, seed every row's baseline to its
-    // current text up front. The .txt format does not persist baseline, and the
-    // story-load block below only sets it when the source story resolves — which
-    // silently fails for files with an empty index (caught + skipped). Without a
-    // baseline, editing a line computes no diff, so the compare view shows
-    // nothing ("我改了没反应"). Seeding here guarantees edits always diff against
-    // the text as it was on open, independent of whether the source story loads.
-    if (app.editorMode >= 1) {
-      for (const t of result.talks) if (t.baseline === undefined || t.baseline === '') t.baseline = t.text
-    }
-    editor.setTalks(result.talks, result.talks, [])
-    editor.setSourceTalks([])
-    story.clearLoadedStory()
-    // Pre-fill the 译文 header title input from the filename. The name looks like
-    // "【翻译】3rd-group3-01 思いがけない出会い.txt": strip the 【…】 prefix and
-    // .txt, the first token is the label (story id), the rest is the (already
-    // translated) chapter title — show it as the actual input value, not just a
-    // placeholder, so the translator sees/keeps their title.
-    const rawName = (result.filePath || result.fileName || '').split(/[/\\]/).pop() || ''
-    const baseName = rawName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
-    const label = baseName.split(/\s+/)[0] || ''
-    const titlePart = baseName.slice(label.length).trim()
-    editor.titleOverride = titlePart
 
-    // Mode isolation: a file whose saved mode differs from the current editor
-    // mode is treated as a *baseline to derive from*, not a file to edit in
-    // place. Clearing currentFilePath forces "save as" with the current mode's
-    // 【…】 name, so the original (e.g. 翻译) file is never overwritten.
-    // meta.mode 缺失（老版本/手工文件）时用文件名的【前缀】兜底再默认翻译——
-    // 否则【校对】命名的老文件会被当成翻译稿绑定改写（名实不符的模式错乱）。
-    const prefixMode = ({ 翻译: 0, 校对: 1, 合意: 2 } as Record<string, 0 | 1 | 2>)[
-      rawName.match(/^【([^】]*)】/)?.[1] ?? ''
-    ]
-    const fileMode = (result.meta?.mode ?? prefixMode ?? 0) as 0 | 1 | 2
-    const deriving = fileMode !== app.editorMode
-    editor.currentFilePath = deriving || capabilities.isAndroid
-      ? ''
-      : (result.filePath || result.fileName || '')
-    // Preserve metadata embedded by older files even when Android intentionally
-    // leaves the temporary SAF URI unbound. Label resolution may replace it with
-    // a richer snapshot below; otherwise Save As still keeps the document's own
-    // identity instead of borrowing unrelated navigator state.
-    editor.docMeta = result.meta?.type ? {
-      saveTitle: label,
-      chapterTitle: titlePart,
-      type: result.meta.type,
-      sort: result.meta.sort || '',
-      index: result.meta.index,
-      indexLabel: result.meta.index,
-      chapter: result.meta.chapter,
-      source: result.meta.source,
-      scenarioId: result.meta.scenarioId,
-    } : null
-    editor.markSaved()
-    await autoSave.syncNow().catch(() => {})
-    undo.clear()
+    const currentStory = story.scenarioId && story.sourceTalks.length > 0
+      ? {
+        story: {
+          scenarioId: story.scenarioId,
+          sourceTalks: cloneOpenDocument(story.sourceTalks),
+          saveTitle: story.saveTitle,
+          chapterTitle: story.chapterTitle,
+          // The document snapshot is canonical; the navigator label is mutable
+          // and may already point at another story.
+          indexLabel: editor.docMeta?.indexLabel || story.selectedIndexLabel,
+        },
+        docMeta: editor.docMeta ? { ...editor.docMeta } : null,
+      }
+      : undefined
 
-    // Auto-load the source scenario from the filename label (see above). Resolve
-    // it to story coordinates and load + align the source (fixed Haruki Neo
-    // source). On any failure we silently keep manual selection.
-    if (label) {
-      try {
-        const r = await api.resolveLabel(label)
-        if (r.ok) {
-          story.selectedSource = 'haruki'
-          // Populate the navigator dropdowns so they SHOW the resolved story,
-          // not just load it. Setting selectedType triggers a watcher that
-          // resets the child selections and refetches lists, so we sequence:
-          // set type -> let its cascade settle -> fetch the index/chapter lists
-          // -> set index/chapter LAST so they stick and the <select>s display.
-          story.selectedType = r.storyType
-          story.selectedSort = ''
-          await story.fetchSorts(r.storyType)
-          await story.fetchIndex(r.storyType, '')
-          await nextTick()
-          story.selectedIndex = r.index
-          // 后端直接给完整标签（"208 褪せない今を、彩って"）；退回列表查找或裸索引
-          // 会让文稿目录出现光秃秃的「208」文件夹，与导航载入建的目录并存。
-          story.selectedIndexLabel = r.indexLabel
-            || story.indices.find(i => i.value === r.index)?.label || r.index
-          await story.fetchChapters(r.storyType, '', r.index)
-          await nextTick()
-          story.selectedChapter = r.chapter
-          // Keep the outer document operation in charge of loading state. The
-          // store's loadStory() releases story.loading after only the source
-          // request, which used to expose editable rows before alignment landed.
-          const loadedStory = await story.fetchStory()
-          if (loadedStory.sourceTalks.length > 0) {
-            const aligned = await api.checkLines({ sourceTalks: loadedStory.sourceTalks, loadedTalks: result.talks })
-            if (app.editorMode >= 1) {
-              // Derive baseline rows for compare (校对/合意).
-              const compared = await api.compareText({ referTalks: aligned, checkTalks: aligned, editorMode: app.editorMode })
-              editor.setTalks(compared.talks, compared.dstTalks, aligned)
-            } else {
-              editor.setTalks(aligned, aligned, [])
-            }
-          }
-          story.applyStory(loadedStory)
-          editor.setSourceTalks(loadedStory.sourceTalks)
-          editor.docMeta = story.snapshotDocMeta()
-        }
-      } catch { /* keep manual selection */ }
+    const status = await runOpenDocumentTransaction({
+      result,
+      editorMode: app.editorMode,
+      isAndroid: capabilities.isAndroid,
+      currentStory,
+      // Recovery is part of the same replacement transaction. If its queued
+      // cleanup fails or this operation becomes stale, runOpenDocumentTransaction
+      // never invokes the in-memory commit below and the old document stays live.
+      beforeCommit: () => clearRecovery(),
+      deps: {
+        resolveLabel: label => api.resolveLabel(label),
+        loadStory: request => api.storyLoad(request),
+        checkLines: data => api.checkLines(data),
+        compareText: data => api.compareText(data),
+        isCurrent: () => editor.isCurrentDocumentOperation(operation),
+      },
+    }, candidate => {
+      if (!editor.advanceDocumentOperation(operation)) return false
+      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
+      txtAutosaveTimer = null
+      // This is the first point at which it is safe to cancel the focused old
+      // document edit: every replacement payload has already been validated.
+      workspace.value?.cancelPendingEdit()
+      editor.clearAll()
+      editor.setTalks(candidate.talks, candidate.dstTalks, candidate.referTalks)
+      editor.setSourceTalks(cloneOpenDocument(candidate.sourceTalks))
+      editor.currentFilePath = candidate.currentFilePath
+      editor.titleOverride = candidate.titleOverride
+      editor.docMeta = { ...candidate.docMeta }
+      editor.markSaved()
+
+      // Story and editor identity are published as one synchronous state swap;
+      // no intermediate empty/start-page state can be observed by a success UI.
+      story.selectedSource = candidate.docMeta.source
+      story.selectedType = candidate.docMeta.type
+      story.selectedSort = candidate.docMeta.sort
+      story.selectedIndex = candidate.docMeta.index
+      story.selectedChapter = candidate.docMeta.chapter
+      story.applyStory({
+        ...candidate.story,
+        // Commit the canonical document label, never a stale label captured
+        // from mutable navigator state during current-story reuse.
+        indexLabel: candidate.docMeta.indexLabel,
+        sourceTalks: cloneOpenDocument(candidate.story.sourceTalks),
+      })
+      story.selectedIndexLabel = candidate.docMeta.indexLabel
+      undo.clear()
+    })
+    if (status === 'stale') return
+
+    if (editor.talks.length === 0 || editor.sourceTalks.length === 0 || !story.scenarioId) {
+      throw new Error('opened document is not usable')
     }
-    toast.show('已打开: ' + (label || rawName), 'success')
-  } catch (e: any) { toast.show('Open failed: ' + (e.message || String(e)), 'error') }
-  finally {
-    story.loading = false
+    // Recovery cleanup already succeeded in beforeCommit, so the destination,
+    // source, story identity, path/title, undo stack and recovery state now refer
+    // to one committed document before success becomes visible.
+    const identity = result.filePath || result.fileName || ''
+    console.log('[Open] committed file', { path: identity, talkCount: editor.talks.length, hasMeta: !!result.meta, mode: app.editorMode })
+    toast.show('已打开: ' + (identity.split(/[/\\]/).pop() || identity), 'success')
+  } catch (e: any) {
+    if (e instanceof OpenDocumentError && e.code === 'stale') return
+    const detail = e instanceof OpenDocumentError && e.code === 'destination-only'
+      ? '文件没有可用的剧情标识，未打开；请先载入对应剧情后再重试'
+      : e instanceof OpenDocumentError && e.code === 'commit-preparation-failed'
+        ? '自动恢复快照清理失败，未打开；当前文档保持不变'
+        : (e.message || String(e))
+    toast.show('打开失败: ' + detail, 'error')
+  } finally {
     editor.finishDocumentOperation(operation)
   }
 }
@@ -661,11 +649,33 @@ async function handleSave(saveAs = false) {
   }
 }
 
-async function finishCurrentSave(version: ReturnType<typeof editor.captureSaveVersion>) {
-  if (!editor.markSavedIfUnchanged(version)) return
-  // A save can clean only one mode. Rewrite immediately so a now-clean slot is
-  // removed from Recovery V2 instead of waiting for the next interval.
-  await autoSave.syncNow().catch(() => {})
+async function finishCurrentSave(version: ReturnType<typeof editor.captureSaveVersion>): Promise<ManualSaveOutcome> {
+  return completeManualSave({
+    markSavedIfUnchanged: () => editor.markSavedIfUnchanged(version),
+    // A save can clean only one mode. Rewrite immediately so a now-clean slot is
+    // removed from Recovery V2 instead of waiting for the next interval. A file
+    // write without this cleanup is not a fully successful save: the old recovery
+    // snapshot could still reopen over the newly written file.
+    syncRecovery: () => autoSave.syncNow(),
+    restoreUnsavedIfUnchanged: () => {
+      // Keep the document visibly dirty so the normal autosave loop retries the
+      // recovery write/clear instead of claiming a clean document with stale
+      // recovery state. Do not dirty a newer document or a document that was
+      // already edited while recovery cleanup was in flight.
+      const current = editor.captureSaveVersion()
+      if (current.mode === version.mode
+        && current.documentRevision === version.documentRevision
+        && current.mutationSeq === version.mutationSeq) {
+        editor.markUnsaved()
+      }
+    },
+    onRecoveryError: error => console.warn('[Save] recovery cleanup failed after file write', error),
+  })
+}
+
+function showManualSaveFeedback(outcome: ManualSaveOutcome) {
+  const feedback = manualSaveFeedback(outcome)
+  toast.show(feedback.message, feedback.tone)
 }
 
 function isCurrentSaveDocument(version: ReturnType<typeof editor.captureSaveVersion>): boolean {
@@ -687,9 +697,9 @@ async function saveCurrentMode(saveAs: boolean) {
         mobileCore.serializeTranslation({ talks: dstTalks, saveN: app.saveN, meta }),
       ])
       await writeTextFile(bound, serialized.content)
-      await finishCurrentSave(version)
-      console.log('[Save] saved Android document in place', { uri: bound })
-      toast.show('已保存', 'success')
+      const saveOutcome = await finishCurrentSave(version)
+      console.log('[Save] saved Android document in place', { uri: bound, saveOutcome })
+      showManualSaveFeedback(saveOutcome)
       return
     } catch (e: any) {
       console.warn('[Save] Android in-place save failed, falling back to dialog', {
@@ -712,9 +722,9 @@ async function saveCurrentMode(saveAs: boolean) {
         }
       }
       await api.translationSave(target.path, dstTalks, app.saveN, meta)
-      await finishCurrentSave(version)
-      console.log('[Save] saved in place', { path: target.path })
-      toast.show('已保存', 'success')
+      const saveOutcome = await finishCurrentSave(version)
+      console.log('[Save] saved in place', { path: target.path, saveOutcome })
+      showManualSaveFeedback(saveOutcome)
       return
     } catch (e: any) {
       console.warn('[Save] in-place save failed, falling back to dialog', { path: target.path, error: e?.message || String(e) })
@@ -728,9 +738,9 @@ async function saveCurrentMode(saveAs: boolean) {
         await api.ensureDir(canonical)
         await api.translationSave(canonical, dstTalks, app.saveN, meta)
         if (isCurrentSaveDocument(version)) editor.currentFilePath = canonical
-        await finishCurrentSave(version)
-        console.log('[Save] auto-bound canonical path', { path: canonical })
-        toast.show('已保存', 'success')
+        const saveOutcome = await finishCurrentSave(version)
+        console.log('[Save] auto-bound canonical path', { path: canonical, saveOutcome })
+        showManualSaveFeedback(saveOutcome)
         return
       } catch (e: any) {
         console.warn('[Save] canonical save failed, falling back to dialog', { canonical, error: e?.message || String(e) })
@@ -738,10 +748,9 @@ async function saveCurrentMode(saveAs: boolean) {
     }
   }
   // 兜底对话框：算不出规范路径（未选剧情的空白文档/网页端）或上面写入失败。
-  // The 译文 header input (editor.titleOverride) owns the title segment. The
-  // filename is always rebuilt as 【模式】<saveTitle> <title>.txt — the prefix
-  // and .txt suffix are fixed, only the title part is user-editable. Empty
-  // override falls back to the story's chapterTitle.
+  // The 译文 header input (editor.titleOverride) owns the optional translated
+  // title suffix. The filename always preserves canonical SaveTitle + ChapterTitle
+  // and uses 【标题】<title> only when the user title differs.
   const defaultName = canonicalSavePath() || canonicalFileName()
   console.log('[Save] starting save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri: isTauri })
   try {
@@ -751,12 +760,12 @@ async function saveCurrentMode(saveAs: boolean) {
     // 用户在对话框里改过标题段的话，同步回 titleOverride——否则下一次保存按
     // 旧标题重算规范名，把文件名又改回去。
     if (isCurrentSaveDocument(version)) editor.syncTitleFromPath(path)
-    await finishCurrentSave(version)
+    const saveOutcome = await finishCurrentSave(version)
     // Awaited: 保存并退出 destroys the window right after handleSave returns, so a
     // fire-and-forget clear could be cut off — leaving a STALE autosave that the
     // next launch offers as "recovery" over the newer just-saved file.
-    console.log('[Save] saved successfully', { path })
-    toast.show('已保存', 'success')
+    console.log('[Save] saved successfully', { path, saveOutcome })
+    showManualSaveFeedback(saveOutcome)
   } catch (e: any) {
     const detail = e.status ? `${e.status}: ${e.message}` : (e.message || String(e))
     console.error('[Save] failed', { error: detail, defaultName, talkCount: editor.talks.length, isTauri })
@@ -794,41 +803,36 @@ async function handleImportBaseline() {
   if (operation === null) return
   try {
     await workspace.value?.flushPendingEdit()
+    if (!editor.isCurrentDocumentOperation(operation)) return
     const result = await fileDialog.openTranslation()
     if (!result) return
-    undo.pushSnapshot(editor.talks, editor.dstTalks)
-    const committed = await commitDocumentMutation(
-      () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
-      async () => {
-        // Align the imported 校对稿 to the source story before comparing. A
-        // freshly parsed txt has positional indices, while the current rows are
-        // aligned to source indices.
-        let checkTalks = result.talks
-        if (story.sourceTalks.length > 0) {
-          checkTalks = await api.checkLines({ sourceTalks: story.sourceTalks, loadedTalks: result.talks })
-        } else {
-          toast.show('未加载原文，对比可能错位，请先选择剧情', 'warn')
-        }
-        const compared = await api.compareText({
-          referTalks: editor.talks,
-          checkTalks,
-          editorMode: 2,
-        })
-        return { compared, imported: result }
+
+    const status = await runBaselineImportTransaction({
+      result,
+      currentTalks: cloneOpenDocument(editor.talks),
+      currentReferTalks: cloneOpenDocument(editor.referTalks),
+      sourceTalks: cloneOpenDocument(editor.sourceTalks),
+      docMeta: editor.docMeta ? { ...editor.docMeta } : null,
+      deps: {
+        resolveLabel: label => api.resolveLabel(label),
+        checkLines: data => api.checkLines(data),
+        compareText: data => api.compareText(data),
+        isCurrent: () => editor.isCurrentDocumentOperation(operation),
       },
-      ({ compared, imported }) => {
-        editor.advanceDocumentOperation(operation)
-        editor.setTalks(compared.talks, compared.dstTalks, editor.referTalks)
-        app.showCompare = true
-        const impName = (imported.filePath || imported.fileName || '').split(/[/\\]/).pop() || ''
-        const impBase = impName.replace(/\.txt$/i, '').replace(/^【[^】]*】/, '').trim()
-        const impTitle = impBase.slice((impBase.split(/\s+/)[0] || '').length).trim()
-        if (impTitle) editor.titleOverride = impTitle
-        editor.markUnsaved()
-      },
-    )
-    if (committed) toast.show('已导入校对稿', 'success')
+    }, candidate => {
+      if (!editor.advanceDocumentOperation(operation)) return false
+      // Undo history changes only at the final synchronous commit. Empty,
+      // mismatched, failed, or stale imports leave the current document and
+      // its undo/redo stack exactly as they were.
+      undo.pushSnapshot(editor.talks, editor.dstTalks)
+      editor.setTalks(candidate.talks, candidate.dstTalks, candidate.referTalks)
+      app.showCompare = true
+      editor.titleOverride = candidate.titleOverride
+      editor.markUnsaved()
+    })
+    if (status === 'committed') toast.show('已导入校对稿', 'success')
   } catch (e: any) {
+    if (e instanceof BaselineImportError && e.code === 'stale') return
     toast.show('导入校对稿失败: ' + (e.message || '未知错误'), 'error')
   } finally {
     editor.finishDocumentOperation(operation)

@@ -439,7 +439,9 @@ type RecoverySaveRequest struct {
 	StorySource  string                    `json:"storySource,omitempty"`
 }
 
-// SaveMetadata is embedded in save files so the app can auto-navigate on open.
+// SaveMetadata describes the story identity accepted by translation APIs.
+// Current team files remain headerless plain text; LoadContent still accepts
+// the legacy #SekaiText JSON header for backward-compatible reopen.
 type SaveMetadata struct {
 	StoryType  string `json:"type"`
 	Sort       string `json:"sort,omitempty"`

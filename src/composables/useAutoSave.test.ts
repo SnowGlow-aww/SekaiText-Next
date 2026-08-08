@@ -105,6 +105,31 @@ describe('recovery autosave', () => {
     autoSave.stop()
   })
 
+  it('persists the first Android-style mutation after a busy document transaction releases', async () => {
+    const editor = useEditorStore()
+    editor.setTalks([talk('imported baseline')], [talk('imported baseline')], [])
+    const operation = editor.beginDocumentOperation(false)
+    expect(operation).not.toBeNull()
+
+    const autoSave = useAutoSave(30_000)
+    autoSave.start()
+    editor.markUnsaved()
+    autoSave.schedule(1_000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apiMock.recoverySave).not.toHaveBeenCalled()
+
+    editor.finishDocumentOperation(operation!)
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(apiMock.recoverySave).toHaveBeenCalledOnce()
+    expect(apiMock.recoverySave).toHaveBeenCalledWith(expect.objectContaining({
+      modes: [expect.objectContaining({
+        talks: [expect.objectContaining({ text: 'imported baseline' })],
+      })],
+    }))
+    autoSave.stop()
+  })
+
   it('reports background persistence failures without repeating the same error toast', async () => {
     const editor = useEditorStore()
     editor.setTalks([talk('draft')], [talk('draft')], [])
@@ -132,6 +157,29 @@ describe('recovery autosave', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(autoSave.lastError.value).toBeNull()
     autoSave.stop()
+  })
+
+  it('does not recreate an old recovery snapshot when document replacement starts during capture', async () => {
+    const editor = useEditorStore()
+    editor.setTalks([talk('old document')], [talk('old document')], [])
+    editor.markUnsaved()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const materialize = vi.fn(async () => { await gate })
+    const autoSave = useAutoSave(30_000, materialize)
+    autoSave.start()
+
+    autoSave.schedule(1_000)
+    await Promise.resolve()
+    expect(materialize).toHaveBeenCalledOnce()
+
+    const operation = editor.beginDocumentOperation(false)
+    expect(operation).not.toBeNull()
+    release()
+    await autoSave.stopAndSync()
+
+    expect(apiMock.recoverySave).not.toHaveBeenCalled()
+    editor.finishDocumentOperation(operation!)
   })
 
   it('writes a final dirty snapshot when stopped before the first interval', async () => {

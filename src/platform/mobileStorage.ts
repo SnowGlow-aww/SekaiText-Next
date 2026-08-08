@@ -142,7 +142,11 @@ export async function loadMobileRecovery(): Promise<RecoveryLoadResult> {
 
 export async function clearMobileRecovery(): Promise<{ status: string }> {
   localStorage.removeItem(RECOVERY_KEY)
-  await deleteIndexedRecovery().catch(() => {})
+  // IndexedDB is a second authoritative recovery store. If deletion fails, the
+  // old snapshot can win on the next launch; propagate the failure so the
+  // recovery/open transaction does not commit and recoveryCoordinator keeps a
+  // pending clear for retry.
+  await deleteIndexedRecovery()
   return { status: 'ok' }
 }
 

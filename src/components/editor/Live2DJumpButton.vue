@@ -3,6 +3,7 @@ import { Drama } from 'lucide-vue-next'
 import { usePluginRegistry } from '../../plugin-host/registry'
 import { useLive2dDockStore } from '../../stores/live2dDock'
 import { useStoryStore } from '../../stores/story'
+import { useToast } from '../../composables/useToast'
 
 // Per-line "在 Live2D 中播放" control. Sits directly below the voice button in the
 // editor's per-line button stack, sharing its flat 扁长方形 (wide+short) shape.
@@ -24,13 +25,22 @@ const props = defineProps<{
 const registry = usePluginRegistry()
 const dock = useLive2dDockStore()
 const story = useStoryStore()
+const toast = useToast()
 
 async function jump() {
-  // Guard: a scenario must be supplied and a story must actually be loaded
-  // (the player reads the shared host story store). Without these there is
-  // nothing to seek to.
-  if (!props.scenarioId || !story.scenarioId) return
-  await dock.requestJump(props.scenarioId, props.talkIndex, props.voiceId)
+  // Guard: the clicked row must belong to the exact story currently held by the
+  // host. Without this check a stale editor row can seek a different story's
+  // player, which is indistinguishable from a Live2D no-op to the user.
+  if (!props.scenarioId || !story.scenarioId || props.scenarioId !== story.scenarioId || story.sourceTalks.length === 0) {
+    toast.show('当前剧情原文未就绪，无法在 Live2D 中播放；请重新载入剧情', 'warn')
+    return
+  }
+  try {
+    await dock.requestJump(props.scenarioId, props.talkIndex, props.voiceId)
+  } catch (error) {
+    console.warn('[Live2D] jump request failed', error)
+    toast.show('Live2D 播放请求失败，请检查插件和当前剧情', 'error')
+  }
 }
 </script>
 

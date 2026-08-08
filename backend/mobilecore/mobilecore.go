@@ -354,13 +354,15 @@ func ResolveStoryLabel(requestJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(requestJSON), &req); err != nil {
 		return "", fmt.Errorf("decode story label request: %w", err)
 	}
-	storyType, index, indexLabel, chapter, ok := lm.ResolveLabel(req.Label)
+	storyType, index, indexLabel, chapter, ok, matchKind, reason := lm.ResolveLabelDetailed(req.Label)
 	return encode(map[string]any{
 		"ok":         ok,
 		"storyType":  storyType,
 		"index":      index,
 		"indexLabel": indexLabel,
 		"chapter":    chapter,
+		"matchKind":  matchKind,
+		"reason":     reason,
 	})
 }
 
