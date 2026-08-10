@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { BookOpen, Download, FileText, FolderOpen } from 'lucide-vue-next'
 import { useStoryStore } from '../stores/story'
 import { useSettingsStore } from '../stores/settings'
@@ -16,30 +16,36 @@ const toast = useToast()
 const dlFloat = useDownloadFloat()
 const { pickDirectory, isTauri } = useFileDialog()
 
-const outputDir = ref(settings.settings.jsonDownloadDir || '')
+let saveDirTimer: ReturnType<typeof setTimeout> | null = null
+const outputDir = computed({
+  get: () => settings.settings.jsonDownloadDir || '',
+  set: (value: string) => {
+    if (value === settings.settings.jsonDownloadDir) return
+    settings.settings.jsonDownloadDir = value
+    if (saveDirTimer) clearTimeout(saveDirTimer)
+    saveDirTimer = setTimeout(() => {
+      saveDirTimer = null
+      settings.saveSettings().catch(() => {})
+    }, 600)
+  },
+})
+
+async function persistOutputDirNow() {
+  if (saveDirTimer) clearTimeout(saveDirTimer)
+  saveDirTimer = null
+  await settings.saveSettings()
+}
 
 async function browseOutputDir() {
   const dir = await pickDirectory('选择保存目录')
-  if (dir) outputDir.value = dir
+  if (!dir) return
+  outputDir.value = dir
+  try {
+    await persistOutputDirNow()
+  } catch (e: any) {
+    toast.show('保存下载目录失败: ' + (e?.message || '未知错误'), 'error')
+  }
 }
-
-// Persist the chosen output directory so it survives an app restart. Previously
-// it was read from settings on mount but never written back, so a typed path was
-// lost on exit. Debounced to avoid a settings PUT on every keystroke.
-let saveDirTimer: ReturnType<typeof setTimeout> | null = null
-watch(outputDir, (v) => {
-  settings.settings.jsonDownloadDir = v
-  if (saveDirTimer) clearTimeout(saveDirTimer)
-  saveDirTimer = setTimeout(() => { settings.saveSettings().catch(() => {}) }, 600)
-})
-
-// This page is kept alive, so the ref initializer above only evaluates on first
-// mount. Re-pull the saved directory on each activation so a value that arrived
-// after mount (settings still loading) or changed elsewhere shows up here.
-onActivated(() => {
-  const saved = settings.settings.jsonDownloadDir || ''
-  if (saved !== outputDir.value) outputDir.value = saved
-})
 
 const displayIndices = computed(() => {
   if (settings.settings.indexOrder === 'desc') {
@@ -91,7 +97,7 @@ interface DownloadCoord {
   index: string
 }
 
-async function downloadOne(coord: DownloadCoord, chapter: number) {
+async function downloadOne(coord: DownloadCoord, chapter: number, targetDir: string) {
   const taskId = dlFloat.add(coord.index + ' ch' + chapter)
   dlFloat.start(taskId)
   try {
@@ -101,7 +107,7 @@ async function downloadOne(coord: DownloadCoord, chapter: number) {
       index: coord.index,
       chapter,
       source: 'haruki',
-      outputDir: outputDir.value,
+      outputDir: targetDir,
     })
     let done = false
     while (!done) {
@@ -124,11 +130,18 @@ async function downloadOne(coord: DownloadCoord, chapter: number) {
 }
 
 async function handleDownload() {
-  if (!story.selectedType || !story.selectedIndex || !outputDir.value) {
+  const targetDir = outputDir.value.trim()
+  if (!story.selectedType || !story.selectedIndex || !targetDir) {
     toast.show('请填写所有字段', 'warn')
     return
   }
-  // 进入批量前把坐标快照成局部常量，全程（含下载浮窗标签）不再读实时 store。
+  try {
+    await persistOutputDirNow()
+  } catch (e: any) {
+    toast.show('保存下载目录失败，已取消下载: ' + (e?.message || '未知错误'), 'error')
+    return
+  }
+  // 进入批量前把坐标和目录一起快照，全程不再读取会变化的实时 store。
   const coord: DownloadCoord = {
     storyType: story.selectedType,
     sort: story.selectedSort,
@@ -144,18 +157,18 @@ async function handleDownload() {
     }
     toast.show(`未选择章节，将下载全部 ${chapters.length} 章`, 'info')
     for (const c of chapters) {
-      await downloadOne(coord, c.number)
+      await downloadOne(coord, c.number, targetDir)
     }
     return
   }
-  await downloadOne(coord, story.selectedChapter)
+  await downloadOne(coord, story.selectedChapter, targetDir)
 }
 
 // 一键导出原文 txt：译文槽位填日语原文，格式与正常工作流翻译后的导出一致
 // （场景行+空行、对话行「说话人：」前缀、框内换行为独立续行、CRLF），文件名
 // 与剧情 json 同名（.txt 后缀），落到同一个输出目录。选择语义与下载一致：
 // 未选章节 = 导出该索引下全部章节。
-async function exportTxtOne(coord: DownloadCoord, chapter: number) {
+async function exportTxtOne(coord: DownloadCoord, chapter: number, targetDir: string) {
   const taskId = dlFloat.add(coord.index + ' ch' + chapter + ' 原文txt')
   dlFloat.start(taskId)
   try {
@@ -165,7 +178,7 @@ async function exportTxtOne(coord: DownloadCoord, chapter: number) {
       index: coord.index,
       chapter,
       source: 'haruki',
-      outputDir: outputDir.value,
+      outputDir: targetDir,
     })
     dlFloat.done(taskId, filePath)
   } catch (e: any) {
@@ -174,8 +187,15 @@ async function exportTxtOne(coord: DownloadCoord, chapter: number) {
 }
 
 async function handleExportTxt() {
-  if (!story.selectedType || !story.selectedIndex || !outputDir.value) {
+  const targetDir = outputDir.value.trim()
+  if (!story.selectedType || !story.selectedIndex || !targetDir) {
     toast.show('请填写所有字段', 'warn')
+    return
+  }
+  try {
+    await persistOutputDirNow()
+  } catch (e: any) {
+    toast.show('保存下载目录失败，已取消导出: ' + (e?.message || '未知错误'), 'error')
     return
   }
   const coord: DownloadCoord = {
@@ -191,11 +211,11 @@ async function handleExportTxt() {
     }
     toast.show(`未选择章节，将导出全部 ${chapters.length} 章的原文 txt`, 'info')
     for (const c of chapters) {
-      await exportTxtOne(coord, c.number)
+      await exportTxtOne(coord, c.number, targetDir)
     }
     return
   }
-  await exportTxtOne(coord, story.selectedChapter)
+  await exportTxtOne(coord, story.selectedChapter, targetDir)
 }
 </script>
 

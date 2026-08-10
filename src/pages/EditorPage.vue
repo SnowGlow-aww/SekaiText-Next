@@ -36,7 +36,6 @@ import { clearRecovery } from '../editor/recoveryCoordinator'
 import { formatManagedDocumentFileName } from '../editor/documentFileName'
 import { completeManualSave, manualSaveFeedback, type ManualSaveOutcome } from '../editor/saveCoordinator'
 import { capabilities } from '../platform/capabilities'
-import { mobileCore } from '../platform/mobileCore'
 
 const app = useAppStore()
 const editor = useEditorStore()
@@ -98,40 +97,12 @@ function doRedo() {
 const canUndo = undo.canUndo
 const canRedo = undo.canRedo
 
-// ── 逐行落盘的自动保存（写正式文件本体）──────────────────────────────────────
-// 每次内容变更（mutationSeq：行编辑/增删行/撤销重做/全部替换…）后短防抖，把当前
-// 译文写进「当前文档本体」：已打开/已保存的文件直接更新；从未落盘的文档则按选中
-// 模式自动创建规范命名的 txt（<保存根目录>/<类型>/<索引>/【模式】….txt）并绑定为
-// 当前文档。与 30s 的恢复文件（dataDir，启动时提示恢复）互补，不替代。
-let txtAutosaveTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleTxtAutosave() {
-  if (editor.recoveryPending || !editor.hasUnsavedChanges) return
-  if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
-  txtAutosaveTimer = setTimeout(() => { txtAutosaveTimer = null; void writeTxtAutosave() }, 800)
-}
-// 所有 txt 落盘（防抖自动保存/切模式冲写/手动保存前的排空）走同一条串行链：
-// 「就地改名(A→B)+写入」不是原子操作，两路并发时输家的 rename 失败会回落重建
-// 旧名文件——标题改名丢失、还多出一份孤儿档。
+// Real translation files are written only after an explicit Save action. Every
+// edit still schedules the crash-recovery snapshot, which is deliberately kept
+// separate from the user-selected document path.
 const txtSaveCoordinator = saveDirectoryCoordinator
-function writeTxtAutosave(): Promise<void> {
-  return txtSaveCoordinator.run(async () => {
-    // Materialize both debounced rows and the currently focused contenteditable
-    // before any save snapshot/version is captured. Keeping this inside the save
-    // queue prevents manual save or mode switch from overtaking the flush.
-    if (editor.recoveryPending) return
-    await workspace.value?.flushPendingEdit()
-    if (editor.recoveryPending) return
-    await doWriteTxtAutosave()
-  })
-}
 watch(() => editor.mutationSeq, () => {
-  scheduleTxtAutosave()
-  if (capabilities.isAndroid) autoSave.schedule()
-})
-// Programmatic title changes (open/import/path sync) do not necessarily bump the
-// mutation sequence, so a bound managed document still watches the title itself.
-watch(() => editor.titleOverride, () => {
-  if (editor.currentFilePath) scheduleTxtAutosave()
+  autoSave.schedule()
 })
 // 保存命名/元数据一律以载入时的文档快照（editor.docMeta）为准；快照缺失时
 // （网页端本地打开、标签解析失败等）才回退全局 story 状态。story 是全局单例，
@@ -178,106 +149,6 @@ function canonicalSavePath(): string | null {
   }
   return null
 }
-// 已绑定文档的写入目标：规范文件名（【模式】前缀 + 标题段）变了就就地改名跟上
-// ——标题译文往往在首次自动建档（首编辑后 800ms）之后才填，绑定路径若一直冻结，
-// 标题/模式就永远进不了文件名（用户反馈：改了标题文件名不变）。只接管【开头的
-// 托管命名；用户自定义名/目录不动。改名只换 basename，文件所在目录保持不变。
-function resolveBoundTarget(): { path: string; renameFrom?: string } | null {
-  const bound = editor.currentFilePath
-  if (!bound || !/[/\\]/.test(bound)) return null
-  const m = bound.match(/^(.*[/\\])([^/\\]+)$/)
-  if (!m) return { path: bound }
-  const [, dir, base] = m
-  if (!base.startsWith('【')) return { path: bound }
-  // 没有文档身份快照（docMeta）时绝不改名：canonicalFileName 会退回全局 story
-  // 状态，可能算出 untitled 或别的剧情的名字，把文件静默改错——只就地写内容。
-  if (!editor.docMeta) return { path: bound }
-  // 托管根目录内连“文件夹”一起跟随规范路径：索引标签修正后（208 → 208 褪せない
-  // 今を、彩って）下次保存把文件搬进正确目录，同一活动不再出现两个文件夹；
-  // 根目录外（用户另存到别处）只换 basename，不把文件挪走。
-  // 只有持有文档身份快照（docMeta）时才跟随文件夹——否则规范路径读的是全局
-  // story 状态（可能是裸标签/别的剧情），按它搬文件等于把文档搬错目录。
-  const root = settings.settings.saveBaseDir
-  const managed = root && editor.docMeta
-    && (bound.startsWith(root + '/') || bound.startsWith(root + '\\'))
-  const want = (managed ? canonicalSavePath() : null) || dir + canonicalFileName()
-  if (want === bound) return { path: bound }
-  return { path: want, renameFrom: bound }
-}
-async function doWriteTxtAutosave() {
-  if (editor.talks.length === 0 || !isTauri) return
-  // Android documents are opaque SAF content URIs. They can be updated only
-  // while the picker grant is alive; directory creation and renaming remain
-  // desktop-only.
-  if (capabilities.isAndroid) {
-    const uri = editor.currentFilePath
-    if (!uri.startsWith('content://')) return
-    const mode = editor.currentMode
-    const saveVersion = editor.captureSaveVersion()
-    const seq = editor.mutationSeq
-    try {
-      const [{ writeTextFile }, serialized] = await Promise.all([
-        import('@tauri-apps/plugin-fs'),
-        mobileCore.serializeTranslation({
-          talks: JSON.parse(JSON.stringify(editor.dstTalks)),
-          saveN: app.saveN,
-          meta: buildSaveMeta(),
-        }),
-      ])
-      await writeTextFile(uri, serialized.content)
-      if (editor.currentMode !== mode || editor.documentRevision !== saveVersion.documentRevision) return
-      if (editor.mutationSeq === seq && editor.markSavedIfUnchanged(saveVersion)) {
-        await autoSave.syncNow().catch(() => {})
-      }
-    } catch (e) {
-      console.warn('[Autosave] Android 文档写入失败', uri, e)
-    }
-    return
-  }
-  // 定时器可能在切模式后才触发：进入 await 前把本槽位的一切快照下来，写完回来
-  // 若槽位已换人（loadModeState 换掉了整套状态），不得把路径/脏标记写进新模式。
-  const mode = editor.currentMode
-  const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
-  const meta = buildSaveMeta()
-  const saveVersion = editor.captureSaveVersion()
-  let target = resolveBoundTarget()
-  let binding = false
-  if (!target) {
-    const canonical = canonicalSavePath()
-    if (!canonical) return
-    target = { path: canonical }
-    binding = true
-  }
-  // 写盘期间若有新编辑（mutationSeq 变化），写入内容已过期，不清脏标记——
-  // 下一轮防抖会再写一次。
-  const seq = editor.mutationSeq
-  try {
-    if (target.renameFrom) {
-      try {
-        await api.renameFile(target.renameFrom, target.path)
-        if (editor.currentMode === mode && editor.documentRevision === saveVersion.documentRevision) {
-          editor.currentFilePath = target.path
-        }
-      } catch (e) {
-        // 目标被占用等：保持原名原路径写入，名字不动但内容绝不丢。
-        console.warn('[Autosave] 就地改名失败，保持原名', target, e)
-        target = { path: target.renameFrom }
-      }
-    }
-    if (binding) await api.ensureDir(target.path)
-    await api.translationSave(target.path, dstTalks, app.saveN, meta)
-    if (editor.currentMode !== mode || editor.documentRevision !== saveVersion.documentRevision) return
-    if (binding) editor.currentFilePath = target.path
-    if (editor.mutationSeq === seq && editor.markSavedIfUnchanged(saveVersion)) {
-      // 正式文件已是最新，作废恢复快照——否则启动时会把这份陈旧快照当作未保存
-      // 更改恢复，盖回真实文件丢译文。只在写成功且内容未过期时清。
-      await autoSave.syncNow().catch(() => {})
-    }
-  } catch (e) {
-    console.warn('[Autosave] 自动保存写入失败', target.path, e) // 静默失败，不打扰编辑
-  }
-}
-
 function onKeyDown(e: KeyboardEvent) {
   const el = document.activeElement
   const inEditable = el instanceof HTMLElement &&
@@ -469,19 +340,12 @@ async function setMode(key: number) {
   // only operation that materializes a missing dstTalks row, so cancelling here
   // can make visible text impossible to save even though onBlur updated talks.
   if (changed) await workspace.value?.flushPendingEdit()
-  // 冲洗（不是丢弃）待写的 txt 自动保存：那个定时器属于旧模式的编辑，火在切换
-  // 之后会按新模式的槽位落盘——旧模式的最后一笔就滞留缓存、新模式凭空建档。
-  // 必须 await：writeTxtAutosave 里的就地改名是异步的，改名后才把 currentFilePath
-  // 更新为新路径；不等它就 switchMode，saveModeState 会把已被改走的旧路径快照进
-  // modeCache，切回该模式即 409 回落重建同名孤儿文件。
-  if (changed) {
-    if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
-    txtAutosaveTimer = null
-    // Recovered rows are only a proposed recovery state. Switching tabs is not
-    // edit/save intent, so do not write an untouched recovered slot over its
-    // original file. recoveryPending is restored independently for every mode.
-    if (editor.hasUnsavedChanges && !editor.recoveryPending) await writeTxtAutosave().catch(() => {})
-    else await txtSaveCoordinator.wait()
+  // Switching modes is not save intent. Persist only the crash-recovery snapshot;
+  // the user-selected translation file is never changed until Save is pressed.
+  if (changed && editor.hasUnsavedChanges) {
+    await autoSave.syncNow().catch(error => {
+      console.warn('[Recovery] mode-switch snapshot failed', error)
+    })
   }
   if (operation !== null && !editor.advanceDocumentOperation(operation)) return
   editor.switchMode(key as 0 | 1 | 2)
@@ -573,8 +437,6 @@ async function handleOpen() {
       },
     }, candidate => {
       if (!editor.advanceDocumentOperation(operation)) return false
-      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
-      txtAutosaveTimer = null
       // This is the first point at which it is safe to cancel the focused old
       // document edit: every replacement payload has already been validated.
       workspace.value?.cancelPendingEdit()
@@ -627,22 +489,18 @@ async function handleOpen() {
   }
 }
 
-async function handleSave(saveAs = false) {
+async function handleSave() {
   if (editor.documentBusy) return
   if (editor.talks.length === 0) return
-  // Lock the document before enqueueing the ENTIRE flush + save transaction.
-  // Otherwise a mode switch can enter the queue while flushPendingEdit is still
-  // materializing rows and overtake the actual manual save.
+  // Lock the document before enqueueing the entire flush + explicit save. This
+  // keeps mode switches and save-directory migration from overtaking the picker
+  // transaction while the focused row is being materialized.
   const operation = editor.beginDocumentOperation(false)
   if (operation === null) return
   try {
     await txtSaveCoordinator.run(async () => {
-      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
-      txtAutosaveTimer = null
       await workspace.value?.flushPendingEdit()
-      if (txtAutosaveTimer) clearTimeout(txtAutosaveTimer)
-      txtAutosaveTimer = null
-      await saveCurrentMode(saveAs)
+      await saveCurrentMode()
     })
   } finally {
     editor.finishDocumentOperation(operation)
@@ -682,88 +540,34 @@ function isCurrentSaveDocument(version: ReturnType<typeof editor.captureSaveVers
   return editor.currentMode === version.mode && editor.documentRevision === version.documentRevision
 }
 
-async function saveCurrentMode(saveAs: boolean) {
+async function saveCurrentMode() {
   if (editor.talks.length === 0) return
   const version = editor.captureSaveVersion()
   const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
   const meta = buildSaveMeta()
-  // 保存 = 直接写当前文档本体（已打开/已保存过的文件），不再弹对话框重建文件。
-  // 只有从未落盘、或用户点了「另存为」、或直写失败（原目录被删等）才走对话框。
-  const bound = editor.currentFilePath
-  if (!saveAs && capabilities.isAndroid && bound.startsWith('content://')) {
-    try {
-      const [{ writeTextFile }, serialized] = await Promise.all([
-        import('@tauri-apps/plugin-fs'),
-        mobileCore.serializeTranslation({ talks: dstTalks, saveN: app.saveN, meta }),
-      ])
-      await writeTextFile(bound, serialized.content)
-      const saveOutcome = await finishCurrentSave(version)
-      console.log('[Save] saved Android document in place', { uri: bound, saveOutcome })
-      showManualSaveFeedback(saveOutcome)
-      return
-    } catch (e: any) {
-      console.warn('[Save] Android in-place save failed, falling back to dialog', {
-        uri: bound,
-        error: e?.message || String(e),
-      })
-    }
-  }
-  if (!saveAs && isDesktop && bound && /[/\\]/.test(bound)) {
-    // 同 autosave：规范名（标题译文/模式标签）变了就先就地改名再写。
-    let target = resolveBoundTarget() || { path: bound }
-    try {
-      if (target.renameFrom) {
-        try {
-          await api.renameFile(target.renameFrom, target.path)
-          if (isCurrentSaveDocument(version)) editor.currentFilePath = target.path
-        } catch (e: any) {
-          console.warn('[Save] 就地改名失败，保持原名', { target, error: e?.message || String(e) })
-          target = { path: target.renameFrom }
-        }
-      }
-      await api.translationSave(target.path, dstTalks, app.saveN, meta)
-      const saveOutcome = await finishCurrentSave(version)
-      console.log('[Save] saved in place', { path: target.path, saveOutcome })
-      showManualSaveFeedback(saveOutcome)
-      return
-    } catch (e: any) {
-      console.warn('[Save] in-place save failed, falling back to dialog', { path: target.path, error: e?.message || String(e) })
-    }
-  }
-  // 首次落盘也不问位置：直接按 <保存根目录>/<类型>/<索引>/ 分级自动建档并绑定。
-  if (!saveAs && isDesktop) {
-    const canonical = canonicalSavePath()
-    if (canonical) {
-      try {
-        await api.ensureDir(canonical)
-        await api.translationSave(canonical, dstTalks, app.saveN, meta)
-        if (isCurrentSaveDocument(version)) editor.currentFilePath = canonical
-        const saveOutcome = await finishCurrentSave(version)
-        console.log('[Save] auto-bound canonical path', { path: canonical, saveOutcome })
-        showManualSaveFeedback(saveOutcome)
-        return
-      } catch (e: any) {
-        console.warn('[Save] canonical save failed, falling back to dialog', { canonical, error: e?.message || String(e) })
-      }
-    }
-  }
-  // 兜底对话框：算不出规范路径（未选剧情的空白文档/网页端）或上面写入失败。
-  // The 译文 header input (editor.titleOverride) owns the optional translated
-  // title suffix. The filename always preserves canonical SaveTitle + ChapterTitle
-  // and uses 【标题】<title> only when the user title differs.
-  const defaultName = canonicalSavePath() || canonicalFileName()
-  console.log('[Save] starting save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri: isTauri })
+  // Save always opens the native picker. The currently bound custom path is the
+  // first default; otherwise use the managed story/mode name. Users can change
+  // both filename and location before any real document is written.
+  const defaultName = editor.currentFilePath || canonicalSavePath() || canonicalFileName()
+  console.log('[Save] starting explicit save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri })
   try {
-    const path = await fileDialog.saveTranslation(defaultName, dstTalks, app.saveN, meta)
+    const path = await fileDialog.saveTranslation(
+      defaultName,
+      dstTalks,
+      app.saveN,
+      meta,
+      (target, stale) => confirm({
+        title: stale ? '文件已再次变化' : '覆盖现有文件',
+        message: '目标位置已存在内容不同的文件。此操作会覆盖原有文件。',
+        detail: `${target}${stale ? '\n该文件在上次确认后又被修改，请重新确认。' : ''}`,
+        tone: 'danger',
+        confirmText: '覆盖原有文件',
+      }),
+    )
     if (!path) { console.log('[Save] cancelled by user'); return }
     if (isCurrentSaveDocument(version)) editor.currentFilePath = path
-    // 用户在对话框里改过标题段的话，同步回 titleOverride——否则下一次保存按
-    // 旧标题重算规范名，把文件名又改回去。
     if (isCurrentSaveDocument(version)) editor.syncTitleFromPath(path)
     const saveOutcome = await finishCurrentSave(version)
-    // Awaited: 保存并退出 destroys the window right after handleSave returns, so a
-    // fire-and-forget clear could be cut off — leaving a STALE autosave that the
-    // next launch offers as "recovery" over the newer just-saved file.
     console.log('[Save] saved successfully', { path, saveOutcome })
     showManualSaveFeedback(saveOutcome)
   } catch (e: any) {
@@ -954,7 +758,7 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
         <div class="flex items-center gap-1 flex-wrap">
             <button @click="handleOpen" :disabled="editor.documentBusy" class="btn btn-sm btn-ghost gap-1.5"><FolderOpen :size="15" />{{ app.editorMode === 2 ? '导入翻译稿' : '打开' }}</button>
             <button v-if="app.editorMode === 2" @click="handleImportBaseline" :disabled="editor.documentBusy" :title="'导入校对稿 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'importBaseline')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><FileInput :size="15" />导入校对稿</button>
-            <!-- @click 必须写 handleSave()：裸引用会把 MouseEvent 当 saveAs 传入 -->
+            <!-- @click 显式调用，避免把 MouseEvent 传入保存流程。 -->
             <button @click="handleSave()" :disabled="editor.documentBusy" class="btn btn-sm btn-ghost gap-1.5"><Save :size="15" />保存</button>
             <button @click="doUndo" :disabled="editor.documentBusy || !canUndo" :title="'撤销最近一次修改 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'undo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Undo2 :size="15" />撤销</button>
             <button @click="doRedo" :disabled="editor.documentBusy || !canRedo" :title="'重做 (' + formatCombo(resolveCombo(settings.settings.shortcuts, 'redo')) + ')'" class="btn btn-sm btn-ghost gap-1.5"><Redo2 :size="15" />重做</button>

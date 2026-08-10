@@ -1,3 +1,38 @@
+# SekaiText Next v5.9.10 更新日志
+
+> **文稿与自动轴机工作流安全修复**：阻止翻译、校对与合意稿静默覆盖，修复剧情资源目录、压制命名、staff 导出、Aegisub 回读提示和三行分句复查。
+
+## 💾 文稿保存安全
+- 翻译、校对和合意稿只在用户点击“保存”后写入正式文稿；恢复快照继续自动保存，但不再静默覆盖用户选择的 TXT 文件。
+- 每次保存均打开原生保存框，可自定义文件名和目录；已绑定的自定义路径会作为下一次保存的默认位置，未指定时使用规范默认名。
+- 写入前逐字节比较现有文件：内容相同则直接视为已保存；内容不同时明确提示“此操作会覆盖原有文件”。
+- 覆盖确认绑定现有文件的 SHA-256；如果文件在确认后又被其他程序修改，会要求重新确认，避免使用过期确认覆盖新内容。
+
+## 🗂️ 剧情 JSON 与原文导出
+- JSON 下载页直接以持久化设置作为当前输出目录，选择或输入目录后不再被页面旧状态覆盖回默认目录。
+- 开始 JSON 下载或原文 TXT 导出前强制完成设置写入，并为整批任务锁定同一个目录，避免多章节被分散到不同位置。
+
+## 🎬 AutoTiming 3.2.9
+- 压制输出名在选择视频后立即按源视频派生，例如 `video.mp4` → `video_subbed.mp4`；用户手动指定输出后保持手动路径。
+- staff 每个字段增加独立勾选，未勾选不输出、勾选留空输出默认职位、填写后输出自定义内容；轴校与压制人员拆分，并补充制作组与内容标题示例。
+- staff 导出替换已有模板行，修复重复 Dialogue 和“字幕制作 by 字幕制作 by …”；全部未勾选时也会移除模板示例。
+- Aegisub 自动回读改为静默单飞与指数退避；遇到缺少当前任务 `revision/hash` 的 ASS 时暂停该文件的自动回读，直到文件变化、重新导出或切换任务，不再反复弹错或发送无意义请求。
+- 三行分句复查可在关闭后通过“复查三行分句”重新打开；已修正、不再属于过长行的对话仍保留在复查列表。
+
+## ✅ 验证
+- Host 31 个 Vitest 文件共 182 项测试、56 项 Node 发布/平台测试全部通过，`vue-tsc` 与 Vite 生产构建通过。
+- Go 后端全量测试、重点包 race 测试与 `go vet` 通过；SekaiCoreEngine Release 构建 0 警告、0 错误。
+- AutoTiming 18 项测试、生产构建与确定性插件打包通过；最终补丁通过 `git diff --check`。
+
+## English Summary
+- Restored explicit Save-picker semantics for translation, proofreading, and consensus documents; recovery snapshots no longer overwrite formal TXT files.
+- Added byte comparison, SHA-256-bound overwrite confirmation, and stale-confirmation detection while preserving custom filenames and locations.
+- Persisted and snapshotted the JSON/TXT output directory for complete multi-chapter batches.
+- Released AutoTiming 3.2.9 with source-video-derived output names, per-field staff inclusion, separate timing-QC/encoding roles, idempotent staff export, silent and permanently blocked invalid ASS sync retries, and reopenable three-line split review.
+- Passed the complete Host, Go, AutoTiming, Engine, type-check, production-build, race, vet, and release-regression gates.
+
+---
+
 # SekaiText Next v5.9.9 更新日志
 
 > **投入使用前稳定性修复**：将文件打开、剧情恢复和合意稿导入统一改成候选事务，并集中修复桌面 Live2D 黑屏/无声、剧情跳转、恢复快照和自动轴机生命周期问题。

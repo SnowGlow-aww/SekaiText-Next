@@ -207,10 +207,19 @@ export const api = {
       body: JSON.stringify({ filePath }),
     }),
 
-  translationSave: (filePath: string, talks: import('../types/translation').DstTalk[], saveN: boolean, meta?: import('../types/api').SaveMetadata) =>
-    request<{ status: string }>('/translation/save', {
+  translationSave: (
+    filePath: string,
+    talks: import('../types/translation').DstTalk[],
+    saveN: boolean,
+    meta?: import('../types/api').SaveMetadata,
+    expectedExistingDigest = '',
+  ) =>
+    request<{
+      status: 'saved' | 'unchanged' | 'overwrite-required' | 'overwrite-stale'
+      existingDigest?: string
+    }>('/translation/save', {
       method: 'POST',
-      body: JSON.stringify({ filePath, talks, saveN, meta }),
+      body: JSON.stringify({ filePath, talks, saveN, meta, expectedExistingDigest }),
     }),
 
   ensureDir: (path: string) =>

@@ -6,6 +6,8 @@ import type { SaveMetadata } from '../types/api'
 
 const isTauri = capabilities.isTauri
 
+type ConfirmOverwrite = (path: string, stale: boolean) => Promise<boolean>
+
 export function useFileDialog() {
   async function openTranslation(): Promise<{
     talks: DstTalk[]
@@ -69,6 +71,7 @@ export function useFileDialog() {
     talks: DstTalk[],
     saveN: boolean,
     meta?: SaveMetadata,
+    confirmOverwrite?: ConfirmOverwrite,
   ): Promise<string | null> {
     if (isTauri) {
       const { save } = await import('@tauri-apps/plugin-dialog')
@@ -93,17 +96,33 @@ export function useFileDialog() {
         filters: [{ name: '翻译文件', extensions: ['txt'] }],
       })
       if (!path) return null
-      console.log('[Save] writing file', { path, talkCount: talks.length, saveN, hasMeta: !!meta })
+      console.log('[Save] checking target', { path, talkCount: talks.length, saveN, hasMeta: !!meta })
       if (capabilities.isAndroid) {
-        const [{ writeTextFile }, serialized] = await Promise.all([
+        const [{ readTextFile, writeTextFile }, serialized] = await Promise.all([
           import('@tauri-apps/plugin-fs'),
           mobileCore.serializeTranslation({ talks, saveN, meta }),
         ])
+        // Some Android providers materialize a new zero-byte document as soon as
+        // the picker returns. Only a non-empty, different document needs an extra
+        // application-level overwrite confirmation.
+        let existing = ''
+        try { existing = await readTextFile(path) } catch { /* new document */ }
+        if (existing && existing !== serialized.content) {
+          if (!confirmOverwrite || !(await confirmOverwrite(path, false))) return null
+        }
         await writeTextFile(path, serialized.content)
-      } else {
-        await api.translationSave(path, talks, saveN, meta)
+        return path
       }
-      return path
+
+      let expectedExistingDigest = ''
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const result = await api.translationSave(path, talks, saveN, meta, expectedExistingDigest)
+        if (result.status === 'saved' || result.status === 'unchanged') return path
+        if (!result.existingDigest) throw new Error('保存目标检查返回了无效结果')
+        if (!confirmOverwrite || !(await confirmOverwrite(path, result.status === 'overwrite-stale'))) return null
+        expectedExistingDigest = result.existingDigest
+      }
+      throw new Error('目标文件在确认期间持续变化，请稍后重试')
     } else {
       console.log('[Save] serializing for download', { defaultName, talkCount: talks.length });
       const { content } = await api.translationSerialize({ talks, saveN, meta })

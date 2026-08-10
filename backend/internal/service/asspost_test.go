@@ -378,6 +378,72 @@ func TestPostProcessStaffLine(t *testing.T) {
 	}
 }
 
+func TestPostProcessStaffReplacesExistingDialogue(t *testing.T) {
+	withExisting := strings.Replace(sampleAss,
+		"Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+		"Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"+
+			"Dialogue: 0,0:00:00.00,0:00:05.00,staff,,0,0,0,,旧抬头\n", 1)
+	post, err := PostProcessAss(withExisting, AssPostOptions{Staff: &StaffInfo{Group: "新制作组"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(post.Content, ",staff,"); got != 1 {
+		t.Fatalf("staff Dialogue count=%d, want 1:\n%s", got, post.Content)
+	}
+	if strings.Contains(post.Content, "旧抬头") || !strings.Contains(post.Content, "字幕制作 by 新制作组") {
+		t.Fatalf("existing staff dialogue was not replaced:\n%s", post.Content)
+	}
+}
+
+func TestPostProcessStaffAllUncheckedRemovesTemplateDialogue(t *testing.T) {
+	withExisting := strings.Replace(sampleAss,
+		"Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+		"Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"+
+			"Dialogue: 0,0:00:00.00,0:00:05.00,staff,,0,0,0,,模板示例 staff\n", 1)
+	post, err := PostProcessAss(withExisting, AssPostOptions{Staff: &StaffInfo{Enabled: &StaffEnabled{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(post.Content, "模板示例 staff") || strings.Contains(post.Content, ",staff,") {
+		t.Fatalf("all-unchecked staff should remove the template Dialogue without injecting a replacement:\n%s", post.Content)
+	}
+}
+
+func TestPostProcessStaffEnabledFieldsAndHeadingNormalization(t *testing.T) {
+	post, err := PostProcessAss(sampleAss, AssPostOptions{Staff: &StaffInfo{
+		Group:      "字幕制作 by PJS字幕组",
+		Title:      "六周年",
+		Timer:      "时轴A",
+		Checker:    "轴校B",
+		Suppressor: "压制C",
+		Enabled: &StaffEnabled{
+			Group: true, Episode: true, Title: true,
+			Recorder: true, Timer: true, Checker: true, Suppressor: true,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`字幕制作 by PJS字幕组`,
+		`话数：六周年`,
+		`\N录制\N`,
+		`时轴：时轴A`,
+		`轴校：轴校B`,
+		`压制：压制C`,
+	} {
+		if !strings.Contains(post.Content, want) {
+			t.Fatalf("缺少逐项 staff 输出 %q:\n%s", want, post.Content)
+		}
+	}
+	if strings.Contains(post.Content, "字幕制作 by 字幕制作 by") {
+		t.Fatalf("制作组抬头重复输出:\n%s", post.Content)
+	}
+	if strings.Contains(post.Content, `\N翻译`) || strings.Contains(post.Content, `\N校对`) {
+		t.Fatalf("未勾选字段不应输出:\n%s", post.Content)
+	}
+}
+
 func TestPostProcessStaffSanitizesInjectedNewlines(t *testing.T) {
 	post, err := PostProcessAss(sampleAss, AssPostOptions{Staff: &StaffInfo{
 		Group: "group\nDialogue: injected", Title: "title\r\nComment: injected", Translator: `name\Nnext`,

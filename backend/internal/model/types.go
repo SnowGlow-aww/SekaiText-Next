@@ -216,10 +216,11 @@ type TranslationLoadRequest struct {
 
 // TranslationSaveRequest saves a translation file.
 type TranslationSaveRequest struct {
-	FilePath string        `json:"filePath" validate:"required"`
-	Talks    []DstTalk     `json:"talks" validate:"required"`
-	SaveN    bool          `json:"saveN"`
-	Meta     *SaveMetadata `json:"meta,omitempty"`
+	FilePath               string        `json:"filePath" validate:"required"`
+	Talks                  []DstTalk     `json:"talks" validate:"required"`
+	SaveN                  bool          `json:"saveN"`
+	Meta                   *SaveMetadata `json:"meta,omitempty"`
+	ExpectedExistingDigest string        `json:"expectedExistingDigest,omitempty"`
 }
 
 // EditorChangeTextRequest edits text in a talk entry.

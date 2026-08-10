@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -408,8 +409,41 @@ func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[save] writing %s (%d talks, saveN=%v, hasMeta=%v)", req.FilePath, len(req.Talks), req.SaveN, req.Meta != nil)
-	content := h.editor.SerializeWithMeta(req.Talks, req.SaveN, req.Meta)
+	if strings.TrimSpace(req.FilePath) == "" {
+		writeError(w, http.StatusBadRequest, "filePath required")
+		return
+	}
+	log.Printf("[save] checking %s (%d talks, saveN=%v, hasMeta=%v)", req.FilePath, len(req.Talks), req.SaveN, req.Meta != nil)
+	content := []byte(h.editor.SerializeWithMeta(req.Talks, req.SaveN, req.Meta))
+
+	// Explicit manual saves are compare-before-overwrite. An existing byte-for-byte
+	// identical file is already saved; different content requires the caller to
+	// confirm the exact digest it inspected. If another process changes the file
+	// between prompts, the new digest is returned and the caller must confirm again.
+	existing, readErr := os.ReadFile(req.FilePath)
+	switch {
+	case readErr == nil:
+		if bytes.Equal(existing, content) {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "unchanged"})
+			return
+		}
+		digest := contentSHA256(existing)
+		status := "overwrite-required"
+		if req.ExpectedExistingDigest != "" && req.ExpectedExistingDigest != digest {
+			status = "overwrite-stale"
+		} else if req.ExpectedExistingDigest == digest {
+			break
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":         status,
+			"existingDigest": digest,
+		})
+		return
+	case !os.IsNotExist(readErr):
+		writeError(w, http.StatusInternalServerError, "read existing file failed: "+readErr.Error())
+		return
+	}
+
 	if dir := filepath.Dir(req.FilePath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Printf("[save] mkdir error: %v", err)
@@ -417,11 +451,9 @@ func (h *Handler) TranslationSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Atomic write (temp + fsync + rename), same as the autosave path: a plain
-	// os.WriteFile O_TRUNCs the user's translation file FIRST, so a crash /
-	// disk-full / kill mid-write destroys the only copy of their work. With the
-	// rename the previous file stays intact until the new content is durable.
-	if err := fsutil.WriteFileAtomic(req.FilePath, []byte(content), 0644); err != nil {
+	// Atomic write (temp + fsync + rename): the previous file stays intact until
+	// the confirmed replacement is durable.
+	if err := fsutil.WriteFileAtomic(req.FilePath, content, 0644); err != nil {
 		log.Printf("[save] write error: %v", err)
 		writeError(w, http.StatusInternalServerError, "file write failed: "+err.Error())
 		return

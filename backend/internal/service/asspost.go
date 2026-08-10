@@ -39,17 +39,31 @@ type AssPostOptions struct {
 	Staff *StaffInfo `json:"staff,omitempty"`
 }
 
-// StaffInfo 是 staff 行的可自定义字段（职位标签固定，ID 由用户输入）。
-// 全部留空则不生成 staff 行；时轴与轴校&压制相同则合并为「时轴&轴校&压制」。
+// StaffInfo 是 staff 行的可自定义字段。Enabled 缺失时按旧插件兼容：仅非空
+// 字段输出，旧 suppressor 同时代表轴校与压制；新插件可逐项勾选并分开两人。
 type StaffInfo struct {
-	Group      string `json:"group"`      // 字幕组名，如 PJS字幕组
-	Episode    string `json:"episode"`    // 话数，如 第一话
-	Title      string `json:"title"`      // 标题，如 三周年
-	Recorder   string `json:"recorder"`   // 录制
-	Translator string `json:"translator"` // 翻译
-	Proofread  string `json:"proofread"`  // 校对
-	Timer      string `json:"timer"`      // 时轴
-	Suppressor string `json:"suppressor"` // 轴校&压制
+	Group      string        `json:"group"`      // 字幕组名，如 PJS字幕组
+	Episode    string        `json:"episode"`    // 话数，如 第一话
+	Title      string        `json:"title"`      // 标题，如 三周年
+	Recorder   string        `json:"recorder"`   // 录制
+	Translator string        `json:"translator"` // 翻译
+	Proofread  string        `json:"proofread"`  // 校对
+	Timer      string        `json:"timer"`      // 时轴
+	Checker    string        `json:"checker"`    // 轴校
+	Suppressor string        `json:"suppressor"` // 压制
+	Enabled    *StaffEnabled `json:"enabled,omitempty"`
+}
+
+type StaffEnabled struct {
+	Group      bool `json:"group"`
+	Episode    bool `json:"episode"`
+	Title      bool `json:"title"`
+	Recorder   bool `json:"recorder"`
+	Translator bool `json:"translator"`
+	Proofread  bool `json:"proofread"`
+	Timer      bool `json:"timer"`
+	Checker    bool `json:"checker"`
+	Suppressor bool `json:"suppressor"`
 }
 
 func sanitizeStaffField(value string) string {
@@ -57,35 +71,116 @@ func sanitizeStaffField(value string) string {
 	return strings.TrimSpace(value)
 }
 
-// buildStaffText 组装 staff 行文本；无任何内容时返回 ""。
-func buildStaffText(s StaffInfo) string {
-	var parts []string
-	if g := sanitizeStaffField(s.Group); g != "" {
-		parts = append(parts, "字幕制作 by "+g)
+func staffFieldEnabled(s StaffInfo, field string, value string) bool {
+	if s.Enabled == nil {
+		return sanitizeStaffField(value) != ""
 	}
-	ep, ti := sanitizeStaffField(s.Episode), sanitizeStaffField(s.Title)
-	switch {
-	case ep != "" && ti != "":
-		parts = append(parts, ep+"："+ti)
-	case ep != "":
-		parts = append(parts, ep)
-	case ti != "":
-		parts = append(parts, ti)
+	switch field {
+	case "group":
+		return s.Enabled.Group
+	case "episode":
+		return s.Enabled.Episode
+	case "title":
+		return s.Enabled.Title
+	case "recorder":
+		return s.Enabled.Recorder
+	case "translator":
+		return s.Enabled.Translator
+	case "proofread":
+		return s.Enabled.Proofread
+	case "timer":
+		return s.Enabled.Timer
+	case "checker":
+		return s.Enabled.Checker
+	case "suppressor":
+		return s.Enabled.Suppressor
 	}
-	add := func(label, v string) {
-		if v = sanitizeStaffField(v); v != "" {
-			parts = append(parts, label+"："+v)
+	return false
+}
+
+func staffGroupHeading(value string) string {
+	value = sanitizeStaffField(value)
+	for _, prefix := range []string{"字幕制作 by", "字幕制作by"} {
+		if strings.HasPrefix(value, prefix) {
+			name := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+			if name == "" {
+				return "字幕制作"
+			}
+			return "字幕制作 by " + name
 		}
 	}
-	add("录制", s.Recorder)
-	add("翻译", s.Translator)
-	add("校对", s.Proofread)
-	timer, sup := sanitizeStaffField(s.Timer), sanitizeStaffField(s.Suppressor)
-	if timer != "" && timer == sup {
+	if value == "" {
+		return "字幕制作"
+	}
+	return "字幕制作 by " + value
+}
+
+// buildStaffText 组装 staff 行文本；未勾选不输出，勾选空值输出职位本身，填写
+// 内容则输出「职位：内容」。相同人员只在相邻职责间安全合并。
+func buildStaffText(s StaffInfo) string {
+	var parts []string
+	if staffFieldEnabled(s, "group", s.Group) {
+		parts = append(parts, staffGroupHeading(s.Group))
+	}
+
+	epEnabled := staffFieldEnabled(s, "episode", s.Episode)
+	titleEnabled := staffFieldEnabled(s, "title", s.Title)
+	ep, title := sanitizeStaffField(s.Episode), sanitizeStaffField(s.Title)
+	if epEnabled || titleEnabled {
+		if epEnabled && ep == "" {
+			ep = "话数"
+		}
+		if titleEnabled && title == "" {
+			title = "标题"
+		}
+		switch {
+		case epEnabled && titleEnabled:
+			parts = append(parts, ep+"："+title)
+		case epEnabled:
+			parts = append(parts, ep)
+		case titleEnabled:
+			parts = append(parts, title)
+		}
+	}
+
+	add := func(label string, enabled bool, value string) {
+		if !enabled {
+			return
+		}
+		if value = sanitizeStaffField(value); value != "" {
+			parts = append(parts, label+"："+value)
+		} else {
+			parts = append(parts, label)
+		}
+	}
+	add("录制", staffFieldEnabled(s, "recorder", s.Recorder), s.Recorder)
+	add("翻译", staffFieldEnabled(s, "translator", s.Translator), s.Translator)
+	add("校对", staffFieldEnabled(s, "proofread", s.Proofread), s.Proofread)
+
+	timer := sanitizeStaffField(s.Timer)
+	checker := sanitizeStaffField(s.Checker)
+	suppressor := sanitizeStaffField(s.Suppressor)
+	timerEnabled := staffFieldEnabled(s, "timer", s.Timer)
+	checkerEnabled := staffFieldEnabled(s, "checker", s.Checker)
+	suppressorEnabled := staffFieldEnabled(s, "suppressor", s.Suppressor)
+	if s.Enabled == nil && checker == "" && suppressor != "" {
+		// Legacy suppressor represented the combined 轴校&压制 field.
+		checker = suppressor
+		checkerEnabled = true
+	}
+	switch {
+	case timerEnabled && checkerEnabled && suppressorEnabled && timer != "" && timer == checker && checker == suppressor:
 		parts = append(parts, "时轴&轴校&压制："+timer)
-	} else {
-		add("时轴", timer)
-		add("轴校&压制", sup)
+	case checkerEnabled && suppressorEnabled && checker != "" && checker == suppressor:
+		add("时轴", timerEnabled, timer)
+		parts = append(parts, "轴校&压制："+checker)
+	case timerEnabled && checkerEnabled && timer != "" && timer == checker:
+		parts = append(parts, "时轴&轴校："+timer)
+		add("压制", suppressorEnabled, suppressor)
+	default:
+		add("时轴", timerEnabled, timer)
+		add("轴校", checkerEnabled, checker)
+		add("压制", suppressorEnabled, suppressor)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -434,6 +529,12 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		}
 		style := strings.TrimSpace(ev.Fields[styleI])
 		text := ev.Fields[textI]
+
+		// 注入新 staff 时把模板/旧导出中已有的 staff Dialogue 当作可替换槽位，
+		// 避免同一个制作组抬头在成片开头出现两遍；说明性 Comment 保留。
+		if opts.Staff != nil && ev.Kind == "Dialogue" && style == "staff" {
+			continue
+		}
 
 		// 对话组边界（引擎的 Screen 注释标记）
 		if ev.Kind == "Comment" && style == "Screen" {
