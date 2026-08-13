@@ -164,9 +164,10 @@ async function handleDownload() {
   await downloadOne(coord, story.selectedChapter, targetDir)
 }
 
-// 一键导出原文 txt：译文槽位填日语原文，格式与正常工作流翻译后的导出一致
-// （场景行+空行、对话行「说话人：」前缀、框内换行为独立续行、CRLF），文件名
-// 与剧情 json 同名（.txt 后缀），落到同一个输出目录。选择语义与下载一致：
+// 一键导出原文 txt：译文槽位填日语原文，完整复用编辑器的翻译稿格式
+// （场景行+空行、对话行「说话人：」前缀、对话续行使用字面量 \\N、CRLF），默认
+// 文件名为「【翻译】<SaveTitle> <ChapterTitle>.txt」，落到同一个输出目录。
+// 选择语义与下载一致：
 // 未选章节 = 导出该索引下全部章节。
 async function exportTxtOne(coord: DownloadCoord, chapter: number, targetDir: string) {
   const taskId = dlFloat.add(coord.index + ' ch' + chapter + ' 原文txt')
@@ -298,7 +299,7 @@ async function handleExportTxt() {
             <button v-if="isTauri" @click="browseOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
               <FolderOpen :size="15" /> 浏览
             </button>
-            <button @click="handleExportTxt" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap" title="译文槽位填日语原文，格式同正式翻译档">
+            <button @click="handleExportTxt" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap" title="按编辑器翻译稿格式导出，可直接重新导入">
               <FileText :size="15" /> 导出TXT
             </button>
             <button @click="handleDownload" class="btn btn-sm btn-brand whitespace-nowrap">

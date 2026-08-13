@@ -70,3 +70,101 @@ func TestLoadContentAcceptsLegacyMetadataHeader(t *testing.T) {
 		t.Fatalf("legacy body parse = %+v", loaded)
 	}
 }
+
+func TestCreateFileJPModePreservesOriginalPunctuation(t *testing.T) {
+	source := []model.SourceTalk{{
+		Speaker: "爱莉",
+		Text:    "第一行？！……「测试」♪☆/『引用』",
+	}}
+
+	editor := NewEditorService()
+	talks := editor.CreateFile(source, true)
+	if len(talks) != 1 || talks[0].Text != source[0].Text {
+		t.Fatalf("JP template changed original punctuation: %+v", talks)
+	}
+	content := editor.SerializeContent(talks, true)
+	if content != "爱莉：第一行？！……「测试」♪☆/『引用』" {
+		t.Fatalf("serialized JP template = %q", content)
+	}
+}
+
+func TestCreateFileJPModePreservesDialogueLineBreaks(t *testing.T) {
+	source := []model.SourceTalk{
+		{Speaker: "场景", Text: "ストリートのセカイ"},
+		{Speaker: "爱莉", Text: "第一行？！\n第二行……\n第三行「完」"},
+		{Speaker: "", Text: ""},
+		{Speaker: "场景", Text: "后续场景"},
+	}
+
+	editor := NewEditorService()
+	talks := editor.CreateFile(source, true)
+	if len(talks) != 6 {
+		t.Fatalf("got %d dst talks, want 6: %+v", len(talks), talks)
+	}
+	if got := talks[1]; !got.Start || got.End || got.Text != "第一行？！" {
+		t.Fatalf("first dialogue segment = %+v", got)
+	}
+	if got := talks[2]; got.Start || got.End || got.Text != "第二行……" {
+		t.Fatalf("middle dialogue segment = %+v", got)
+	}
+	if got := talks[3]; got.Start || !got.End || got.Text != "第三行「完」" {
+		t.Fatalf("last dialogue segment = %+v", got)
+	}
+
+	content := editor.SerializeContent(talks, true)
+	if !strings.Contains(content, "爱莉：第一行？！\\N第二行……\\N第三行「完」") {
+		t.Fatalf("serialized dialogue lost \\N separators: %q", content)
+	}
+	if strings.Contains(strings.ReplaceAll(content, "\r\n", ""), "\n") {
+		t.Fatalf("serialized content contains bare LF instead of CRLF: %q", content)
+	}
+
+	loaded, _, err := editor.LoadContent(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(talks) {
+		t.Fatalf("round-trip talk count = %d, want %d: %+v", len(loaded), len(talks), loaded)
+	}
+	for i, want := range talks {
+		if loaded[i].Speaker != want.Speaker || loaded[i].Start != want.Start || loaded[i].End != want.End {
+			t.Fatalf("round-trip row %d structure = %+v, want speaker/start/end from %+v", i, loaded[i], want)
+		}
+	}
+}
+
+func TestManagedTranslationFileNameMatchesEditorContract(t *testing.T) {
+	cases := []struct {
+		name         string
+		saveTitle    string
+		chapterTitle string
+		want         string
+	}{
+		{
+			name:         "chaptered",
+			saveTitle:    "event211-airi",
+			chapterTitle: "前篇",
+			want:         "【翻译】event211-airi 前篇.txt",
+		},
+		{
+			name:         "chapterless",
+			saveTitle:    "Special Story SaveTitle With Spaces",
+			chapterTitle: "",
+			want:         "【翻译】Special Story SaveTitle With Spaces.txt",
+		},
+		{
+			name:         "safe fallback",
+			saveTitle:    "a/b",
+			chapterTitle: "",
+			want:         "【翻译】a_b.txt",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ManagedTranslationFileName(tc.saveTitle, tc.chapterTitle); got != tc.want {
+				t.Fatalf("ManagedTranslationFileName(%q, %q) = %q, want %q", tc.saveTitle, tc.chapterTitle, got, tc.want)
+			}
+		})
+	}
+}

@@ -1659,7 +1659,8 @@ func (h *Handler) DownloadStoryJSON(w http.ResponseWriter, r *http.Request) {
 
 // ExportStoryOriginalTxt 一键导出「原文 txt」：把选中章节的剧情 JSON 下到 dataDir 缓存
 // （不占用户输出目录）后解析，译文槽位直接填日文原文，用与正式翻译档同一个序列化器
-// （场景行裸文本+空行分隔、对话行「说话人：」前缀、CRLF）写 <输出目录>/<json同名>.txt。
+// （场景行裸文本、对话行「说话人：」前缀、对话续行使用字面量 \\N、CRLF）写成
+// 编辑器默认的「【翻译】<SaveTitle> <ChapterTitle>.txt」文件名。
 // 用一个不带 FlashbackAnalyzer 的裸解析器：闪回注解对纯文本导出无意义，还会级联下载
 // 一堆来源剧本拖慢响应。
 func (h *Handler) ExportStoryOriginalTxt(w http.ResponseWriter, r *http.Request) {
@@ -1687,8 +1688,12 @@ func (h *Handler) ExportStoryOriginalTxt(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	content := h.editor.SerializeContent(service.SourceTalksAsDst(resp.SourceTalks), false)
-	name := strings.TrimSuffix(path.FileName, filepath.Ext(path.FileName)) + ".txt"
+	// Use the same source-to-editor path as the normal translation workflow with
+	// jp=true. That path deliberately keeps the complete original text,
+	// including every punctuation mark, while still building the Start/End
+	// structure needed for literal \\N separators on dialogue continuations.
+	content := h.editor.SerializeContent(h.editor.CreateFile(resp.SourceTalks, true), true)
+	name := service.ManagedTranslationFileName(path.SaveTitle, path.ChapterTitle)
 	outPath := filepath.Join(req.OutputDir, name)
 	if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
 		writeError(w, http.StatusInternalServerError, "create dir failed: "+err.Error())
