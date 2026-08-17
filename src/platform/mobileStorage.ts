@@ -16,6 +16,7 @@ const defaultSettings: Settings = {
   indexOrder: 'asc',
   jsonDownloadDir: '',
   saveBaseDir: '',
+  confirmSavePath: false,
   undoDepth: 20,
   keepHighlightWhenCompareOff: true,
   shortcuts: {},

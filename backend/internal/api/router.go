@@ -119,6 +119,7 @@ func NewRouter(cfg *config.AppConfig) *Server {
 		r.Post("/open-data-dir", h.OpenDataDir)
 		r.Post("/save-dir/open", h.OpenSaveDir)
 		r.Post("/save-dir/migrate", h.MigrateSaveDir)
+		r.Post("/save-dir/import", h.ImportSaveDir)
 
 		// Open an external http/https link in the system browser
 		r.Post("/open-url", h.OpenURL)

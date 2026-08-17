@@ -6,6 +6,7 @@ export interface Settings {
   indexOrder: 'asc' | 'desc'
   jsonDownloadDir?: string
   saveBaseDir?: string
+  confirmSavePath?: boolean
   undoDepth: number
   keepHighlightWhenCompareOff: boolean
   shortcuts?: Record<string, string>
@@ -57,4 +58,12 @@ export interface MigrateSaveDirResult {
    * 内容不同的同名陌生文件（否则下次自动保存会覆盖它、丢掉原稿）。
    */
   skippedPaths: string[]
+}
+
+export interface ImportSaveDirResult {
+  total: number
+  imported: number
+  unchanged: number
+  failed: number
+  errors?: string[]
 }

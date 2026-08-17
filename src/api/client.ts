@@ -403,6 +403,13 @@ export const api = {
       body: JSON.stringify({ newDir }),
       timeoutMs: LONG_MUTATION_TIMEOUT_MS,
     }),
+  importSaveDir: (srcDir: string, targetDir?: string) => capabilities.isAndroid
+    ? unsupportedOnAndroid<import('../types/api').ImportSaveDirResult>('Importing into the desktop save directory')
+    : request<import('../types/api').ImportSaveDirResult>('/save-dir/import', {
+      method: 'POST',
+      body: JSON.stringify({ srcDir, targetDir }),
+      timeoutMs: LONG_MUTATION_TIMEOUT_MS,
+    }),
   openUrl: (url: string) => capabilities.isAndroid
     ? mobileCore.openUrl(url)
     : request<{ status: string }>('/open-url', { method: 'POST', body: JSON.stringify({ url }) }),

@@ -1326,6 +1326,180 @@ func (h *Handler) MigrateSaveDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// ImportSaveDir scans a source directory for translation documents and organizes
+// them into the target save directory using canonical story identity rules.
+func (h *Handler) ImportSaveDir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SrcDir    string `json:"srcDir"`
+		TargetDir string `json:"targetDir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.SrcDir) == "" {
+		writeError(w, http.StatusBadRequest, "srcDir required")
+		return
+	}
+	srcAbs, err := filepath.Abs(strings.TrimSpace(req.SrcDir))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid srcDir: "+err.Error())
+		return
+	}
+	srcInfo, err := os.Stat(srcAbs)
+	if err != nil || !srcInfo.IsDir() {
+		writeError(w, http.StatusBadRequest, "srcDir 不是有效目录")
+		return
+	}
+
+	target := strings.TrimSpace(req.TargetDir)
+	if target == "" {
+		target = h.resolveSaveBaseDir()
+	}
+	if target == "" {
+		writeError(w, http.StatusBadRequest, "无法确定目标保存目录")
+		return
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid targetDir: "+err.Error())
+		return
+	}
+
+	h.saveDirMu.RLock()
+	defer h.saveDirMu.RUnlock()
+
+	var txtFiles []string
+	_ = filepath.WalkDir(srcAbs, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".txt") {
+			return nil
+		}
+		base := d.Name()
+		if strings.HasPrefix(base, ".") || base == "autosave.txt" {
+			return nil
+		}
+		txtFiles = append(txtFiles, path)
+		return nil
+	})
+
+	total := len(txtFiles)
+	imported := 0
+	unchanged := 0
+	failed := 0
+	var errMessages []string
+
+	for _, file := range txtFiles {
+		data, readErr := os.ReadFile(file)
+		if readErr != nil {
+			failed++
+			errMessages = append(errMessages, fmt.Sprintf("%s: read error: %v", filepath.Base(file), readErr))
+			continue
+		}
+
+		rawName := filepath.Base(file)
+		nameWithoutExt := strings.TrimSuffix(rawName, filepath.Ext(rawName))
+		modeLabel := "翻译"
+		body := nameWithoutExt
+		if strings.HasPrefix(nameWithoutExt, "【") {
+			if endIdx := strings.Index(nameWithoutExt, "】"); endIdx > 0 {
+				modeLabel = nameWithoutExt[len("【"):endIdx]
+				body = strings.TrimSpace(nameWithoutExt[endIdx+len("】"):])
+			}
+		}
+
+		canonical := body
+		titleOverride := ""
+		if markerIdx := strings.Index(body, "【标题】"); markerIdx >= 0 {
+			canonical = strings.TrimSpace(body[:markerIdx])
+			titleOverride = strings.TrimSpace(body[markerIdx+len("【标题】"):])
+		}
+
+		storyType, _, indexLabel, _, ok, _, _ := h.lm.ResolveLabelDetailed(canonical)
+		if !ok && strings.HasPrefix(canonical, "event") {
+			storyType, _, indexLabel, _, ok, _, _ = h.lm.ResolveLabelDetailed(body)
+		}
+
+		var destDir, destFileName string
+		if ok && storyType != "" && indexLabel != "" {
+			cleanComp := func(s string) string {
+				return strings.Map(func(r rune) rune {
+					switch r {
+					case '/', '\\', ':':
+						return '_'
+					default:
+						if r < 0x20 || r == 0x7f {
+							return -1
+						}
+						return r
+					}
+				}, strings.TrimSpace(s))
+			}
+			destDir = filepath.Join(targetAbs, cleanComp(storyType), cleanComp(indexLabel))
+			titleSuffix := ""
+			if titleOverride != "" {
+				titleSuffix = "【标题】" + titleOverride
+			}
+			destFileName = fmt.Sprintf("【%s】%s%s.txt", modeLabel, canonical, titleSuffix)
+		} else {
+			destDir = filepath.Join(targetAbs, "未分类")
+			destFileName = rawName
+		}
+
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			failed++
+			errMessages = append(errMessages, fmt.Sprintf("%s: mkdir error: %v", rawName, err))
+			continue
+		}
+
+		destPath := filepath.Join(destDir, destFileName)
+		if existing, statErr := os.ReadFile(destPath); statErr == nil {
+			if bytes.Equal(existing, data) {
+				unchanged++
+				continue
+			}
+			ext := filepath.Ext(destFileName)
+			stem := strings.TrimSuffix(destFileName, ext)
+			for i := 2; ; i++ {
+				altPath := filepath.Join(destDir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
+				if altExisting, altErr := os.ReadFile(altPath); altErr == nil {
+					if bytes.Equal(altExisting, data) {
+						unchanged++
+						destPath = ""
+						break
+					}
+					continue
+				}
+				destPath = altPath
+				break
+			}
+			if destPath == "" {
+				continue
+			}
+		}
+
+		if err := fsutil.WriteFileAtomic(destPath, data, 0o644); err != nil {
+			failed++
+			errMessages = append(errMessages, fmt.Sprintf("%s: write error: %v", rawName, err))
+			continue
+		}
+		imported++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"total":     total,
+		"imported":  imported,
+		"unchanged": unchanged,
+		"failed":    failed,
+		"errors":    errMessages,
+	})
+}
+
 type saveDirMigrationJournal struct {
 	Version      int      `json:"version"`
 	OldDir       string   `json:"oldDir"`

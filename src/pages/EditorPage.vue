@@ -545,25 +545,53 @@ async function saveCurrentMode() {
   const version = editor.captureSaveVersion()
   const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
   const meta = buildSaveMeta()
-  // Save always opens the native picker. The currently bound custom path is the
-  // first default; otherwise use the managed story/mode name. Users can change
-  // both filename and location before any real document is written.
-  const defaultName = editor.currentFilePath || canonicalSavePath() || canonicalFileName()
-  console.log('[Save] starting explicit save', { defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri })
+  const confirmOverwrite = (target: string, stale: boolean) => confirm({
+    title: stale ? '文件已再次变化' : '覆盖现有文件',
+    message: '目标位置已存在内容不同的文件。此操作会覆盖原有文件。',
+    detail: `${target}${stale ? '\n该文件在上次确认后又被修改，请重新确认。' : ''}`,
+    tone: 'danger',
+    confirmText: '覆盖原有文件',
+  })
+
+  // Mode: confirmSavePath (true = 确认保存，每次弹窗; false = 静默保存，直接写入)
+  const confirmSave = !!settings.settings.confirmSavePath
+  const directPath = editor.currentFilePath || canonicalSavePath()
+  const defaultName = directPath || canonicalFileName()
+
+  console.log('[Save] starting save', { confirmSave, directPath, defaultName, talkCount: editor.talks.length, dstCount: editor.dstTalks.length, saveN: app.saveN, hasMeta: !!meta, isTauri })
   try {
-    const path = await fileDialog.saveTranslation(
-      defaultName,
-      dstTalks,
-      app.saveN,
-      meta,
-      (target, stale) => confirm({
-        title: stale ? '文件已再次变化' : '覆盖现有文件',
-        message: '目标位置已存在内容不同的文件。此操作会覆盖原有文件。',
-        detail: `${target}${stale ? '\n该文件在上次确认后又被修改，请重新确认。' : ''}`,
-        tone: 'danger',
-        confirmText: '覆盖原有文件',
-      }),
-    )
+    let path: string | null = null
+    if (!confirmSave && directPath && isDesktop) {
+      // 静默保存：直接保存到已有路径或规范分层路径，无需每次打开文件选择框
+      if (capabilities.isAndroid) {
+        path = await fileDialog.saveTranslation(directPath, dstTalks, app.saveN, meta, confirmOverwrite)
+      } else {
+        let expectedExistingDigest = ''
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const result = await api.translationSave(directPath, dstTalks, app.saveN, meta, expectedExistingDigest)
+          if (result.status === 'saved' || result.status === 'unchanged') {
+            path = directPath
+            break
+          }
+          if (!result.existingDigest) throw new Error('保存目标检查返回了无效结果')
+          if (!(await confirmOverwrite(directPath, result.status === 'overwrite-stale'))) {
+            path = null
+            break
+          }
+          expectedExistingDigest = result.existingDigest
+        }
+      }
+    } else {
+      // 确认保存（或无有效目标路径）：打开系统保存文件对话框
+      path = await fileDialog.saveTranslation(
+        defaultName,
+        dstTalks,
+        app.saveN,
+        meta,
+        confirmOverwrite,
+      )
+    }
+
     if (!path) { console.log('[Save] cancelled by user'); return }
     if (isCurrentSaveDocument(version)) editor.currentFilePath = path
     if (isCurrentSaveDocument(version)) editor.syncTitleFromPath(path)

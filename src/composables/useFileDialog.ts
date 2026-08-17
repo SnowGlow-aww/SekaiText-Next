@@ -137,13 +137,15 @@ export function useFileDialog() {
     }
   }
 
-  // Native directory picker (Finder / Explorer). Tauri-only — callers should
-  // hide the entry point in the browser (isTauri) instead of handling null.
+  // Native directory picker (Finder / Explorer on Tauri, path prompt fallback in browser).
   async function pickDirectory(title: string): Promise<string | null> {
-    if (!isTauri) return null
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const dir = await open({ title, directory: true })
-    return typeof dir === 'string' && dir ? dir : null
+    if (isTauri) {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const dir = await open({ title, directory: true })
+      return typeof dir === 'string' && dir ? dir : null
+    }
+    const input = window.prompt(`${title}（请输入绝对路径）：`)
+    return input && input.trim() ? input.trim() : null
   }
 
   return { openTranslation, saveTranslation, pickDirectory, isTauri }

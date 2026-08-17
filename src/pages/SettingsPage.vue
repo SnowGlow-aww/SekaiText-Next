@@ -259,6 +259,28 @@ async function openSaveDirNow() {
   }
 }
 
+const importBusy = ref(false)
+async function importDocumentsNow() {
+  if (importBusy.value) return
+  const dir = await pickDirectory('选择要导入的文稿文件夹')
+  if (!dir) return
+  importBusy.value = true
+  try {
+    const res = await api.importSaveDir(dir, draft.value.saveBaseDir || '')
+    if (res.imported > 0) {
+      toast.show(`已成功导入 ${res.imported} 篇文稿${res.unchanged > 0 ? `（${res.unchanged} 项已存在跳过）` : ''}`, 'success')
+    } else if (res.unchanged > 0) {
+      toast.show(`文件夹内 ${res.unchanged} 篇文稿已存在，未做修改`, 'info')
+    } else {
+      toast.show('未在所选文件夹中找到有效的翻译文稿', 'warn')
+    }
+  } catch (e: any) {
+    toast.show('导入失败: ' + (e.message || '未知错误'), 'error')
+  } finally {
+    importBusy.value = false
+  }
+}
+
 // 重看新手导览：回到主界面再启动（导览锚点都在编辑器页）。
 const tour = useTour()
 function restartTour() {
@@ -582,7 +604,7 @@ onUnmounted(() => {
             placeholder="./downloads/json"
             class="app-input flex-1"
           />
-          <button v-if="isTauri" @click="browseJsonDownloadDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+          <button @click="browseJsonDownloadDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
             <FolderOpen :size="15" /> 浏览
           </button>
         </div>
@@ -603,14 +625,17 @@ onUnmounted(() => {
             placeholder="默认 ~/Documents/SekaiText"
             class="app-input flex-1 cursor-default"
           />
-          <button v-if="isTauri" @click="changeSaveBaseDir" class="btn btn-sm btn-brand whitespace-nowrap">
+          <button @click="changeSaveBaseDir" class="btn btn-sm btn-brand whitespace-nowrap">
             <FolderOpen :size="15" /> 更换位置
           </button>
-          <button v-if="isTauri" @click="openSaveDirNow" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+          <button :disabled="importBusy" @click="importDocumentsNow" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+            <FileUp :size="15" /> 导入
+          </button>
+          <button @click="openSaveDirNow" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
             打开
           </button>
         </div>
-        <div class="app-help mt-1.5">更换位置时会把已生成的文稿自动迁移到新目录（同名文件不覆盖）；还没生成过则直接在新位置建档。</div>
+        <div class="app-help mt-1.5">更换位置时会把已生成的文稿自动迁移到新目录（同名文件不覆盖）；也可通过「导入」将外部文稿自动分级归档到此处。</div>
       </section>
 
       <!-- ====== 文件保存 ====== -->
@@ -628,6 +653,13 @@ onUnmounted(() => {
             <input v-model="draft.saveN" type="checkbox" class="toggle toggle-primary toggle-sm" />
           </label>
 
+          <label class="flex items-center justify-between gap-3 cursor-pointer">
+            <div>
+              <div class="text-sm font-medium">保存方式</div>
+              <div class="app-help mt-0.5">{{ draft.confirmSavePath ? '确认保存：每次保存均打开文件窗口确认路径与文件名' : '静默保存：直接保存到当前已绑定或自动归档路径，不弹保存窗口' }}</div>
+            </div>
+            <input v-model="draft.confirmSavePath" type="checkbox" class="toggle toggle-primary toggle-sm" />
+          </label>
         </div>
       </section>
 

@@ -145,6 +145,11 @@ type Settings struct {
 	// 另一侧自动兜底（见 service.routeDownloadURL）。
 	DownloadMirror string `json:"downloadMirror,omitempty"`
 
+	// ConfirmSavePath determines whether manual save opens the native file
+	// dialog every time (true = 确认保存) or saves directly to the bound /
+	// canonical path without a prompt (false = 静默保存).
+	ConfirmSavePath bool `json:"confirmSavePath"`
+
 	// SeenTours lists onboarding-tour ids the user has completed or skipped
 	// ("app-welcome", "plugin:live2d", "whatsnew:5.3.0", …) so each shows once.
 	SeenTours []string `json:"seenTours,omitempty"`

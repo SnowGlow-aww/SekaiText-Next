@@ -14,7 +14,7 @@ const story = useStoryStore()
 const settings = useSettingsStore()
 const toast = useToast()
 const dlFloat = useDownloadFloat()
-const { pickDirectory, isTauri } = useFileDialog()
+const { pickDirectory } = useFileDialog()
 
 let saveDirTimer: ReturnType<typeof setTimeout> | null = null
 const outputDir = computed({
@@ -296,7 +296,7 @@ async function handleExportTxt() {
               placeholder="输入或浏览选择保存目录..."
               class="app-input flex-1"
             />
-            <button v-if="isTauri" @click="browseOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
+            <button @click="browseOutputDir" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap">
               <FolderOpen :size="15" /> 浏览
             </button>
             <button @click="handleExportTxt" class="btn btn-sm btn-ghost border border-[var(--color-border)] whitespace-nowrap" title="按编辑器翻译稿格式导出，可直接重新导入">
