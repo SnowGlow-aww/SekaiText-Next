@@ -24,9 +24,10 @@ import (
 const maxStoryJSONBytes int64 = 64 << 20
 
 var storyDownloadHosts = map[string]struct{}{
-	"storage.sekai.best": {},
-	"assets.unipjsk.com": {},
+	"storage.sekai.best":                                {},
+	"assets.unipjsk.com":                                {},
 	"production-sekai-assets.neo.bot.haruki.seiunx.com": {},
+	"sekai-assets-bdf29c81.seiunx.net":                  {},
 	"storage.exmeaning.com":                             {},
 }
 

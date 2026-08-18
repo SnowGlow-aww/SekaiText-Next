@@ -51,10 +51,10 @@ export function formatManagedDocumentFileName(options: ManagedDocumentFileNameOp
   const saveTitle = options.saveTitle.trim()
   const chapterTitle = options.chapterTitle.trim()
   const titleOverride = (options.titleOverride || '').trim()
-  const canonical = canonicalStoryIdentity(saveTitle || 'untitled', chapterTitle)
   const hasCustomTitle = titleOverride !== '' && titleOverride !== chapterTitle
-  const titleSuffix = hasCustomTitle ? `${DOCUMENT_TITLE_MARKER}${titleOverride}` : ''
-  return `【${options.modeLabel}】${canonical}${titleSuffix}.txt`
+  const effectiveChapter = hasCustomTitle ? titleOverride : chapterTitle
+  const canonical = canonicalStoryIdentity(saveTitle || 'untitled', effectiveChapter)
+  return `【${options.modeLabel}】${canonical}.txt`
 }
 
 export function legacyTitlePartForStory(

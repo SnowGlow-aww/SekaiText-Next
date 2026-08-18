@@ -168,7 +168,7 @@ func NewListManager(catalogDir string) *ListManager {
 		baseUrls: map[string]string{
 			"best":        "https://storage.sekai.best/sekai-jp-assets/",
 			"uni":         "https://assets.unipjsk.com/",
-			"haruki":      "https://production-sekai-assets.neo.bot.haruki.seiunx.com/jp-assets/",
+			"haruki":      "https://sekai-assets-bdf29c81.seiunx.net/jp-assets/",
 			"moesekai-jp": "https://storage.exmeaning.com/sekai-jp-assets/",
 			"moesekai-cn": "https://storage.exmeaning.com/sekai-cn-assets/",
 		},
@@ -406,14 +406,49 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 				}
 			}
 		} else if sort == "time" {
-			byTime := lm.buildAreaTalkByTime()
-			for i := len(byTime) - 1; i >= 0; i-- {
-				indices = append(indices, model.StoryIndex{Label: "time", Value: strconv.Itoa(i)})
+			eventMap := make(map[int]string, len(events))
+			for _, ev := range events {
+				eventMap[ev.ID] = ev.Title
+			}
+			seenEventIDs := make(map[int]struct{})
+			var eventIDs []int
+			for _, at := range lm.AreaTalks {
+				if at.ScenarioID == "none" || at.ScenarioID == "" || at.AddEventID <= 0 {
+					continue
+				}
+				if storyType == StoryLabelAreaTalkExtra && at.Type != "limited" {
+					continue
+				}
+				if storyType != StoryLabelAreaTalkExtra && at.Type == "limited" {
+					continue
+				}
+				if _, seen := seenEventIDs[at.AddEventID]; !seen {
+					seenEventIDs[at.AddEventID] = struct{}{}
+					eventIDs = append(eventIDs, at.AddEventID)
+				}
+			}
+			for i := 0; i < len(eventIDs); i++ {
+				for j := i + 1; j < len(eventIDs); j++ {
+					if eventIDs[i] < eventIDs[j] {
+						eventIDs[i], eventIDs[j] = eventIDs[j], eventIDs[i]
+					}
+				}
+			}
+			for _, eid := range eventIDs {
+				title := eventMap[eid]
+				label := strconv.Itoa(eid)
+				if title != "" {
+					label = label + " " + title
+				}
+				indices = append(indices, model.StoryIndex{
+					Label: label,
+					Value: strconv.Itoa(eid),
+				})
 			}
 		} else if sort == "area" {
-			for _, area := range model.AreaDict {
+			for areaID, area := range model.AreaDict {
 				if area != "" {
-					indices = append(indices, model.StoryIndex{Label: area, Value: area})
+					indices = append(indices, model.StoryIndex{Label: area, Value: strconv.Itoa(areaID)})
 				}
 			}
 		}
@@ -553,33 +588,13 @@ func (lm *ListManager) GetStoryChapterList(storyType, sort, index string) []mode
 			)
 		}
 
-	case StoryLabelAreaTalkInit:
-		cs := lm.buildAreaTalkChapterScenario("init", sort)
+	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade, StoryLabelAreaTalkExtra:
+		cs := lm.getAreaTalkEntries(storyType, sort, index)
 		for ci := range cs {
 			if cs[ci].IsSeparator {
 				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
 			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
-			}
-		}
-
-	case StoryLabelAreaTalkUpgrade:
-		cs := lm.buildAreaTalkChapterScenario("upgrade", sort)
-		for ci := range cs {
-			if cs[ci].IsSeparator {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
-			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
-			}
-		}
-
-	case StoryLabelAreaTalkExtra:
-		cs := lm.buildAreaTalkChapterScenario("extra", sort)
-		for ci := range cs {
-			if cs[ci].IsSeparator {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: "-"})
-			} else {
-				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].ScenarioID})
+				chapters = append(chapters, model.StoryChapter{Number: ci, Label: cs[ci].TalkID + " " + cs[ci].ScenarioID})
 			}
 		}
 
@@ -812,21 +827,7 @@ func (lm *ListManager) GetJsonPath(storyType, sort, index string, chapterIdx int
 		}
 
 	case StoryLabelAreaTalkInit, StoryLabelAreaTalkUpgrade, StoryLabelAreaTalkExtra:
-		// Re-derive the chapter scenario list from (storyType, sort) instead of a
-		// shared lm field, so a concurrent /story/chapter for another type can't
-		// clear or race the slice this /json-path relies on. The enumeration is
-		// deterministic, so chapterIdx maps to the same entry GetStoryChapterList
-		// produced.
-		var talkType string
-		switch storyType {
-		case StoryLabelAreaTalkInit:
-			talkType = "init"
-		case StoryLabelAreaTalkUpgrade:
-			talkType = "upgrade"
-		case StoryLabelAreaTalkExtra:
-			talkType = "extra"
-		}
-		cs := lm.buildAreaTalkChapterScenario(talkType, sort)
+		cs := lm.getAreaTalkEntries(storyType, sort, index)
 		if chapterIdx < 0 || chapterIdx >= len(cs) {
 			return model.JsonPathResult{}
 		}
@@ -883,54 +884,81 @@ func cardCharNameJ(characterID int) string {
 	return "?"
 }
 
-// buildAreaTalkByTime returns the "按时间" ordering as a request-local slice. It is
-// not stored on lm: the old shared lm.AreaTalkByTime raced between concurrent
-// requests and got reset between the /story/index and later calls.
-func (lm *ListManager) buildAreaTalkByTime() []AreaTalkTimeEntry {
+// getAreaTalkEntries returns the filtered ChapterScenarioEntry slice for an area talk
+// type, sort and index as a request-local slice (not stored on lm).
+func (lm *ListManager) getAreaTalkEntries(storyType, sort, index string) []ChapterScenarioEntry {
 	talks := lm.AreaTalks
-	var out []AreaTalkTimeEntry
-	// Simplified: just stores add/release event IDs from area talks
-	for _, at := range talks {
-		if at.ScenarioID == "none" || at.AddEventID < 0 {
-			continue
-		}
-		isLimited := at.Type == "limited"
-		isMonthly := strings.Contains(at.ScenarioID, "monthly")
-		out = append(out, AreaTalkTimeEntry{
-			AddEventID:     at.AddEventID,
-			ReleaseEventID: at.ReleaseEventID,
-			Limited:        isLimited,
-			Monthly:        isMonthly,
-		})
+	var talkType string
+	switch storyType {
+	case StoryLabelAreaTalkInit:
+		talkType = "init"
+	case StoryLabelAreaTalkUpgrade:
+		talkType = "upgrade"
+	case StoryLabelAreaTalkExtra:
+		talkType = "extra"
+	default:
+		return nil
 	}
-	return out
-}
 
-// buildAreaTalkChapterScenario returns the ChapterScenario list for an area talk
-// type as a request-local slice (not stored on lm), so /story/chapter and
-// /json-path derive it independently and concurrent requests can't clobber shared
-// scratch state. Deterministic given (talkType, area talks), so both endpoints
-// agree on the chapterIdx -> entry mapping.
-func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) []ChapterScenarioEntry {
-	talks := lm.AreaTalks
+	charIDFilter := 0
+	if sort == "character" && index != "" && index != "-" {
+		charIdx := parseIndex(index)
+		if charIdx >= 0 && charIdx < len(model.CharacterDict) {
+			charIDFilter = charIdx + 1
+		}
+	}
+
+	eventIDFilter := 0
+	if sort == "time" && index != "" && index != "-" {
+		eventIDFilter = parseIndex(index)
+	}
+
+	areaIDFilter := 0
+	if sort == "area" && index != "" && index != "-" {
+		if id, err := strconv.Atoi(index); err == nil && id > 0 && id < len(model.AreaDict) {
+			areaIDFilter = id
+		} else {
+			for aid, aname := range model.AreaDict {
+				if aname != "" && aname == index {
+					areaIDFilter = aid
+					break
+				}
+			}
+		}
+	}
+
 	var out []ChapterScenarioEntry
-
 	for _, at := range talks {
 		if at.ScenarioID == "none" || at.ScenarioID == "" {
-			out = append(out, ChapterScenarioEntry{IsSeparator: true})
 			continue
 		}
 
-		// Filter by type
-		// AddEventID == 1 is the initial-release boundary in the production
-		// catalog. Keep it in exactly one candidate set: initial. Upgrade
-		// begins with the following event so a cold TalkID identity cannot be
-		// surfaced by both navigators.
 		isInit := talkType == "init" && at.AddEventID <= 1 && at.Type != "limited"
 		isUpgrade := talkType == "upgrade" && at.AddEventID > 1 && at.Type != "limited"
 		isExtra := talkType == "extra" && at.Type == "limited"
 
 		if !isInit && !isUpgrade && !isExtra {
+			continue
+		}
+
+		if charIDFilter > 0 {
+			hasChar := false
+			for _, cid := range at.CharacterIDs {
+				if cid == charIDFilter {
+					hasChar = true
+					break
+				}
+			}
+			if !hasChar {
+				continue
+			}
+		}
+
+		if eventIDFilter > 0 && at.AddEventID != eventIDFilter {
+			continue
+		}
+
+		if areaIDFilter > 0 && at.AreaID != areaIDFilter {
 			continue
 		}
 
@@ -941,6 +969,19 @@ func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) []Cha
 		})
 	}
 	return out
+}
+
+func (lm *ListManager) buildAreaTalkChapterScenario(talkType, sort string) []ChapterScenarioEntry {
+	storyType := StoryLabelAreaTalkInit
+	switch talkType {
+	case "init":
+		storyType = StoryLabelAreaTalkInit
+	case "upgrade":
+		storyType = StoryLabelAreaTalkUpgrade
+	case "extra":
+		storyType = StoryLabelAreaTalkExtra
+	}
+	return lm.getAreaTalkEntries(storyType, sort, "")
 }
 
 func parseIndex(index string) int {
@@ -1245,20 +1286,19 @@ func (lm *ListManager) ResolveLabelDetailed(label string) (storyType, index, ind
 			continue
 		}
 		areaStoryType := ""
-		areaTalkType := ""
 		switch {
 		case talk.Type == "limited":
-			areaStoryType, areaTalkType = StoryLabelAreaTalkExtra, "extra"
+			areaStoryType = StoryLabelAreaTalkExtra
 		case talk.AddEventID <= 1:
-			areaStoryType, areaTalkType = StoryLabelAreaTalkInit, "init"
+			areaStoryType = StoryLabelAreaTalkInit
 		case talk.AddEventID > 1:
-			areaStoryType, areaTalkType = StoryLabelAreaTalkUpgrade, "upgrade"
+			areaStoryType = StoryLabelAreaTalkUpgrade
 		}
 		areaIndex, areaIndexLabel, valid := canonicalAreaTalkCharacter(talk)
 		if !valid || areaStoryType == "" {
 			continue
 		}
-		for chapter, entry := range lm.buildAreaTalkChapterScenario(areaTalkType, "character") {
+		for chapter, entry := range lm.getAreaTalkEntries(areaStoryType, "character", areaIndex) {
 			if !entry.IsSeparator && entry.ID == talk.ID && entry.TalkID == talk.TalkID && entry.ScenarioID == talk.ScenarioID {
 				appendStoryLabelMatch(&exactResolutions, &legacyResolutions, identity, saveTitle, "", storyLabelResolution{
 					storyType:  areaStoryType,

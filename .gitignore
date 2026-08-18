@@ -74,6 +74,9 @@ backend/*.exe
 # Packaged plugin output (.sekplugin)
 dist-plugins/
 
+# Design demos and mockups
+design-demos/
+
 # Generated engine sidecar bundle (built by scripts/build-engine.mjs)
 src-tauri/resources/engine/
 

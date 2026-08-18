@@ -432,3 +432,64 @@ func TestResolveLabelDetailedClassifiesLegacyTitlesWithoutGuessingCards(t *testi
 		t.Fatalf("canonical card identity = (%t, %q, %q), want exact", ok, matchKind, reason)
 	}
 }
+
+func TestAreaTalkNavigationAndFiltering(t *testing.T) {
+	lm := &ListManager{
+		Events: []EventEntry{
+			{ID: 45, Title: "祈りの先 願う明日は"},
+			{ID: 53, Title: "空白のキャンバスに描く私は"},
+		},
+		AreaTalks: []AreaTalkEntry{
+			{ID: 100, TalkID: "0001", AreaID: 3, ScenarioID: "areatalk02_129", Type: "normal", AddEventID: 1, CharacterIDs: []int{7, 8}},
+			{ID: 101, TalkID: "0002", AreaID: 4, ScenarioID: "areatalk02_130", Type: "normal", AddEventID: 1, CharacterIDs: []int{9}},
+			{ID: 200, TalkID: "0003", AreaID: 3, ScenarioID: "areatalk02_200", Type: "normal", AddEventID: 2, CharacterIDs: []int{7}},
+			{ID: 1262, TalkID: "S0001", AreaID: 14, ScenarioID: "areatalk_ev_akuno_001", Type: "limited", AddEventID: 45, CharacterIDs: []int{22}},
+			{ID: 1359, TalkID: "S0017", AreaID: 14, ScenarioID: "areatalk_aprilfool2022_001", Type: "limited", AddEventID: 53, CharacterIDs: []int{1, 22}},
+		},
+		baseUrls: map[string]string{
+			"haruki":      "https://sekai-assets-bdf29c81.seiunx.net/jp-assets/",
+			"moesekai-jp": "https://storage.exmeaning.com/sekai-jp-assets/",
+		},
+	}
+
+	// 1. Verify sort by time on Extra area talks returns real events, not "time"
+	timeIndices := lm.GetStoryIndexList(StoryLabelAreaTalkExtra, "time")
+	if len(timeIndices) != 2 {
+		t.Fatalf("expected 2 event indices for extra talks, got %d (%+v)", len(timeIndices), timeIndices)
+	}
+	if timeIndices[0].Value != "53" || timeIndices[0].Label != "53 空白のキャンバスに描く私は" {
+		t.Errorf("timeIndex[0] = %+v, want event 53", timeIndices[0])
+	}
+	if timeIndices[1].Value != "45" || timeIndices[1].Label != "45 祈りの先 願う明日は" {
+		t.Errorf("timeIndex[1] = %+v, want event 45", timeIndices[1])
+	}
+
+	// 2. Verify chapter filtering by time
+	ch45 := lm.GetStoryChapterList(StoryLabelAreaTalkExtra, "time", "45")
+	if len(ch45) != 1 || ch45[0].Label != "S0001 areatalk_ev_akuno_001" {
+		t.Fatalf("ch45 = %+v, want S0001", ch45)
+	}
+	path45 := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 0, "haruki")
+	expectedHarukiURL := "https://sekai-assets-bdf29c81.seiunx.net/jp-assets/startapp/scenario/actionset/group12/areatalk_ev_akuno_001.json"
+	if path45.URL != expectedHarukiURL {
+		t.Errorf("path45.URL = %q, want %q", path45.URL, expectedHarukiURL)
+	}
+
+	path45Moe := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 0, "moesekai-jp")
+	expectedMoeURL := "https://storage.exmeaning.com/sekai-jp-assets/scenario/actionset/group12/areatalk_ev_akuno_001.json"
+	if path45Moe.URL != expectedMoeURL {
+		t.Errorf("path45Moe.URL = %q, want %q", path45Moe.URL, expectedMoeURL)
+	}
+
+	// 3. Verify chapter filtering by character (character 7 -> index "6")
+	chChar6 := lm.GetStoryChapterList(StoryLabelAreaTalkInit, "character", "6")
+	if len(chChar6) != 1 || chChar6[0].Label != "0001 areatalk02_129" {
+		t.Fatalf("chChar6 = %+v, want 0001", chChar6)
+	}
+
+	// 4. Verify chapter filtering by area
+	chArea3 := lm.GetStoryChapterList(StoryLabelAreaTalkInit, "area", "3")
+	if len(chArea3) != 1 || chArea3[0].Label != "0001 areatalk02_129" {
+		t.Fatalf("chArea3 = %+v, want 0001", chArea3)
+	}
+}
