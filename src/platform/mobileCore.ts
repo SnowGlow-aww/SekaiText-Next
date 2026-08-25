@@ -6,7 +6,6 @@ import type {
   CategoryCount,
   GlossaryData,
   GlossaryEntry,
-  GrammarUsage,
   Proposal,
   TeamStatus,
   TeamUser,
@@ -226,11 +225,6 @@ export const mobileCore = {
   glossaryAppellationUpsert: (appellation: Appellation) =>
     invokeJson<Appellation>('mobile_glossary_appellation_upsert', {
       requestJson: JSON.stringify(appellation),
-    }),
-
-  glossaryGrammar: (q = '', limit = 0) =>
-    invokeJson<GrammarUsage[]>('mobile_glossary_grammar', {
-      requestJson: JSON.stringify({ q, limit }),
     }),
 
   glossaryExport: () =>

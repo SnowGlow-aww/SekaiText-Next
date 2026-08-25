@@ -6,7 +6,6 @@ import type {
   CategoryCount,
   ImportReport,
   AppellationResult,
-  GrammarUsage,
 } from '../types/glossary'
 
 export const useGlossaryStore = defineStore('glossary', () => {
@@ -63,7 +62,6 @@ export const useGlossaryStore = defineStore('glossary', () => {
     await fetchCategories()
     await loadSpeakers()
     await loadAllEntries(true) // refresh matcher cache
-    await searchGrammar('', 200) // refresh grammar list (same file)
     return report
   }
 
@@ -72,7 +70,6 @@ export const useGlossaryStore = defineStore('glossary', () => {
     await fetchCategories()
     await loadSpeakers()
     await loadAllEntries(true)
-    await searchGrammar('', 200)
     return r
   }
 
@@ -98,23 +95,6 @@ export const useGlossaryStore = defineStore('glossary', () => {
     return api.glossaryAppellationUpsert({ speaker, target, jp, cn })
   }
 
-  // grammar (语法用例)
-  const grammar = ref<GrammarUsage[]>([])
-  const grammarLoading = ref(false)
-  // Same out-of-order guard as `search`: the grammar page debounces but can still
-  // fire overlapping requests, so only the latest one is allowed to write state.
-  let grammarSeq = 0
-  async function searchGrammar(q = '', limit = 0) {
-    const seq = ++grammarSeq
-    grammarLoading.value = true
-    try {
-      const r = await api.glossaryGrammar(q, limit)
-      if (seq === grammarSeq) grammar.value = r
-    } finally {
-      if (seq === grammarSeq) grammarLoading.value = false
-    }
-  }
-
   // Full entry list cache for the editor matcher (loaded once, lazily).
   const allEntries = ref<GlossaryEntry[]>([])
   const allEntriesLoaded = ref(false)
@@ -132,9 +112,9 @@ export const useGlossaryStore = defineStore('glossary', () => {
 
   return {
     results, categories, searching, lastReport, speakers, targets,
-    grammar, grammarLoading, allEntries, allEntriesLoaded,
+    allEntries, allEntriesLoaded,
     search, fetchCategories, addEntry, updateEntry, deleteEntry,
     importExcel, syncRemote, loadSpeakers, loadTargets, lookupAppellation, saveAppellation,
-    searchGrammar, loadAllEntries,
+    loadAllEntries,
   }
 })

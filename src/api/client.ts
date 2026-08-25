@@ -633,12 +633,6 @@ export const api = {
     : request<import('../types/glossary').Appellation>('/glossary/appellations', {
       method: 'PUT', body: JSON.stringify(a),
     }),
-  // Grammar (语法用例) + export
-  glossaryGrammar: (q = '', limit = 0) => capabilities.isAndroid
-    ? mobileCore.glossaryGrammar(q, limit)
-    : request<import('../types/glossary').GrammarUsage[]>(
-      `/glossary/grammar?q=${encodeURIComponent(q)}&limit=${limit}`,
-    ),
   glossaryExport: () => capabilities.isAndroid
     ? mobileCore.glossaryExport()
     : request<import('../types/glossary').GlossaryData>('/glossary/export'),

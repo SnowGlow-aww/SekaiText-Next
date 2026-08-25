@@ -2,7 +2,6 @@
 import { onMounted, onUnmounted, ref, type Component } from 'vue'
 import {
   BookMarked,
-  BookOpenText,
   Bug,
   ChevronLeft,
   Download,
@@ -91,9 +90,6 @@ onUnmounted(() => window.removeEventListener('resize', handleResize))
           :title="glossaryNotify.tooltip || '术语库'"
         >
           <BookMarked class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">术语库</span>
-        </router-link>
-        <router-link to="/grammar" exact-active-class="is-route-active" class="app-shell-nav-item" title="语法用例">
-          <BookOpenText class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">语法用例</span>
         </router-link>
         <router-link v-if="capabilities.supportsPlugins" to="/market" exact-active-class="is-route-active" class="app-shell-nav-item" data-tour="nav-market" title="插件市场">
           <Store class="app-shell-nav-icon" :size="17" /><span class="app-shell-nav-label">插件市场</span>

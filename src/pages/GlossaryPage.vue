@@ -143,12 +143,11 @@ async function uploadToServer() {
     const data = await api.glossaryExport()
     const nE = data.entries?.length ?? 0
     const nA = data.appellations?.length ?? 0
-    const nG = data.grammar?.length ?? 0
     if (nE === 0) { toast.show('本地术语库为空，拒绝上传（会清空线上库）', 'error'); return }
     if (!(await confirm({
       title: '上传至线上术语库',
       message: '将用本地术语库【完全替换】线上术语库。',
-      detail: `本地内容：词条 ${nE} / 人称 ${nA} / 语法 ${nG}。线上多出的条目将被删除，全员将在 1 分钟内同步到此版本。`,
+      detail: `本地内容：词条 ${nE} / 人称 ${nA}。线上多出的条目将被删除，全员将在 1 分钟内同步到此版本。`,
       tone: 'danger',
       confirmText: '完全替换',
     }))) return

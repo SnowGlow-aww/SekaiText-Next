@@ -18,11 +18,6 @@ const sharedRoutes: RouteRecordRaw[] = [
     component: () => import('../pages/GlossaryPage.vue'),
   },
   {
-    path: '/grammar',
-    name: 'grammar',
-    component: () => import('../pages/GrammarPage.vue'),
-  },
-  {
     path: '/account',
     name: 'account',
     component: () => import('../pages/AccountPage.vue'),
