@@ -25,8 +25,9 @@ import (
 //	     事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
 //	dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
 type AssPostOptions struct {
-	Clean    bool `json:"clean"`
-	SyncTags bool `json:"syncTags"`
+	Clean        bool `json:"clean"`
+	SyncTags     bool `json:"syncTags"`
+	SpeakerColor bool `json:"speakerColor"` // 读取角色名并为 26 位主要角色在 Text 首部注入 \3c 代表色描边，其他角色保留默认描边
 	// DocumentID scopes sync tags to one immutable timing document. Empty keeps
 	// the legacy st:N form for explicitly gated compatibility paths only.
 	DocumentID    string `json:"documentId,omitempty"`
@@ -309,6 +310,81 @@ var bannerStyleRename = map[string]string{
 	"BannerText": "地点名称",
 }
 
+// PJSK 官方 26 位主要角色代表色 (ASS BGR 格式 &HBBGGRR&)
+var pjskCharacterColors = map[string]string{
+	// [Leo/need]
+	"星乃一歌": "&HEEAA33&", "一歌": "&HEEAA33&", "一亲": "&HEEAA33&", "小一": "&HEEAA33&", "ichika": "&HEEAA33&", "星乃": "&HEEAA33&",
+	"天马咲希": "&H44DDFF&", "天馬咲希": "&H44DDFF&", "咲希": "&H44DDFF&", "小咲希": "&H44DDFF&", "咲希希": "&H44DDFF&", "saki": "&H44DDFF&",
+	"望月穗波": "&H6666EE&", "望月穂波": "&H6666EE&", "穗波": "&H6666EE&", "穂波": "&H6666EE&", "小穗波": "&H6666EE&", "小穗": "&H6666EE&", "honami": "&H6666EE&",
+	"日野森志步": "&H22DDBB&", "日野森志歩": "&H22DDBB&", "志步": "&H22DDBB&", "志歩": "&H22DDBB&", "小志步": "&H22DDBB&", "shiho": "&H22DDBB&",
+
+	// [MORE MORE JUMP！]
+	"花里实乃理": "&HAACCFF&", "花里みのり": "&HAACCFF&", "花里实乃里": "&HAACCFF&", "实乃理": "&HAACCFF&", "实乃里": "&HAACCFF&", "みのり": "&HAACCFF&", "小实乃理": "&HAACCFF&", "minori": "&HAACCFF&",
+	"桐谷遥": "&HFFCC99&", "遥": "&HFFCC99&", "小遥": "&HFFCC99&", "haruka": "&HFFCC99&",
+	"桃井爱莉": "&HCCAACC&", "桃井愛莉": "&HCCAACC&", "爱莉": "&HCCAACC&", "愛莉": "&HCCAACC&", "小爱莉": "&HCCAACC&", "airi": "&HCCAACC&",
+	"日野森雫": "&HDDEE99&", "雫": "&HDDEE99&", "小雫": "&HDDEE99&", "shizuku": "&HDDEE99&",
+
+	// [Vivid BAD SQUAD]
+	"小豆泽心羽": "&H9966FF&", "小豆沢こはね": "&H9966FF&", "心羽": "&H9966FF&", "こはね": "&H9966FF&", "小心羽": "&H9966FF&", "kohane": "&H9966FF&",
+	"白石杏": "&HDDBB00&", "杏": "&HDDBB00&", "小杏": "&HDDBB00&", "an": "&HDDBB00&",
+	"东云彰人": "&H2277FF&", "東雲彰人": "&H2277FF&", "彰人": "&H2277FF&", "akito": "&H2277FF&",
+	"青柳冬弥": "&HDD7700&", "冬弥": "&HDD7700&", "toya": "&HDD7700&", "touya": "&HDD7700&",
+
+	// [Wonderlands×Showtime]
+	"天马司": "&H00BBFF&", "天馬司": "&H00BBFF&", "司": "&H00BBFF&", "tsukasa": "&H00BBFF&",
+	"凤笑梦": "&HBB66FF&", "鳳えむ": "&HBB66FF&", "笑梦": "&HBB66FF&", "えむ": "&HBB66FF&", "小笑梦": "&HBB66FF&", "emu": "&HBB66FF&",
+	"草薙宁宁": "&H99DD33&", "草薙寧々": "&H99DD33&", "宁宁": "&H99DD33&", "寧々": "&H99DD33&", "小宁宁": "&H99DD33&", "nene": "&H99DD33&",
+	"神代类": "&HEE88BB&", "神代類": "&HEE88BB&", "类": "&HEE88BB&", "類": "&HEE88BB&", "rui": "&HEE88BB&",
+
+	// [25点，Nightcord见。]
+	"宵崎奏": "&H8866BB&", "奏": "&H8866BB&", "かなで": "&H8866BB&", "小奏": "&H8866BB&", "k": "&H8866BB&", "kanade": "&H8866BB&",
+	"朝比奈真冬": "&HCC8888&", "朝比奈まふゆ": "&HCC8888&", "真冬": "&HCC8888&", "まふゆ": "&HCC8888&", "雪": "&HCC8888&", "mafuyu": "&HCC8888&",
+	"东云绘名": "&H88AACC&", "東雲絵名": "&H88AACC&", "绘名": "&H88AACC&", "絵名": "&H88AACC&", "enana": "&H88AACC&", "ena": "&H88AACC&",
+	"晓山瑞希": "&HCCAADD&", "暁山瑞希": "&HCCAADD&", "瑞希": "&HCCAADD&", "みずき": "&HCCAADD&", "小瑞希": "&HCCAADD&", "amia": "&HCCAADD&", "mizuki": "&HCCAADD&",
+
+	// [虚拟歌手 Virtual Singer]
+	"初音未来": "&HBBCC33&", "初音ミク": "&HBBCC33&", "初音": "&HBBCC33&", "ミク": "&HBBCC33&", "miku": "&HBBCC33&",
+	"镜音铃": "&H11CCFF&", "鏡音リン": "&H11CCFF&", "铃": "&H11CCFF&", "リン": "&H11CCFF&", "rin": "&H11CCFF&",
+	"镜音连": "&H11EEFF&", "鏡音レン": "&H11EEFF&", "连": "&H11EEFF&", "レン": "&H11EEFF&", "len": "&H11EEFF&",
+	"巡音流歌": "&HCCBBFF&", "巡音ルカ": "&HCCBBFF&", "流歌": "&HCCBBFF&", "ルカ": "&HCCBBFF&", "luka": "&HCCBBFF&",
+	"meiko": "&H4444DD&", "MEIKO": "&H4444DD&", "めいこ": "&H4444DD&",
+	"kaito": "&HCC6633&", "KAITO": "&HCC6633&", "かいと": "&HCC6633&",
+}
+
+// ResolveSpeakerOutlineColor 返回 26 位主要角色的代表色描边色值；未命中其他角色返回 ("", false)。
+func ResolveSpeakerOutlineColor(speaker string) (string, bool) {
+	s := strings.TrimSpace(speaker)
+	if s == "" {
+		return "", false
+	}
+	if col, ok := pjskCharacterColors[s]; ok {
+		return col, true
+	}
+	if col, ok := pjskCharacterColors[strings.ToLower(s)]; ok {
+		return col, true
+	}
+	for k, v := range pjskCharacterColors {
+		if strings.Contains(s, k) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+var outlineTagRe = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?\}`)
+
+// ApplyOutlineColorToText 将代表色描边注入到文本 Text 字段首部；其他角色(colorBgr=="")则清除多余覆写保留默认样式。
+func ApplyOutlineColorToText(text, colorBgr string) string {
+	text = outlineTagRe.ReplaceAllString(text, "")
+	if colorBgr == "" {
+		return text
+	}
+	if strings.HasPrefix(text, "{") {
+		return `{\3c` + colorBgr + text[1:]
+	}
+	return `{\3c` + colorBgr + `}` + text
+}
+
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，
 // Text（最后一个字段）保留其中的逗号。
 type assEvent struct {
@@ -505,6 +581,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 
 	evFormat := findFormat(sections[eventsIdx].Lines)
 	styleI := fieldIndex(evFormat, "Style")
+	nameI := fieldIndex(evFormat, "Name")
 	effectI := fieldIndex(evFormat, "Effect")
 	textI := fieldIndex(evFormat, "Text")
 	if evFormat == nil || styleI < 0 || effectI < 0 || textI != len(evFormat)-1 {
@@ -513,6 +590,35 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 
 	if opts.Clean && (playX == 0 || playY == 0) {
 		res.Warnings = append(res.Warnings, "缺少 PlayResX/PlayResY，按无后缀样式名处理")
+	}
+
+	// 建立对话行与 Character 行的说话人(Actor)关联
+	for i, ln := range sections[eventsIdx].Lines {
+		ev := parseEventLine(ln, len(evFormat))
+		if ev == nil {
+			continue
+		}
+		style := strings.TrimSpace(ev.Fields[styleI])
+		if ev.Kind == "Dialogue" && style == "Character" {
+			speaker := strings.TrimSpace(ev.Fields[textI])
+			for j := i - 1; j >= 0; j-- {
+				prev := parseEventLine(sections[eventsIdx].Lines[j], len(evFormat))
+				if prev == nil {
+					continue
+				}
+				prevStyle := strings.TrimSpace(prev.Fields[styleI])
+				if prev.Kind == "Comment" && prevStyle == "Screen" {
+					break
+				}
+				if prev.Kind == "Dialogue" && prevStyle != "Character" && prevStyle != "staff" {
+					if nameI >= 0 && strings.TrimSpace(prev.Fields[nameI]) == "" {
+						prev.Fields[nameI] = speaker
+						sections[eventsIdx].Lines[j] = prev.String()
+					}
+					break
+				}
+			}
+		}
 	}
 
 	usedStyles := map[string]bool{}
@@ -554,6 +660,16 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 
 		if opts.SyncTags && currentTag != "" {
 			ev.Fields[effectI] = currentTag
+		}
+
+		if opts.SpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(style, "行") || strings.Contains(style, "Line") || style == "Default") {
+			speaker := ""
+			if nameI >= 0 {
+				speaker = strings.TrimSpace(ev.Fields[nameI])
+			}
+			if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
+				ev.Fields[textI] = ApplyOutlineColorToText(ev.Fields[textI], col)
+			}
 		}
 
 		if opts.Clean {

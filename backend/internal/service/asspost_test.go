@@ -477,3 +477,55 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,line
 		t.Fatalf("missing synthesized staff style section:\n%s", post.Content)
 	}
 }
+
+func TestPostProcessSpeakerColor(t *testing.T) {
+	const assWithNPC = `[Script Info]
+Title: Test
+PlayResX: 2560
+PlayResY: 1600
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize
+Style: Line1,FOT-Rodin,60
+Style: Line2,FOT-Rodin,60
+Style: Character,FOT-Rodin,54
+Style: Screen,FOT-Rodin,60
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:01.00,0:00:03.00,Screen,,0,0,0,,-----  001  -----  Start
+Dialogue: 0,0:00:01.00,0:00:03.00,Line2,,0,0,0,,咲希的台词
+Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,咲希
+Comment: 0,0:00:01.00,0:00:03.00,Screen,,0,0,0,,-----  001  -----  End
+Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  Start
+Dialogue: 0,0:00:04.00,0:00:06.00,Line1,,0,0,0,,路人NPC的台词
+Dialogue: 0,0:00:04.00,0:00:06.00,Character,,0,0,0,,真堂
+Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  End
+`
+	post, err := PostProcessAss(assWithNPC, AssPostOptions{Clean: true, SpeakerColor: true})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 咲希 (26位主要角色之一) 注入 {\3c&H44DDFF&}
+	if !strings.Contains(out, `{\3c&H44DDFF&}咲希的台词`) {
+		t.Fatalf("咲希应注入代表色描边 \\3c&H44DDFF&:\n%s", out)
+	}
+
+	// 真堂 (其他角色/NPC) 不注入任何 \3c 标签，保持原样使用默认样式描边
+	if strings.Contains(out, `\3c`) && strings.Contains(out, `\3c`) && strings.Contains(out, `\3c`) {
+		// Verify真堂 line has no \3c
+		for _, ln := range strings.Split(out, "\n") {
+			if strings.Contains(ln, "路人NPC的台词") {
+				if strings.Contains(ln, `\3c`) {
+					t.Fatalf("其他角色(真堂)不应注入 \\3c 标签: %s", ln)
+				}
+				if !strings.Contains(ln, ",真堂,") {
+					t.Fatalf("其他角色(真堂)应保留在 Name 字段: %s", ln)
+				}
+			}
+		}
+	}
+}
+

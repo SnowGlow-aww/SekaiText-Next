@@ -230,6 +230,7 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 		OutputDir            string             `json:"outputDir"`
 		Clean                bool               `json:"clean"`                // 内建 tools.lua：改样式/删 Character+Screen 行（\N 保留）
 		SyncTags             bool               `json:"syncTags"`             // Effect 埋 st:N 标识（Aegisub 同步的键）
+		SpeakerColor         bool               `json:"speakerColor"`         // 26位主要角色代表色描边 (\3c) 注入，其他角色保持默认描边
 		StyleTemplate        string             `json:"styleTemplate"`        // 团队样式模板 .ass 路径（自定义覆盖）
 		StyleTemplateContent string             `json:"styleTemplateContent"` // 模板整段文本（插件内置模板，开箱即用）
 		AegisubDir           string             `json:"aegisubDir"`           // 用户指定的 Aegisub automation/autoload 目录（便携版）
@@ -246,6 +247,7 @@ func (h *Handler) EngineTimingExport(w http.ResponseWriter, r *http.Request) {
 	opts := service.AssPostOptions{
 		Clean:                body.Clean,
 		SyncTags:             body.SyncTags,
+		SpeakerColor:         body.SpeakerColor,
 		StyleTemplate:        strings.TrimSpace(body.StyleTemplate),
 		StyleTemplateContent: body.StyleTemplateContent,
 		Staff:                body.Staff,
