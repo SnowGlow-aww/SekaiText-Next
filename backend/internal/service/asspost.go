@@ -371,7 +371,10 @@ func ResolveSpeakerOutlineColor(speaker string) (string, bool) {
 	return "", false
 }
 
-var outlineTagRe = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?\}`)
+var (
+	assBraceTagRe = regexp.MustCompile(`\{[^}]*\}`)
+	outlineTagRe  = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?\}`)
+)
 
 // ApplyOutlineColorToText 将代表色描边注入到文本 Text 字段首部；其他角色(colorBgr=="")则清除多余覆写保留默认样式。
 func ApplyOutlineColorToText(text, colorBgr string) string {
@@ -617,7 +620,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		res.Warnings = append(res.Warnings, "缺少 PlayResX/PlayResY，按无后缀样式名处理")
 	}
 
-	// 建立对话行与 Character 行的说话人(Actor)关联
+	// 建立对话行与 Character 行的说话人(Actor)关联（SekaiTools 引擎默认顺序为 [Character, LineN]，并兼容反向）
 	for i, ln := range sections[eventsIdx].Lines {
 		ev := parseEventLine(ln, len(evFormat))
 		if ev == nil {
@@ -625,22 +628,45 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 		}
 		style := strings.TrimSpace(ev.Fields[styleI])
 		if ev.Kind == "Dialogue" && style == "Character" {
-			speaker := strings.TrimSpace(ev.Fields[textI])
-			for j := i - 1; j >= 0; j-- {
-				prev := parseEventLine(sections[eventsIdx].Lines[j], len(evFormat))
-				if prev == nil {
+			speaker := strings.TrimSpace(assBraceTagRe.ReplaceAllString(ev.Fields[textI], ""))
+			found := false
+			// 优先向后查找紧随其后的 Dialogue 对话行（SekaiTools 引擎标准顺序）
+			for j := i + 1; j < len(sections[eventsIdx].Lines); j++ {
+				nxt := parseEventLine(sections[eventsIdx].Lines[j], len(evFormat))
+				if nxt == nil {
 					continue
 				}
-				prevStyle := strings.TrimSpace(prev.Fields[styleI])
-				if prev.Kind == "Comment" && prevStyle == "Screen" {
+				nxtStyle := strings.TrimSpace(nxt.Fields[styleI])
+				if nxt.Kind == "Comment" && nxtStyle == "Screen" {
 					break
 				}
-				if prev.Kind == "Dialogue" && prevStyle != "Character" && prevStyle != "staff" {
-					if nameI >= 0 && strings.TrimSpace(prev.Fields[nameI]) == "" {
-						prev.Fields[nameI] = speaker
-						sections[eventsIdx].Lines[j] = prev.String()
+				if nxt.Kind == "Dialogue" && nxtStyle != "Character" && nxtStyle != "staff" {
+					if nameI >= 0 && strings.TrimSpace(nxt.Fields[nameI]) == "" {
+						nxt.Fields[nameI] = speaker
+						sections[eventsIdx].Lines[j] = nxt.String()
+						found = true
 					}
 					break
+				}
+			}
+			if !found {
+				// 兼容向前查找
+				for j := i - 1; j >= 0; j-- {
+					prev := parseEventLine(sections[eventsIdx].Lines[j], len(evFormat))
+					if prev == nil {
+						continue
+					}
+					prevStyle := strings.TrimSpace(prev.Fields[styleI])
+					if prev.Kind == "Comment" && prevStyle == "Screen" {
+						break
+					}
+					if prev.Kind == "Dialogue" && prevStyle != "Character" && prevStyle != "staff" {
+						if nameI >= 0 && strings.TrimSpace(prev.Fields[nameI]) == "" {
+							prev.Fields[nameI] = speaker
+							sections[eventsIdx].Lines[j] = prev.String()
+						}
+						break
+					}
 				}
 			}
 		}

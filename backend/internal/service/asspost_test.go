@@ -573,3 +573,59 @@ Style: 1行,Source Han Sans CN Medium,70,&H00FFFFFF,&H000000FF,&H46664749,&H0000
 	}
 }
 
+func TestPostProcessAssCharacterBeforeDialogueOrder(t *testing.T) {
+	const internalTmplContent = `[Script Info]
+; Pipeline: Internal-SekaiText-v3
+; Profile: Group-Exclusive-Production
+Title: Internal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1365,1
+`
+	// 模拟 SekaiTools 标准输出：Character 行在前（含 \pos 标签），Dialogue 行在后
+	const sekaiToolsAss = `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:01.00,0:00:03.00,Screen,,0,0,0,,----- 001 ----- Start
+Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,{\pos(335,1285)}东云绘名
+Dialogue: 0,0:00:01.00,0:00:03.00,Line1,,0,0,0,,绘名的第一句台词
+Comment: 0,0:00:01.00,0:00:03.00,Screen,,0,0,0,,----- 001 ----- End
+Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,----- 002 ----- Start
+Dialogue: 0,0:00:04.00,0:00:06.00,Character,,0,0,0,,{\pos(335,1285)}俊辉
+Dialogue: 0,0:00:04.00,0:00:06.00,Line1,,0,0,0,,俊辉的台词（NPC）
+Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,----- 002 ----- End
+Comment: 0,0:00:07.00,0:00:09.00,Screen,,0,0,0,,----- 003 ----- Start
+Dialogue: 0,0:00:07.00,0:00:09.00,Character,,0,0,0,,{\pos(335,1285)}MEIKO
+Dialogue: 0,0:00:07.00,0:00:09.00,Line1,,0,0,0,,MEIKO的台词
+Comment: 0,0:00:07.00,0:00:09.00,Screen,,0,0,0,,----- 003 ----- End
+`
+	post, err := PostProcessAss(sekaiToolsAss, AssPostOptions{Clean: true, StyleTemplateContent: internalTmplContent})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 绘名 (\3c&H88AACC&)
+	if !strings.Contains(out, `{\3c&H88AACC&}绘名的第一句台词`) {
+		t.Fatalf("绘名应成功匹配并注入代表色描边 \\3c&H88AACC&:\n%s", out)
+	}
+
+	// MEIKO (\3c&H4444DD&)
+	if !strings.Contains(out, `{\3c&H4444DD&}MEIKO的台词`) {
+		t.Fatalf("MEIKO应成功匹配并注入代表色描边 \\3c&H4444DD&:\n%s", out)
+	}
+
+	// 俊辉 (NPC) - 不注入 \3c
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "俊辉的台词") {
+			if strings.Contains(ln, `\3c`) {
+				t.Fatalf("NPC(俊辉)不应注入 \\3c: %s", ln)
+			}
+		}
+	}
+}
+
