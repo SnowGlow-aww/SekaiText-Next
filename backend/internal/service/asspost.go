@@ -542,10 +542,35 @@ func cleanStyleFor(engineStyle string, playX, playY int) (string, bool) {
 	return base, true
 }
 
+// isInternalStyleTemplate 检查是否加载了内部专属模板（通过模板元数据签名或 internal 路径静默识别）。
+func isInternalStyleTemplate(opts AssPostOptions) bool {
+	if opts.SpeakerColor {
+		return true
+	}
+	if opts.StyleTemplate != "" {
+		if strings.Contains(strings.ToLower(opts.StyleTemplate), "internal") {
+			return true
+		}
+		if data, err := os.ReadFile(opts.StyleTemplate); err == nil {
+			s := string(data)
+			if strings.Contains(s, "Group-Exclusive-Production") || strings.Contains(s, "Internal-SekaiText") {
+				return true
+			}
+		}
+	}
+	if opts.StyleTemplateContent != "" {
+		if strings.Contains(opts.StyleTemplateContent, "Group-Exclusive-Production") || strings.Contains(opts.StyleTemplateContent, "Internal-SekaiText") {
+			return true
+		}
+	}
+	return false
+}
+
 // PostProcessAss 对引擎导出的 ASS 内容做后处理。见文件头注释。
 func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error) {
+	enableSpeakerColor := isInternalStyleTemplate(opts)
 	res := &AssPostResult{Groups: map[string][]string{}}
-	if !opts.Clean && !opts.SyncTags && opts.Staff == nil {
+	if !opts.Clean && !opts.SyncTags && opts.Staff == nil && !enableSpeakerColor {
 		res.Content = content
 		return res, nil
 	}
@@ -662,7 +687,7 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			ev.Fields[effectI] = currentTag
 		}
 
-		if opts.SpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(style, "行") || strings.Contains(style, "Line") || style == "Default") {
+		if enableSpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(style, "行") || strings.Contains(style, "Line") || style == "Default") {
 			speaker := ""
 			if nameI >= 0 {
 				speaker = strings.TrimSpace(ev.Fields[nameI])

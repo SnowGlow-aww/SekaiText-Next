@@ -514,8 +514,7 @@ Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  End
 	}
 
 	// 真堂 (其他角色/NPC) 不注入任何 \3c 标签，保持原样使用默认样式描边
-	if strings.Contains(out, `\3c`) && strings.Contains(out, `\3c`) && strings.Contains(out, `\3c`) {
-		// Verify真堂 line has no \3c
+	if strings.Contains(out, `\3c`) {
 		for _, ln := range strings.Split(out, "\n") {
 			if strings.Contains(ln, "路人NPC的台词") {
 				if strings.Contains(ln, `\3c`) {
@@ -526,6 +525,51 @@ Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  End
 				}
 			}
 		}
+	}
+}
+
+func TestPostProcessAssAutoDetectInternalTemplate(t *testing.T) {
+	const internalTmplContent = `[Script Info]
+; Pipeline: Internal-SekaiText-v3
+; Profile: Group-Exclusive-Production
+Title: Internal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1365,1
+`
+	assWithSpeaker := `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.00,Line1,,0,0,0,,瑞希的台词
+Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,暁山瑞希
+`
+	// 当 SpeakerColor 为 false 但 StyleTemplateContent 含内部签名时，自动静默触发代表色注入
+	post, err := PostProcessAss(assWithSpeaker, AssPostOptions{Clean: true, StyleTemplateContent: internalTmplContent})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	// 瑞希 (26位主要角色之一) 注入 {\3c&HCCAADD&}
+	if !strings.Contains(post.Content, `{\3c&HCCAADD&}瑞希的台词`) {
+		t.Fatalf("使用内部模板时应静默自动注入代表色 \\3c&HCCAADD&:\n%s", post.Content)
+	}
+
+	// 当使用普通模板时，不注入 \3c
+	const normalTmplContent = `[Script Info]
+Title: Standard Public Template
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: 1行,Source Han Sans CN Medium,70,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,0,0,1,6,0,7,335,10,1365,1
+`
+	normalPost, err := PostProcessAss(assWithSpeaker, AssPostOptions{Clean: true, StyleTemplateContent: normalTmplContent})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	if strings.Contains(normalPost.Content, `\3c`) {
+		t.Fatalf("使用普通公开模板时不应注入 \\3c:\n%s", normalPost.Content)
 	}
 }
 
