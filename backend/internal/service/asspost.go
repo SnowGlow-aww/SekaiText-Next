@@ -373,19 +373,20 @@ func ResolveSpeakerOutlineColor(speaker string) (string, bool) {
 
 var (
 	assBraceTagRe = regexp.MustCompile(`\{[^}]*\}`)
-	outlineTagRe  = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?\}`)
+	outlineTagRe  = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?(?:\\3a&H[0-9A-Fa-f]+&?)?\}`)
 )
 
 // ApplyOutlineColorToText 将代表色描边注入到文本 Text 字段首部；其他角色(colorBgr=="")则清除多余覆写保留默认样式。
+// 注入代表色的同时显式声明 \3a&H00&，避免首字受模板历史 Alpha 通道影响而与打字机后续字符产生透明度视觉色差。
 func ApplyOutlineColorToText(text, colorBgr string) string {
 	text = outlineTagRe.ReplaceAllString(text, "")
 	if colorBgr == "" {
 		return text
 	}
 	if strings.HasPrefix(text, "{") {
-		return `{\3c` + colorBgr + text[1:]
+		return `{\3c` + colorBgr + `\3a&H00&` + text[1:]
 	}
-	return `{\3c` + colorBgr + `}` + text
+	return `{\3c` + colorBgr + `\3a&H00&}` + text
 }
 
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，

@@ -508,9 +508,9 @@ Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  End
 	}
 	out := post.Content
 
-	// 咲希 (26位主要角色之一) 注入 {\3c&H44DDFF&}
-	if !strings.Contains(out, `{\3c&H44DDFF&}咲希的台词`) {
-		t.Fatalf("咲希应注入代表色描边 \\3c&H44DDFF&:\n%s", out)
+	// 咲希 (26位主要角色之一) 注入 {\3c&H44DDFF&\3a&H00&}
+	if !strings.Contains(out, `{\3c&H44DDFF&\3a&H00&}咲希的台词`) {
+		t.Fatalf("咲希应注入代表色描边 \\3c&H44DDFF&\\3a&H00&:\n%s", out)
 	}
 
 	// 真堂 (其他角色/NPC) 不注入任何 \3c 标签，保持原样使用默认样式描边
@@ -552,9 +552,9 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,暁山瑞希
 	if err != nil {
 		t.Fatalf("PostProcessAss: %v", err)
 	}
-	// 瑞希 (26位主要角色之一) 注入 {\3c&HCCAADD&}
-	if !strings.Contains(post.Content, `{\3c&HCCAADD&}瑞希的台词`) {
-		t.Fatalf("使用内部模板时应静默自动注入代表色 \\3c&HCCAADD&:\n%s", post.Content)
+	// 瑞希 (26位主要角色之一) 注入 {\3c&HCCAADD&\3a&H00&}
+	if !strings.Contains(post.Content, `{\3c&HCCAADD&\3a&H00&}瑞希的台词`) {
+		t.Fatalf("使用内部模板时应静默自动注入代表色 \\3c&HCCAADD&\\3a&H00&:\n%s", post.Content)
 	}
 
 	// 当使用普通模板时，不注入 \3c
@@ -609,14 +609,14 @@ Comment: 0,0:00:07.00,0:00:09.00,Screen,,0,0,0,,----- 003 ----- End
 	}
 	out := post.Content
 
-	// 绘名 (\3c&H88AACC&)
-	if !strings.Contains(out, `{\3c&H88AACC&}绘名的第一句台词`) {
-		t.Fatalf("绘名应成功匹配并注入代表色描边 \\3c&H88AACC&:\n%s", out)
+	// 绘名 (\3c&H88AACC&\3a&H00&)
+	if !strings.Contains(out, `{\3c&H88AACC&\3a&H00&}绘名的第一句台词`) {
+		t.Fatalf("绘名应成功匹配并注入代表色描边 \\3c&H88AACC&\\3a&H00&:\n%s", out)
 	}
 
-	// MEIKO (\3c&H4444DD&)
-	if !strings.Contains(out, `{\3c&H4444DD&}MEIKO的台词`) {
-		t.Fatalf("MEIKO应成功匹配并注入代表色描边 \\3c&H4444DD&:\n%s", out)
+	// MEIKO (\3c&H4444DD&\3a&H00&)
+	if !strings.Contains(out, `{\3c&H4444DD&\3a&H00&}MEIKO的台词`) {
+		t.Fatalf("MEIKO应成功匹配并注入代表色描边 \\3c&H4444DD&\\3a&H00&:\n%s", out)
 	}
 
 	// 俊辉 (NPC) - 不注入 \3c
