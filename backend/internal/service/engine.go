@@ -60,12 +60,12 @@ type EngineManager struct {
 	shutdownErr  error
 }
 
-// 并行上限：识别/压制本身就吃满多核，同域 4 个并行进程已经远超普通机器的合理负载；
-// 保留的打轴任务数也设上限（每个 done 任务都占着一个引擎进程的内存）。
+// 并行上限：放开同域并行任务数量限制，支持高并发多视频并行打轴与压制；
+// 保留的任务数也设大容量缓冲。
 const (
-	maxRunningPerDomain = 4
-	maxKeptTimingJobs   = 8
-	maxKeptSuppressJobs = 16
+	maxRunningPerDomain = 128
+	maxKeptTimingJobs   = 256
+	maxKeptSuppressJobs = 256
 
 	// 每个压制任务保留的日志行数上限。进度行（frame=…）原地替换不占行数，
 	// 溢出时保留头部参数信息 + 最新尾部（诊断需要头尾，中段最不重要）。
