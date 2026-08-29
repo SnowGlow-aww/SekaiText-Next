@@ -508,9 +508,9 @@ Comment: 0,0:00:04.00,0:00:06.00,Screen,,0,0,0,,-----  002  -----  End
 	}
 	out := post.Content
 
-	// 咲希 (26位主要角色之一) 注入 {\3c&H44DDFF&\3a&H00&}
-	if !strings.Contains(out, `{\3c&H44DDFF&\3a&H00&}咲希的台词`) {
-		t.Fatalf("咲希应注入代表色描边 \\3c&H44DDFF&\\3a&H00&:\n%s", out)
+	// 咲希 (26位主要角色之一) 注入双层描边：Layer 0 代表色外轮廓 + Layer 1 深灰紫内描边
+	if !strings.Contains(out, `\3c&H44DDFF&`) || !strings.Contains(out, `\3c&H46664749&`) {
+		t.Fatalf("咲希应注入代表色双层描边 (含代表色外圈 \\3c&H44DDFF& 与深色内圈 \\3c&H46664749&):\n%s", out)
 	}
 
 	// 真堂 (其他角色/NPC) 不注入任何 \3c 标签，保持原样使用默认样式描边
@@ -547,14 +547,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:01.00,0:00:03.00,Line1,,0,0,0,,瑞希的台词
 Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,暁山瑞希
 `
-	// 当 SpeakerColor 为 false 但 StyleTemplateContent 含内部签名时，自动静默触发代表色注入
+	// 当 SpeakerColor 为 false 但 StyleTemplateContent 含内部签名时，自动静默触发代表色双层描边注入
 	post, err := PostProcessAss(assWithSpeaker, AssPostOptions{Clean: true, StyleTemplateContent: internalTmplContent})
 	if err != nil {
 		t.Fatalf("PostProcessAss: %v", err)
 	}
-	// 瑞希 (26位主要角色之一) 注入 {\3c&HCCAADD&\3a&H00&}
-	if !strings.Contains(post.Content, `{\3c&HCCAADD&\3a&H00&}瑞希的台词`) {
-		t.Fatalf("使用内部模板时应静默自动注入代表色 \\3c&HCCAADD&\\3a&H00&:\n%s", post.Content)
+	// 瑞希 (26位主要角色之一) 注入代表色双层描边
+	if !strings.Contains(post.Content, `\3c&HCCAADD&`) || !strings.Contains(post.Content, `\3c&H46664749&`) {
+		t.Fatalf("使用内部模板时应静默自动注入代表色双层描边 (含代表色外圈 \\3c&HCCAADD& 与深色内圈 \\3c&H46664749&):\n%s", post.Content)
 	}
 
 	// 当使用普通模板时，不注入 \3c
@@ -609,14 +609,14 @@ Comment: 0,0:00:07.00,0:00:09.00,Screen,,0,0,0,,----- 003 ----- End
 	}
 	out := post.Content
 
-	// 绘名 (\3c&H88AACC&\3a&H00&)
-	if !strings.Contains(out, `{\3c&H88AACC&\3a&H00&}绘名的第一句台词`) {
-		t.Fatalf("绘名应成功匹配并注入代表色描边 \\3c&H88AACC&\\3a&H00&:\n%s", out)
+	// 绘名 (\3c&H88AACC&) 双层描边
+	if !strings.Contains(out, `\3c&H88AACC&`) || !strings.Contains(out, `\3c&H46664749&`) {
+		t.Fatalf("绘名应成功匹配并注入代表色双层描边 \\3c&H88AACC& 与内描边 \\3c&H46664749&:\n%s", out)
 	}
 
-	// MEIKO (\3c&H4444DD&\3a&H00&)
-	if !strings.Contains(out, `{\3c&H4444DD&\3a&H00&}MEIKO的台词`) {
-		t.Fatalf("MEIKO应成功匹配并注入代表色描边 \\3c&H4444DD&\\3a&H00&:\n%s", out)
+	// MEIKO (\3c&H4444DD&) 双层描边
+	if !strings.Contains(out, `\3c&H4444DD&`) || !strings.Contains(out, `\3c&H46664749&`) {
+		t.Fatalf("MEIKO应成功匹配并注入代表色双层描边 \\3c&H4444DD& 与内描边 \\3c&H46664749&:\n%s", out)
 	}
 
 	// 俊辉 (NPC) - 不注入 \3c

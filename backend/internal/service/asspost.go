@@ -372,9 +372,40 @@ func ResolveSpeakerOutlineColor(speaker string) (string, bool) {
 }
 
 var (
-	assBraceTagRe = regexp.MustCompile(`\{[^}]*\}`)
-	outlineTagRe  = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?(?:\\3a&H[0-9A-Fa-f]+&?)?\}`)
+	assBraceTagRe    = regexp.MustCompile(`\{[^}]*\}`)
+	outlineTagRe     = regexp.MustCompile(`^\{\\3c&H[0-9A-Fa-f]+&?(?:\\3a&H[0-9A-Fa-f]+&?)?\}`)
+	leadingAssTagsRe = regexp.MustCompile(`^\{(?:\\[1234]c&H[0-9A-Fa-f]+&?|\\3a&H[0-9A-Fa-f]+&?|\\bord[0-9.]+|\\shad[0-9.]+)+\}`)
 )
+
+// StripLeadingColorTags 移除文本首部已有的颜色/描边/阴影标签，避免双层宏重复叠加。
+func StripLeadingColorTags(text string) string {
+	text = leadingAssTagsRe.ReplaceAllString(text, "")
+	text = outlineTagRe.ReplaceAllString(text, "")
+	if strings.HasPrefix(text, "{}") {
+		text = text[2:]
+	}
+	return text
+}
+
+// ApplyOuterDoubleOutline 生成角色代表色外轮廓 (Layer 0, 4.8px)
+func ApplyOuterDoubleOutline(text, colorBgr string, outerBord float64) string {
+	clean := StripLeadingColorTags(text)
+	tag := fmt.Sprintf(`\1c%s\3c%s\3a&H00&\bord%.1f\shad0`, colorBgr, colorBgr, outerBord)
+	if strings.HasPrefix(clean, "{") {
+		return "{" + tag + clean[1:]
+	}
+	return "{" + tag + "}" + clean
+}
+
+// ApplyInnerDoubleOutline 生成深灰紫内描边 (Layer 1, 1.8px) 确保白字无论在何种代表色下都具有极致清晰度
+func ApplyInnerDoubleOutline(text string, innerBord float64) string {
+	clean := StripLeadingColorTags(text)
+	tag := fmt.Sprintf(`\1c&HFFFFFF&\3c&H46664749&\3a&H00&\bord%.1f\shad0`, innerBord)
+	if strings.HasPrefix(clean, "{") {
+		return "{" + tag + clean[1:]
+	}
+	return "{" + tag + "}" + clean
+}
 
 // ApplyOutlineColorToText 将代表色描边注入到文本 Text 字段首部；其他角色(colorBgr=="")则清除多余覆写保留默认样式。
 // 注入代表色的同时显式声明 \3a&H00&，避免首字受模板历史 Alpha 通道影响而与打字机后续字符产生透明度视觉色差。
@@ -714,16 +745,6 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			ev.Fields[effectI] = currentTag
 		}
 
-		if enableSpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(style, "行") || strings.Contains(style, "Line") || style == "Default") {
-			speaker := ""
-			if nameI >= 0 {
-				speaker = strings.TrimSpace(ev.Fields[nameI])
-			}
-			if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
-				ev.Fields[textI] = ApplyOutlineColorToText(ev.Fields[textI], col)
-			}
-		}
-
 		if opts.Clean {
 			// dlt: 删角色名行与调试注释行
 			if style == "Character" || style == "Screen" {
@@ -738,6 +759,50 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			if newName, ok := bannerStyleRename[style]; ok {
 				ev.Fields[styleI] = newName
 				newStyles[newName] = true
+			}
+		}
+
+		currentStyle := strings.TrimSpace(ev.Fields[styleI])
+		layerI := fieldIndex(evFormat, "Layer")
+
+		if enableSpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(currentStyle, "行") || strings.Contains(currentStyle, "Line") || currentStyle == "Default") {
+			speaker := ""
+			if nameI >= 0 {
+				speaker = strings.TrimSpace(ev.Fields[nameI])
+			}
+			if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
+				innerBord, outerBord := 1.8, 4.8
+				if playX == 1920 && playY == 1080 {
+					innerBord, outerBord = 1.3, 3.4
+				} else if playX == 1920 && playY == 1440 {
+					innerBord, outerBord = 1.4, 3.6
+				}
+
+				// 下层 (Layer 0): 4.8px 角色代表色外轮廓
+				evOuter := &assEvent{
+					Kind:   ev.Kind,
+					Fields: append([]string(nil), ev.Fields...),
+				}
+				if layerI >= 0 {
+					evOuter.Fields[layerI] = "0"
+				}
+				evOuter.Fields[textI] = ApplyOuterDoubleOutline(ev.Fields[textI], col, outerBord)
+				usedStyles[currentStyle] = true
+				outerLine := evOuter.String()
+				tag := strings.TrimSpace(evOuter.Fields[effectI])
+				if _, validTag := ParseSyncTag(tag); validTag {
+					if _, ok := res.Groups[tag]; !ok {
+						res.Order = append(res.Order, tag)
+					}
+					res.Groups[tag] = append(res.Groups[tag], outerLine)
+				}
+				outLines = append(outLines, outerLine)
+
+				// 上层 (Layer 1): 白字 + 1.8px 深灰紫内描边
+				if layerI >= 0 {
+					ev.Fields[layerI] = "1"
+				}
+				ev.Fields[textI] = ApplyInnerDoubleOutline(ev.Fields[textI], innerBord)
 			}
 		}
 
