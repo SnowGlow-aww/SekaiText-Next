@@ -1,6 +1,6 @@
 [package]
 name = "sekaitext"
-version = "5.9.17"
+version = "5.9.18"
 description = "Project Sekai story translation and subtitle editing desktop application"
 authors = ["SnowGlow-aww"]
 license = "MIT"
