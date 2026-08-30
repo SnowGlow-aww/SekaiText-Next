@@ -2,10 +2,12 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"sekaitext/backend/internal/fsutil"
 )
@@ -420,6 +422,257 @@ func ApplyOutlineColorToText(text, colorBgr string) string {
 	return `{\3c` + colorBgr + `\3a&H00&}` + text
 }
 
+func parseAssTime(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	parts := strings.Split(s, ":")
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("invalid ASS time format: %q", s)
+	}
+	h, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, err
+	}
+	m, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, err
+	}
+	secParts := strings.Split(parts[2], ".")
+	if len(secParts) != 2 {
+		return 0, fmt.Errorf("invalid seconds format in ASS time: %q", s)
+	}
+	sec, err := strconv.Atoi(secParts[0])
+	if err != nil {
+		return 0, err
+	}
+	csStr := secParts[1]
+	if len(csStr) == 1 {
+		csStr += "0"
+	} else if len(csStr) > 2 {
+		csStr = csStr[:2]
+	}
+	cs, err := strconv.Atoi(csStr)
+	if err != nil {
+		return 0, err
+	}
+	ms := (h*3600+m*60+sec)*1000 + cs*10
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func formatAssTime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	ms := d.Milliseconds()
+	cs := (ms % 1000) / 10
+	secTotal := ms / 1000
+	h := secTotal / 3600
+	m := (secTotal % 3600) / 60
+	s := secTotal % 60
+	return fmt.Sprintf("%d:%02d:%02d.%02d", h, m, s, cs)
+}
+
+func textRuneWeight(s string) float64 {
+	clean := assBraceTagRe.ReplaceAllString(s, "")
+	clean = strings.ReplaceAll(clean, "\\N", "")
+	clean = strings.ReplaceAll(clean, "\\n", "")
+	clean = strings.ReplaceAll(clean, "\\h", "")
+	clean = strings.TrimSpace(clean)
+	var w float64
+	for _, r := range clean {
+		if r <= 127 {
+			w += 0.5
+		} else {
+			w += 1.0
+		}
+	}
+	return w
+}
+
+func splitThreeLines(lines []string) (part1, part2 string, splitIdx int) {
+	l0 := lines[0]
+	l1 := lines[1]
+	l2 := lines[2]
+
+	isTerminator := func(s string) bool {
+		s = assBraceTagRe.ReplaceAllString(s, "")
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return false
+		}
+		r := []rune(s)
+		last := r[len(r)-1]
+		return last == '。' || last == '！' || last == '？' || last == '!' || last == '?' || last == '…' || last == '~' || last == '”' || last == '’'
+	}
+
+	isPause := func(s string) bool {
+		s = assBraceTagRe.ReplaceAllString(s, "")
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return false
+		}
+		r := []rune(s)
+		last := r[len(r)-1]
+		return last == '，' || last == ',' || last == '、' || last == '；' || last == ';'
+	}
+
+	t0 := isTerminator(l0)
+	t1 := isTerminator(l1)
+
+	if t0 && !t1 {
+		return l0, l1 + "\\N" + l2, 1
+	}
+	if t1 && !t0 {
+		return l0 + "\\N" + l1, l2, 2
+	}
+
+	p0 := isPause(l0)
+	p1 := isPause(l1)
+	if p0 && !p1 {
+		return l0, l1 + "\\N" + l2, 1
+	}
+	if p1 && !p0 {
+		return l0 + "\\N" + l1, l2, 2
+	}
+
+	w0 := textRuneWeight(l0)
+	w1 := textRuneWeight(l1)
+	w2 := textRuneWeight(l2)
+
+	diff1 := math.Abs(w0 - (w1 + w2))
+	diff2 := math.Abs((w0 + w1) - w2)
+
+	if diff1 <= diff2 {
+		return l0, l1 + "\\N" + l2, 1
+	}
+	return l0 + "\\N" + l1, l2, 2
+}
+
+func splitMultipleLines(lines []string) (part1, part2 string, splitIdx int) {
+	n := len(lines)
+	if n == 3 {
+		return splitThreeLines(lines)
+	}
+	splitIdx = n / 2
+	if splitIdx < 1 {
+		splitIdx = 1
+	} else if splitIdx >= n {
+		splitIdx = n - 1
+	}
+	part1 = strings.Join(lines[:splitIdx], "\\N")
+	part2 = strings.Join(lines[splitIdx:], "\\N")
+	return part1, part2, splitIdx
+}
+
+func splitEventIfTooManyLines(ev *assEvent, startI, endI, textI, styleI int, playX, playY int, clean bool) []*assEvent {
+	if ev.Kind != "Dialogue" {
+		return []*assEvent{ev}
+	}
+	rawText := ev.Fields[textI]
+	normText := strings.ReplaceAll(rawText, "\\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\r\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\n", "\\N")
+
+	lines := strings.Split(normText, "\\N")
+	if len(lines) <= 2 {
+		return []*assEvent{ev}
+	}
+
+	tStart, err1 := parseAssTime(ev.Fields[startI])
+	tEnd, err2 := parseAssTime(ev.Fields[endI])
+	if err1 != nil || err2 != nil || tEnd <= tStart {
+		return []*assEvent{ev}
+	}
+
+	part1Text, part2Text, splitIdx := splitMultipleLines(lines)
+	w1 := textRuneWeight(part1Text)
+	w2 := textRuneWeight(part2Text)
+
+	totalDuration := tEnd - tStart
+	var ratio float64
+	if w1+w2 > 0 {
+		ratio = w1 / (w1 + w2)
+	} else {
+		ratio = 0.5
+	}
+
+	tMid := tStart + time.Duration(float64(totalDuration)*ratio)
+	if totalDuration >= 1000*time.Millisecond {
+		minPad := 500 * time.Millisecond
+		if float64(totalDuration)*0.2 < float64(minPad) {
+			minPad = time.Duration(float64(totalDuration) * 0.2)
+		}
+		if tMid < tStart+minPad {
+			tMid = tStart + minPad
+		}
+		if tMid > tEnd-minPad {
+			tMid = tEnd - minPad
+		}
+	} else {
+		minPad := time.Duration(float64(totalDuration) * 0.15)
+		if tMid < tStart+minPad {
+			tMid = tStart + minPad
+		}
+		if tMid > tEnd-minPad {
+			tMid = tEnd - minPad
+		}
+	}
+
+	ev1 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev1.Fields[startI] = formatAssTime(tStart)
+	ev1.Fields[endI] = formatAssTime(tMid)
+	ev1.Fields[textI] = part1Text
+
+	ev2 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev2.Fields[startI] = formatAssTime(tMid)
+	ev2.Fields[endI] = formatAssTime(tEnd)
+	ev2.Fields[textI] = part2Text
+
+	lines1Count := splitIdx
+	lines2Count := len(lines) - splitIdx
+	if clean {
+		style1Base := "1行"
+		if lines1Count >= 2 {
+			style1Base = "2行"
+		}
+		style2Base := "1行"
+		if lines2Count >= 2 {
+			style2Base = "2行"
+		}
+		if newStyle1, ok := cleanStyleFor(style1Base, playX, playY); ok {
+			ev1.Fields[styleI] = newStyle1
+		} else {
+			ev1.Fields[styleI] = style1Base
+		}
+		if newStyle2, ok := cleanStyleFor(style2Base, playX, playY); ok {
+			ev2.Fields[styleI] = newStyle2
+		} else {
+			ev2.Fields[styleI] = style2Base
+		}
+	} else {
+		style1Base := "Line1"
+		if lines1Count >= 2 {
+			style1Base = "Line2"
+		}
+		style2Base := "Line1"
+		if lines2Count >= 2 {
+			style2Base = "Line2"
+		}
+		ev1.Fields[styleI] = style1Base
+		ev2.Fields[styleI] = style2Base
+	}
+
+	res := make([]*assEvent, 0, 4)
+	res = append(res, splitEventIfTooManyLines(ev1, startI, endI, textI, styleI, playX, playY, clean)...)
+	res = append(res, splitEventIfTooManyLines(ev2, startI, endI, textI, styleI, playX, playY, clean)...)
+	return res
+}
+
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，
 // Text（最后一个字段）保留其中的逗号。
 type assEvent struct {
@@ -644,6 +897,9 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 	nameI := fieldIndex(evFormat, "Name")
 	effectI := fieldIndex(evFormat, "Effect")
 	textI := fieldIndex(evFormat, "Text")
+	layerI := fieldIndex(evFormat, "Layer")
+	startI := fieldIndex(evFormat, "Start")
+	endI := fieldIndex(evFormat, "End")
 	if evFormat == nil || styleI < 0 || effectI < 0 || textI != len(evFormat)-1 {
 		return nil, fmt.Errorf("无法识别 [Events] 的 Format 行，放弃后处理以免损坏字幕")
 	}
@@ -762,60 +1018,70 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			}
 		}
 
-		currentStyle := strings.TrimSpace(ev.Fields[styleI])
-		layerI := fieldIndex(evFormat, "Layer")
+		// 对超过2行的台词自动按时间轴切分为前后两条拼凑轴（确保画面最多显示2行中文，消除溢出遮挡）
+		var evSlice []*assEvent
+		if ev.Kind == "Dialogue" && startI >= 0 && endI >= 0 && style != "Character" && style != "staff" && style != "Screen" {
+			evSlice = splitEventIfTooManyLines(ev, startI, endI, textI, styleI, playX, playY, opts.Clean)
+		} else {
+			evSlice = []*assEvent{ev}
+		}
 
-		if enableSpeakerColor && ev.Kind == "Dialogue" && (strings.Contains(currentStyle, "行") || strings.Contains(currentStyle, "Line") || currentStyle == "Default") {
-			speaker := ""
-			if nameI >= 0 {
-				speaker = strings.TrimSpace(ev.Fields[nameI])
-			}
-			if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
-				innerBord, outerBord := 1.8, 4.8
-				if playX == 1920 && playY == 1080 {
-					innerBord, outerBord = 1.3, 3.4
-				} else if playX == 1920 && playY == 1440 {
-					innerBord, outerBord = 1.4, 3.6
-				}
+		for _, subEv := range evSlice {
+			currentStyle := strings.TrimSpace(subEv.Fields[styleI])
+			newStyles[currentStyle] = true
 
-				// 下层 (Layer 0): 4.8px 角色代表色外轮廓
-				evOuter := &assEvent{
-					Kind:   ev.Kind,
-					Fields: append([]string(nil), ev.Fields...),
+			if enableSpeakerColor && subEv.Kind == "Dialogue" && (strings.Contains(currentStyle, "行") || strings.Contains(currentStyle, "Line") || currentStyle == "Default") {
+				speaker := ""
+				if nameI >= 0 {
+					speaker = strings.TrimSpace(subEv.Fields[nameI])
 				}
-				if layerI >= 0 {
-					evOuter.Fields[layerI] = "0"
-				}
-				evOuter.Fields[textI] = ApplyOuterDoubleOutline(ev.Fields[textI], col, outerBord)
-				usedStyles[currentStyle] = true
-				outerLine := evOuter.String()
-				tag := strings.TrimSpace(evOuter.Fields[effectI])
-				if _, validTag := ParseSyncTag(tag); validTag {
-					if _, ok := res.Groups[tag]; !ok {
-						res.Order = append(res.Order, tag)
+				if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
+					innerBord, outerBord := 1.8, 4.8
+					if playX == 1920 && playY == 1080 {
+						innerBord, outerBord = 1.3, 3.4
+					} else if playX == 1920 && playY == 1440 {
+						innerBord, outerBord = 1.4, 3.6
 					}
-					res.Groups[tag] = append(res.Groups[tag], outerLine)
-				}
-				outLines = append(outLines, outerLine)
 
-				// 上层 (Layer 1): 白字 + 1.8px 深灰紫内描边
-				if layerI >= 0 {
-					ev.Fields[layerI] = "1"
-				}
-				ev.Fields[textI] = ApplyInnerDoubleOutline(ev.Fields[textI], innerBord)
-			}
-		}
+					// 下层 (Layer 0): 4.8px 角色代表色外轮廓
+					evOuter := &assEvent{
+						Kind:   subEv.Kind,
+						Fields: append([]string(nil), subEv.Fields...),
+					}
+					if layerI >= 0 {
+						evOuter.Fields[layerI] = "0"
+					}
+					evOuter.Fields[textI] = ApplyOuterDoubleOutline(subEv.Fields[textI], col, outerBord)
+					usedStyles[currentStyle] = true
+					outerLine := evOuter.String()
+					tag := strings.TrimSpace(evOuter.Fields[effectI])
+					if _, validTag := ParseSyncTag(tag); validTag {
+						if _, ok := res.Groups[tag]; !ok {
+							res.Order = append(res.Order, tag)
+						}
+						res.Groups[tag] = append(res.Groups[tag], outerLine)
+					}
+					outLines = append(outLines, outerLine)
 
-		usedStyles[strings.TrimSpace(ev.Fields[styleI])] = true
-		line := ev.String()
-		tag := strings.TrimSpace(ev.Fields[effectI])
-		if _, validTag := ParseSyncTag(tag); validTag {
-			if _, ok := res.Groups[tag]; !ok {
-				res.Order = append(res.Order, tag)
+					// 上层 (Layer 1): 白字 + 1.8px 深灰紫内描边
+					if layerI >= 0 {
+						subEv.Fields[layerI] = "1"
+					}
+					subEv.Fields[textI] = ApplyInnerDoubleOutline(subEv.Fields[textI], innerBord)
+				}
 			}
-			res.Groups[tag] = append(res.Groups[tag], line)
+
+			usedStyles[strings.TrimSpace(subEv.Fields[styleI])] = true
+			line := subEv.String()
+			tag := strings.TrimSpace(subEv.Fields[effectI])
+			if _, validTag := ParseSyncTag(tag); validTag {
+				if _, ok := res.Groups[tag]; !ok {
+					res.Order = append(res.Order, tag)
+				}
+				res.Groups[tag] = append(res.Groups[tag], line)
+			}
+			outLines = append(outLines, line)
 		}
-		outLines = append(outLines, line)
 	}
 
 	// staff 制作人员行：注入到 Format 行之后、所有事件之前（成品里 staff 在最前）。

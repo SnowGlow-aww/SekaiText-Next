@@ -629,3 +629,118 @@ Comment: 0,0:00:07.00,0:00:09.00,Screen,,0,0,0,,----- 003 ----- End
 	}
 }
 
+func TestPostProcessSplitThreeLines(t *testing.T) {
+	const threeLineAss = `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,----- 001 ----- Start
+Dialogue: 0,0:00:05.70,0:00:15.48,Character,,0,0,0,,{\pos(335,1285)}望月穗波
+Dialogue: 0,0:00:05.70,0:00:15.48,Line3,,0,0,0,,好让各个SEKAI的大家\N能自由来往交流\N加深彼此的羁绊
+Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,----- 001 ----- End
+`
+	post, err := PostProcessAss(threeLineAss, AssPostOptions{Clean: true, SyncTags: true, SpeakerColor: true})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 确认没有任何 3 行（含 2 个 \N）的台词残留
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "Dialogue:") {
+			nSlashN := strings.Count(ln, `\N`)
+			if nSlashN >= 2 {
+				t.Fatalf("三行台词应被自动拆分，不应残留 2 个以上 \\N 的事件: %s", ln)
+			}
+		}
+	}
+
+	// 确认拆分为前后两段拼凑轴（Part 1 对应 1行，Part 2 对应 2行）
+	if !strings.Contains(out, "好让各个SEKAI的大家") {
+		t.Fatalf("缺少前半段台词:\n%s", out)
+	}
+	if !strings.Contains(out, `能自由来往交流\N加深彼此的羁绊`) {
+		t.Fatalf("缺少后半段台词:\n%s", out)
+	}
+
+	// 确认前后两段均继承了穗波的代表色双层描边 (Layer 0 \3c&H6666EE& + Layer 1 \3c&H46664749&)
+	countLayer0 := 0
+	countLayer1 := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "Dialogue: 0,") && strings.Contains(ln, `\3c&H6666EE&`) {
+			countLayer0++
+		}
+		if strings.HasPrefix(ln, "Dialogue: 1,") && strings.Contains(ln, `\3c&H46664749&`) {
+			countLayer1++
+		}
+	}
+	if countLayer0 != 2 || countLayer1 != 2 {
+		t.Fatalf("拆分后的 2 段台词均应生成双层描边 (Layer 0 共2条，Layer 1 共2条)，实得 Layer0=%d, Layer1=%d\n%s", countLayer0, countLayer1, out)
+	}
+
+	// 确认两段事件均带上所属对话组同步标识 st:1
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "Dialogue:") {
+			if !strings.Contains(ln, ",st:1,") {
+				t.Fatalf("拆分后的台词事件应保留同步标识 st:1: %s", ln)
+			}
+		}
+	}
+}
+
+func TestPostProcessSplitFourLines(t *testing.T) {
+	const fourLineAss = `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:01.00,0:00:10.00,Screen,,0,0,0,,----- 001 ----- Start
+Dialogue: 0,0:00:01.00,0:00:10.00,Line3,,0,0,0,,第一行文字\N第二行文字\N第三行文字\N第四行文字
+Comment: 0,0:00:01.00,0:00:10.00,Screen,,0,0,0,,----- 001 ----- End
+`
+	post, err := PostProcessAss(fourLineAss, AssPostOptions{Clean: true})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 确认拆分为两条各 2 行的台词（样式均为 2行）
+	if !strings.Contains(out, `第一行文字\N第二行文字`) || !strings.Contains(out, `第三行文字\N第四行文字`) {
+		t.Fatalf("4行台词应平均拆分为两条2行台词:\n%s", out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "Dialogue:") {
+			if !strings.Contains(ln, ",2行,") {
+				t.Fatalf("每条2行台词样式应为 2行: %s", ln)
+			}
+		}
+	}
+}
+
+func TestPostProcessSplitPunctuationHeuristic(t *testing.T) {
+	const puncAss = `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:00.00,0:00:09.00,Screen,,0,0,0,,----- 001 ----- Start
+Dialogue: 0,0:00:00.00,0:00:09.00,Line3,,0,0,0,,第一句已经结束了。\N第二句前半部分\N第二句后半部分
+Comment: 0,0:00:00.00,0:00:09.00,Screen,,0,0,0,,----- 001 ----- End
+`
+	post, err := PostProcessAss(puncAss, AssPostOptions{Clean: true})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 句号在第一行末尾，应自然拆分为 Part 1 (第1行) 和 Part 2 (第2+3行)
+	if !strings.Contains(out, "第一句已经结束了。") || !strings.Contains(out, `第二句前半部分\N第二句后半部分`) {
+		t.Fatalf("句末标点断句不符预期:\n%s", out)
+	}
+}
+
+
