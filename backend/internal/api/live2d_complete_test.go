@@ -661,3 +661,48 @@ func TestLive2DProxyRedirectPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestLive2DCDNUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rawURL string
+		want   string
+	}{
+		{
+			name:   "exmeaning2 sound rewrites to storage.exmeaning.com",
+			rawURL: "https://storage2.exmeaning.com/sekai-jp-assets/sound/scenario/bgm/bgm01/bgm01.mp3",
+			want:   "https://storage.exmeaning.com/sekai-jp-assets/sound/scenario/bgm/bgm01/bgm01.mp3",
+		},
+		{
+			name:   "storage sound remains on storage.exmeaning.com",
+			rawURL: "https://storage.exmeaning.com/sekai-jp-assets/sound/scenario/voice/sid/vid.mp3",
+			want:   "https://storage.exmeaning.com/sekai-jp-assets/sound/scenario/voice/sid/vid.mp3",
+		},
+		{
+			name:   "exmeaning2 model rewrites to edge CDN",
+			rawURL: "https://storage2.exmeaning.com/sekai-jp-assets/live2d/model/v2/demo/buildmodeldata.json",
+			want:   "https://sakimizuki.accr.cc/sekai-jp-assets/live2d/model/v2/demo/buildmodeldata.json",
+		},
+		{
+			name:   "storage model rewrites to edge CDN",
+			rawURL: "https://storage.exmeaning.com/sekai-jp-assets/live2d/model/v2/demo/buildmodeldata.json",
+			want:   "https://sakimizuki.accr.cc/sekai-jp-assets/live2d/model/v2/demo/buildmodeldata.json",
+		},
+		{
+			name:   "exmeaning2 background rewrites to edge CDN",
+			rawURL: "https://storage2.exmeaning.com/sekai-jp-assets/scenario/background/bg/bg.webp",
+			want:   "https://sakimizuki.accr.cc/sekai-jp-assets/scenario/background/bg/bg.webp",
+		},
+		{
+			name:   "sekai.best motion untouched",
+			rawURL: "https://storage.sekai.best/sekai-live2d-assets/live2d/motion/demo/motion.motion3.json",
+			want:   "https://storage.sekai.best/sekai-live2d-assets/live2d/motion/demo/motion.motion3.json",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := live2dCDNUpstream(tc.rawURL); got != tc.want {
+				t.Errorf("live2dCDNUpstream(%q) = %q, want %q", tc.rawURL, got, tc.want)
+			}
+		})
+	}
+}

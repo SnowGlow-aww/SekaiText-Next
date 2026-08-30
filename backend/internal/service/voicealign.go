@@ -40,10 +40,10 @@ func NewVoiceAligner(dataDir, ffmpegPath string) *VoiceAligner {
 	}
 }
 
-// 语音直连源：storage2（用户点名的 exmeaning2）优先，storage 兜底（编辑器播放在用）。
+// 语音直连源：storage 优先（有效源站），storage2 兜底。
 var voiceBases = []string{
-	"https://storage2.exmeaning.com/sekai-jp-assets/",
 	"https://storage.exmeaning.com/sekai-jp-assets/",
+	"https://storage2.exmeaning.com/sekai-jp-assets/",
 }
 
 // 卡面剧情 scenarioId：6 位数字 + "_"（与 api.VoiceURL 同口径）。

@@ -21385,7 +21385,7 @@ var qS = (/* @__PURE__ */ s(((e) => {
 }, tC = {
 	Normal: 0,
 	ThreeModels: 3
-}, nC = "https://storage.sekai.best/sekai-live2d-assets", rC = "https://storage2.exmeaning.com/sekai-jp-assets", iC = window.__SEKAI_ORIGIN__ || "http://localhost:9800";
+}, nC = "https://storage.sekai.best/sekai-live2d-assets", rC = "https://storage.exmeaning.com/sekai-jp-assets", iC = window.__SEKAI_ORIGIN__ || "http://localhost:9800";
 function aC(e) {
 	return `${iC}/api/v1/live2d/proxy?url=${encodeURIComponent(e)}`;
 }

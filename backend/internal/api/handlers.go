@@ -636,15 +636,23 @@ var live2dAllowedHosts = []string{
 
 // live2dCDNUpstream rewrites an exmeaning asset URL to the project's edge CDN so
 // runtime playback fetches go through the mirror cache (the CDN falls back to
-// exmeaning on a miss). 例外：/sound/ 音频路径（语音/BGM）一律直连 exmeaning——
+// exmeaning on a miss). 例外：/sound/ 音频路径（语音/BGM）一律直连 exmeaning 源站 storage.exmeaning.com——
 // 镜像回源会把音频持久化进自家 OSS 桶白吃存储（桶里曾因此长出 43MB 的
 // sekai-jp-assets/sound/；用户拍板：背景等图片可以镜像，只有音频不写）。
+// storage2.exmeaning.com 证书过期已退役，所有 sound 路径统一重写到有效源站 storage.exmeaning.com 直连。
 // Non-exmeaning URLs (sekai.best model_list/motion) pass through unchanged.
 func live2dCDNUpstream(rawURL string) string {
 	u, err := neturl.Parse(rawURL)
-	if err != nil || !strings.EqualFold(u.Hostname(), "storage2.exmeaning.com") ||
-		(u.Port() != "" && u.Port() != "443") || strings.HasPrefix(u.Path, "/sekai-jp-assets/sound/") {
+	if err != nil || (u.Port() != "" && u.Port() != "443") {
 		return rawURL
+	}
+	h := strings.ToLower(u.Hostname())
+	if h != "storage2.exmeaning.com" && h != "storage.exmeaning.com" {
+		return rawURL
+	}
+	if strings.HasPrefix(u.Path, "/sekai-jp-assets/sound/") {
+		u.Host = "storage.exmeaning.com"
+		return u.String()
 	}
 	u.Host = "sakimizuki.accr.cc"
 	return u.String()
