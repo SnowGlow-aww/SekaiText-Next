@@ -657,11 +657,11 @@ Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,----- 001 ----- End
 		}
 	}
 
-	// 确认拆分为前后两段拼凑轴（Part 1 对应 1行，Part 2 对应 2行）
+	// 确认拆分为前后两段拼凑轴（Part 1 对应 1行，Part 2 对应 1行+2行原生分行）
 	if !strings.Contains(out, "好让各个SEKAI的大家") {
 		t.Fatalf("缺少前半段台词:\n%s", out)
 	}
-	if !strings.Contains(out, `能自由来往交流\N加深彼此的羁绊`) {
+	if !strings.Contains(out, "能自由来往交流") || !strings.Contains(out, "加深彼此的羁绊") {
 		t.Fatalf("缺少后半段台词:\n%s", out)
 	}
 
@@ -676,8 +676,8 @@ Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,----- 001 ----- End
 			countLayer1++
 		}
 	}
-	if countLayer0 != 2 || countLayer1 != 2 {
-		t.Fatalf("拆分后的 2 段台词均应生成双层描边 (Layer 0 共2条，Layer 1 共2条)，实得 Layer0=%d, Layer1=%d\n%s", countLayer0, countLayer1, out)
+	if countLayer0 != 3 || countLayer1 != 3 {
+		t.Fatalf("拆分后的台词均应生成双层描边 (Layer 0 共3条，Layer 1 共3条)，实得 Layer0=%d, Layer1=%d\n%s", countLayer0, countLayer1, out)
 	}
 
 	// 确认两段事件均带上所属对话组同步标识 st:1
@@ -742,5 +742,41 @@ Comment: 0,0:00:00.00,0:00:09.00,Screen,,0,0,0,,----- 001 ----- End
 		t.Fatalf("句末标点断句不符预期:\n%s", out)
 	}
 }
+
+func TestPostProcess_LukaDialogueSplitAndDoubleOutline(t *testing.T) {
+	const lukaAss = `[Script Info]
+PlayResX: 2560
+PlayResY: 1600
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:01.00,0:00:05.00,Screen,,0,0,0,,----- 001 ----- Start
+Dialogue: 0,0:00:01.00,0:00:05.00,Character,,0,0,0,,{\pos(335,1285)}ルカ
+Dialogue: 0,0:00:01.00,0:00:05.00,Line2,,0,0,0,,『想和至今为止遇见过的所有SEKAI里的我们，\N全都成为好朋友！』
+Comment: 0,0:00:01.00,0:00:05.00,Screen,,0,0,0,,----- 001 ----- End
+`
+	post, err := PostProcessAss(lukaAss, AssPostOptions{
+		Clean: true, SyncTags: true, SpeakerColor: true,
+	})
+	if err != nil {
+		t.Fatalf("PostProcessAss: %v", err)
+	}
+	out := post.Content
+
+	// 确认第 1 行与第 2 行被自动拆分为独立的 1行 与 2行 样式（实现 70px 原生垂直行距）
+	if !strings.Contains(out, "1行,ルカ,0,0,0,st:1,{\\1c&HCCBBFF&\\3c&HCCBBFF&\\3a&H00&\\bord3.5\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，") {
+		t.Fatalf("第1行未成功拆分为 1行 样式或未注入巡音代表色 Layer 0:\n%s", out)
+	}
+	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HCCBBFF&\\3c&HCCBBFF&\\3a&H00&\\bord3.5\\shad0}全都成为好朋友！』") {
+		t.Fatalf("第2行未成功拆分为 2行 样式或未注入巡音代表色 Layer 0:\n%s", out)
+	}
+	if !strings.Contains(out, "1行,ルカ,0,0,0,st:1,{\\1c&HFFFFFF&\\3c&H46664749&\\3a&H00&\\bord1.8\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，") {
+		t.Fatalf("第1行未生成 Layer 1 内描边:\n%s", out)
+	}
+	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HFFFFFF&\\3c&H46664749&\\3a&H00&\\bord1.8\\shad0}全都成为好朋友！』") {
+		t.Fatalf("第2行未生成 Layer 1 内描边:\n%s", out)
+	}
+}
+
 
 

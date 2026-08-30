@@ -673,6 +673,54 @@ func splitEventIfTooManyLines(ev *assEvent, startI, endI, textI, styleI int, pla
 	return res
 }
 
+// split2LineEventToNativeRows 检查对话事件是否包含 2 行文本（含 \N）。
+// 若包含 2 行，则拆分为同起止时间的 1行 与 2行 两条独立分行事件，
+// 使得 1行落在 MarginV 1365，2行落在 MarginV 1435，锁定 70px 原生垂直行距。
+func split2LineEventToNativeRows(ev *assEvent, textI, styleI int, playX, playY int, clean bool) []*assEvent {
+	if ev.Kind != "Dialogue" || textI < 0 || styleI < 0 {
+		return []*assEvent{ev}
+	}
+	rawText := ev.Fields[textI]
+	normText := strings.ReplaceAll(rawText, "\\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\r\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\n", "\\N")
+
+	lines := strings.Split(normText, "\\N")
+	if len(lines) != 2 {
+		return []*assEvent{ev}
+	}
+
+	ev1 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev1.Fields[textI] = lines[0]
+
+	ev2 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev2.Fields[textI] = lines[1]
+
+	if clean {
+		if s1, ok := cleanStyleFor("1行", playX, playY); ok {
+			ev1.Fields[styleI] = s1
+		} else {
+			ev1.Fields[styleI] = "1行"
+		}
+		if s2, ok := cleanStyleFor("2行", playX, playY); ok {
+			ev2.Fields[styleI] = s2
+		} else {
+			ev2.Fields[styleI] = "2行"
+		}
+	} else {
+		ev1.Fields[styleI] = "Line1"
+		ev2.Fields[styleI] = "Line2"
+	}
+
+	return []*assEvent{ev1, ev2}
+}
+
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，
 // Text（最后一个字段）保留其中的逗号。
 type assEvent struct {
@@ -1026,7 +1074,16 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			evSlice = []*assEvent{ev}
 		}
 
-		for _, subEv := range evSlice {
+		var finalEvSlice []*assEvent
+		for _, e := range evSlice {
+			if e.Kind == "Dialogue" && style != "Character" && style != "staff" && style != "Screen" && (enableSpeakerColor || isInternalStyleTemplate(opts)) {
+				finalEvSlice = append(finalEvSlice, split2LineEventToNativeRows(e, textI, styleI, playX, playY, opts.Clean)...)
+			} else {
+				finalEvSlice = append(finalEvSlice, e)
+			}
+		}
+
+		for _, subEv := range finalEvSlice {
 			currentStyle := strings.TrimSpace(subEv.Fields[styleI])
 			newStyles[currentStyle] = true
 
@@ -1036,14 +1093,14 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 					speaker = strings.TrimSpace(subEv.Fields[nameI])
 				}
 				if col, ok := ResolveSpeakerOutlineColor(speaker); ok {
-					innerBord, outerBord := 1.8, 4.8
+					innerBord, outerBord := 1.8, 3.5
 					if playX == 1920 && playY == 1080 {
-						innerBord, outerBord = 1.3, 3.4
+						innerBord, outerBord = 1.3, 2.4
 					} else if playX == 1920 && playY == 1440 {
-						innerBord, outerBord = 1.4, 3.6
+						innerBord, outerBord = 1.4, 2.7
 					}
 
-					// 下层 (Layer 0): 4.8px 角色代表色外轮廓
+					// 下层 (Layer 0): 3.5px 角色代表色外轮廓
 					evOuter := &assEvent{
 						Kind:   subEv.Kind,
 						Fields: append([]string(nil), subEv.Fields...),
