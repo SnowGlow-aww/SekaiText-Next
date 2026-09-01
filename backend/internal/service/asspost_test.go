@@ -536,7 +536,7 @@ Title: Internal
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1365,1
+Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1295,1
 `
 	assWithSpeaker := `[Script Info]
 PlayResX: 2560
@@ -562,7 +562,7 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Character,,0,0,0,,暁山瑞希
 Title: Standard Public Template
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: 1行,Source Han Sans CN Medium,70,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,0,0,1,6,0,7,335,10,1365,1
+Style: 1行,Source Han Sans CN Medium,70,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,0,0,1,6,0,7,335,10,1295,1
 `
 	normalPost, err := PostProcessAss(assWithSpeaker, AssPostOptions{Clean: true, StyleTemplateContent: normalTmplContent})
 	if err != nil {
@@ -581,7 +581,7 @@ Title: Internal
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1365,1
+Style: 1行,荆南麦圆体,82,&H00FFFFFF,&H000000FF,&H46664749,&H00000000,0,0,0,0,100,100,1.2,0,1,6.5,0.0,7,335,10,1295,1
 `
 	// 模拟 SekaiTools 标准输出：Character 行在前（含 \pos 标签），Dialogue 行在后
 	const sekaiToolsAss = `[Script Info]

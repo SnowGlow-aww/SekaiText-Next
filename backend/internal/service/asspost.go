@@ -675,7 +675,7 @@ func splitEventIfTooManyLines(ev *assEvent, startI, endI, textI, styleI int, pla
 
 // split2LineEventToNativeRows 检查对话事件是否包含 2 行文本（含 \N）。
 // 若包含 2 行，则拆分为同起止时间的 1行 与 2行 两条独立分行事件，
-// 使得 1行落在 MarginV 1365，2行落在 MarginV 1435，锁定 70px 原生垂直行距。
+// 使得 1行落在 MarginV 1295，2行落在 MarginV 1365，锁定 70px 原生垂直行距。
 func split2LineEventToNativeRows(ev *assEvent, textI, styleI int, playX, playY int, clean bool) []*assEvent {
 	if ev.Kind != "Dialogue" || textI < 0 || styleI < 0 {
 		return []*assEvent{ev}
