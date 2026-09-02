@@ -60,11 +60,10 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 	if strings.Contains(out, "Character,") || strings.Contains(out, ",Screen,") {
 		t.Errorf("Character/Screen 行未删干净:\n%s", out)
 	}
-	// cln：行数以原文（引擎 LineN 样式名）为准，不数译文 \N（用户反馈：译文没断行
-	// 或分句切半时 \N 数偏低，误判成 1行 会把译文压在日文行上）；\N 本身保留
-	// （分行是译者手动断的句，删掉后多行文本只剩一行长条）
-	if !strings.Contains(out, `第一句上\N第一句下`) {
-		t.Errorf("\\N 应保留在文本中:\n%s", out)
+	// cln：行数以原文（引擎 LineN 样式名）为准，不数译文 \N；两行译文再按 \N
+	// 拆到 1行/2行 槽位，避免整块 2行 事件从第二槽起排把下一行顶出画面。
+	if strings.Contains(out, `第一句上\N第一句下`) {
+		t.Errorf("两行译文应按槽位拆开，不应整块留在同一事件:\n%s", out)
 	}
 	for _, ln := range strings.Split(out, "\n") {
 		if !strings.HasPrefix(ln, "Dialogue:") && !strings.HasPrefix(ln, "Comment:") {
@@ -72,8 +71,12 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(ln, "第一句上"):
+			if !strings.Contains(ln, ",1行,") {
+				t.Errorf("两行译文的第一行应落在 1行 槽位: %s", ln)
+			}
+		case strings.Contains(ln, "第一句下"):
 			if !strings.Contains(ln, ",2行,") {
-				t.Errorf("2行原文(Line2)应为 2行 样式: %s", ln)
+				t.Errorf("两行译文的第二行应落在 2行 槽位: %s", ln)
 			}
 		case strings.Contains(ln, "长句前半") || strings.Contains(ln, "长句后半"):
 			if !strings.Contains(ln, ",3行,") {
@@ -97,8 +100,8 @@ func TestPostProcessCleanAndTags(t *testing.T) {
 		t.Errorf("banner 事件不应再引用引擎样式 BannerText")
 	}
 	// 同步标识：对话组打上 st:N，banner 不打
-	if !strings.Contains(out, ",st:1,第一句上") {
-		t.Errorf("第一组应带 st:1 标识:\n%s", out)
+	if !strings.Contains(out, ",st:1,第一句上") || !strings.Contains(out, ",st:1,第一句下") {
+		t.Errorf("第一组拆开后两行都应带 st:1 标识:\n%s", out)
 	}
 	if !strings.Contains(out, ",st:2,长句前半，带逗号") || !strings.Contains(out, ",st:2,长句后半") {
 		t.Errorf("分句两半应都带 st:2")
@@ -204,8 +207,8 @@ func TestPostProcess1920Suffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostProcessAss: %v", err)
 	}
-	if !strings.Contains(post.Content, ",2行 - 1920*1440,") {
-		t.Errorf("1920×1440 视频应使用带后缀样式名:\n%s", post.Content)
+	if !strings.Contains(post.Content, ",1行 - 1920*1440,") || !strings.Contains(post.Content, ",2行 - 1920*1440,") {
+		t.Errorf("1920×1440 视频的两行槽位都应带后缀样式名:\n%s", post.Content)
 	}
 }
 
@@ -676,8 +679,8 @@ Comment: 0,0:00:05.70,0:00:15.48,Screen,,0,0,0,,----- 001 ----- End
 			countLayer1++
 		}
 	}
-	if countLayer0 != 2 || countLayer1 != 2 {
-		t.Fatalf("拆分后的 2 段台词均应生成双层描边 (Layer 0 共2条，Layer 1 共2条)，实得 Layer0=%d, Layer1=%d\n%s", countLayer0, countLayer1, out)
+	if countLayer0 != 3 || countLayer1 != 3 {
+		t.Fatalf("拆分后的台词均应生成双层描边 (Layer 0 共3条，Layer 1 共3条)，实得 Layer0=%d, Layer1=%d\n%s", countLayer0, countLayer1, out)
 	}
 
 	// 确认两段事件均带上所属对话组同步标识 st:1
@@ -707,16 +710,32 @@ Comment: 0,0:00:01.00,0:00:10.00,Screen,,0,0,0,,----- 001 ----- End
 	}
 	out := post.Content
 
-	// 确认拆分为两条各 2 行的台词（样式均为 2行）
-	if !strings.Contains(out, `第一行文字\N第二行文字`) || !strings.Contains(out, `第三行文字\N第四行文字`) {
-		t.Fatalf("4行台词应平均拆分为两条2行台词:\n%s", out)
+	if strings.Contains(out, `第一行文字\N第二行文字`) || strings.Contains(out, `第三行文字\N第四行文字`) {
+		t.Fatalf("4行台词时间切分后，两行片段还应再拆到 1行/2行 槽位:\n%s", out)
 	}
+	if !strings.Contains(out, "第一行文字") || !strings.Contains(out, "第二行文字") || !strings.Contains(out, "第三行文字") || !strings.Contains(out, "第四行文字") {
+		t.Fatalf("4行台词拆分后应保留全部四句:\n%s", out)
+	}
+	got1, got2 := 0, 0
 	for _, ln := range strings.Split(out, "\n") {
-		if strings.HasPrefix(ln, "Dialogue:") {
-			if !strings.Contains(ln, ",2行,") {
-				t.Fatalf("每条2行台词样式应为 2行: %s", ln)
-			}
+		if !strings.HasPrefix(ln, "Dialogue:") {
+			continue
 		}
+		switch {
+		case strings.Contains(ln, "第一行文字") || strings.Contains(ln, "第三行文字"):
+			if !strings.Contains(ln, ",1行,") {
+				t.Fatalf("时间切分后的第一行应落在 1行: %s", ln)
+			}
+			got1++
+		case strings.Contains(ln, "第二行文字") || strings.Contains(ln, "第四行文字"):
+			if !strings.Contains(ln, ",2行,") {
+				t.Fatalf("时间切分后的第二行应落在 2行: %s", ln)
+			}
+			got2++
+		}
+	}
+	if got1 != 2 || got2 != 2 {
+		t.Fatalf("4行台词应拆成 2 条 1行 + 2 条 2行，实得 1行=%d 2行=%d\n%s", got1, got2, out)
 	}
 }
 
@@ -737,9 +756,12 @@ Comment: 0,0:00:00.00,0:00:09.00,Screen,,0,0,0,,----- 001 ----- End
 	}
 	out := post.Content
 
-	// 句号在第一行末尾，应自然拆分为 Part 1 (第1行) 和 Part 2 (第2+3行)
-	if !strings.Contains(out, "第一句已经结束了。") || !strings.Contains(out, `第二句前半部分\N第二句后半部分`) {
+	// 句号在第一行末尾，应自然拆分为 Part 1 (第1行) 和 Part 2 (第2+3行，再落到 1行/2行 槽位)
+	if !strings.Contains(out, "第一句已经结束了。") || !strings.Contains(out, "第二句前半部分") || !strings.Contains(out, "第二句后半部分") {
 		t.Fatalf("句末标点断句不符预期:\n%s", out)
+	}
+	if strings.Contains(out, `第二句前半部分\N第二句后半部分`) {
+		t.Fatalf("后半两行还应再拆到 1行/2行 槽位:\n%s", out)
 	}
 }
 
@@ -763,12 +785,18 @@ Comment: 0,0:00:01.00,0:00:05.00,Screen,,0,0,0,,----- 001 ----- End
 	}
 	out := post.Content
 
-	// 确认 Line2 正确保留 2行 样式且完整保留 \N，生成双层描边（Layer 0 巡音代表色外圈 + Layer 1 深色内圈）
-	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HCCBBFF&\\3c&HCCBBFF&\\3a&H00&\\bord3.5\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，\\N全都成为好朋友！』") {
-		t.Fatalf("未注入巡音代表色 Layer 0 或样式未保留 2行:\n%s", out)
+	// 确认第 1 行与第 2 行被拆到 1行/2行 槽位，并生成双层描边
+	if !strings.Contains(out, "1行,ルカ,0,0,0,st:1,{\\1c&HCCBBFF&\\3c&HCCBBFF&\\3a&H00&\\bord3.5\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，") {
+		t.Fatalf("第1行未成功拆分为 1行 样式或未注入巡音代表色 Layer 0:\n%s", out)
 	}
-	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HFFFFFF&\\3c&H46664749&\\3a&H00&\\bord1.8\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，\\N全都成为好朋友！』") {
-		t.Fatalf("未生成 Layer 1 内描边:\n%s", out)
+	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HCCBBFF&\\3c&HCCBBFF&\\3a&H00&\\bord3.5\\shad0}全都成为好朋友！』") {
+		t.Fatalf("第2行未成功拆分为 2行 样式或未注入巡音代表色 Layer 0:\n%s", out)
+	}
+	if !strings.Contains(out, "1行,ルカ,0,0,0,st:1,{\\1c&HFFFFFF&\\3c&H46664749&\\3a&H00&\\bord1.8\\shad0}『想和至今为止遇见过的所有SEKAI里的我们，") {
+		t.Fatalf("第1行未生成 Layer 1 内描边:\n%s", out)
+	}
+	if !strings.Contains(out, "2行,ルカ,0,0,0,st:1,{\\1c&HFFFFFF&\\3c&H46664749&\\3a&H00&\\bord1.8\\shad0}全都成为好朋友！』") {
+		t.Fatalf("第2行未生成 Layer 1 内描边:\n%s", out)
 	}
 }
 

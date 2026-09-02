@@ -22,7 +22,9 @@ import (
 //	     ① 行数以原文为准而非数译文 \N——引擎的 LineN 就是剧本原文的换行数，而
 //	        译文没手动断行（2行原文配单行中文）或三行长台词被分隔切成两半后，
 //	        \N 数会低于原文行数，按 \N 数套样式会把译文压到日文行上；
-//	     ② 保留文本里的 \N——分行是译者手动断的句，删掉后多行文本只剩一行长条。
+//	     ② 两行译文按 \N 拆成同轴的 1行/2行 事件，分别落在 MarginV 1365/1435
+//	        （70px 原生行距）。1行/2行 是单行槽位，整块 2行 事件从第二槽起排会把
+//	        第二行顶出画面。三行及以上先按时间切成最多两行，再对两行做槽位拆分。
 //	     地点横幅同理改名 BannerMask→遮罩、BannerText→地点名称（团队成品口径：
 //	     事件标签结构与引擎输出一致，只换样式名套团队样式包的定义）。
 //	dlt: 删除样式为 Character / Screen 的行（角色名行与引擎调试注释）。
@@ -673,6 +675,78 @@ func splitEventIfTooManyLines(ev *assEvent, startI, endI, textI, styleI int, pla
 	return res
 }
 
+func nativeDialogueRowStyle(existing string, row int, playX, playY int, clean bool) string {
+	if row < 1 {
+		row = 1
+	}
+	if row > 3 {
+		row = 3
+	}
+	rowName := []string{"1行", "2行", "3行"}[row-1]
+	lineName := []string{"Line1", "Line2", "Line3"}[row-1]
+	switch {
+	case strings.Contains(existing, "1920*1440"):
+		if clean || strings.Contains(existing, "行") {
+			return rowName + " - 1920*1440"
+		}
+		return lineName
+	case strings.Contains(existing, "1920*1080"):
+		if clean || strings.Contains(existing, "行") {
+			return rowName + " - 1920*1080"
+		}
+		return lineName
+	}
+	if !clean {
+		return lineName
+	}
+	if name, ok := cleanStyleFor(lineName, playX, playY); ok {
+		return name
+	}
+	return rowName
+}
+
+func shouldSplitNativeRows(style string) bool {
+	switch style {
+	case "Character", "staff", "Screen", "遮罩", "地点名称", "对话框遮罩", "BannerMask", "BannerText":
+		return false
+	}
+	return strings.Contains(style, "行") || strings.Contains(style, "Line") || style == "Default" || style == "default"
+}
+
+// split2LineEventToNativeRows 把恰好两行（含 \N）的对话拆成同起止时间的 1行 与 2行。
+// 1行/2行 样式是单行槽位（MarginV 1365/1435），整块留在 2行 会从第二槽起排，第二行出画。
+func split2LineEventToNativeRows(ev *assEvent, textI, styleI int, playX, playY int, clean bool) []*assEvent {
+	if ev.Kind != "Dialogue" || textI < 0 || styleI < 0 {
+		return []*assEvent{ev}
+	}
+	rawText := ev.Fields[textI]
+	normText := strings.ReplaceAll(rawText, "\\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\r\n", "\\N")
+	normText = strings.ReplaceAll(normText, "\n", "\\N")
+
+	lines := strings.Split(normText, "\\N")
+	if len(lines) != 2 {
+		return []*assEvent{ev}
+	}
+
+	ev1 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev1.Fields[textI] = lines[0]
+
+	ev2 := &assEvent{
+		Kind:   ev.Kind,
+		Fields: append([]string(nil), ev.Fields...),
+	}
+	ev2.Fields[textI] = lines[1]
+
+	existing := strings.TrimSpace(ev.Fields[styleI])
+	ev1.Fields[styleI] = nativeDialogueRowStyle(existing, 1, playX, playY, clean)
+	ev2.Fields[styleI] = nativeDialogueRowStyle(existing, 2, playX, playY, clean)
+	return []*assEvent{ev1, ev2}
+}
+
 // assEvent 是 [Events] 里一行的解析结果。Fields 与 Format 字段一一对应，
 // Text（最后一个字段）保留其中的逗号。
 type assEvent struct {
@@ -1026,7 +1100,17 @@ func PostProcessAss(content string, opts AssPostOptions) (*AssPostResult, error)
 			evSlice = []*assEvent{ev}
 		}
 
-		for _, subEv := range evSlice {
+		var finalEvSlice []*assEvent
+		for _, e := range evSlice {
+			curStyle := strings.TrimSpace(e.Fields[styleI])
+			if e.Kind == "Dialogue" && (opts.Clean || enableSpeakerColor) && shouldSplitNativeRows(curStyle) {
+				finalEvSlice = append(finalEvSlice, split2LineEventToNativeRows(e, textI, styleI, playX, playY, opts.Clean)...)
+			} else {
+				finalEvSlice = append(finalEvSlice, e)
+			}
+		}
+
+		for _, subEv := range finalEvSlice {
 			currentStyle := strings.TrimSpace(subEv.Fields[styleI])
 			newStyles[currentStyle] = true
 
