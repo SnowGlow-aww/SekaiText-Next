@@ -261,6 +261,10 @@ export function pluginIntroTour(pluginId: string): TourDef | null {
  * 补丁版本不打扰。发版时若有值得展示的变化，在这里加一条。
  */
 const WHATS_NEW: Record<string, { title?: string; body: string; link?: TourStep['link'] }> = {
+  '5.9': {
+    body:
+      '· 成品字幕：两行台词拆到 1行/2行 原生槽位（MarginV 1365/1435），避免第二行出画或压在日文上——请把自动轴机插件更新到 3.2.16 后重新导出',
+  },
   '5.8': {
     body:
       '· 团队术语同步全面提速：版本检查与拉取改走 CDN 加速（服务器升级后自动生效，旧服务器自动回退直连，无需操作）',
