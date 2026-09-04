@@ -32,6 +32,16 @@ import (
 // A line is a response iff it carries "id"; otherwise it is a notification.
 //
 // 并发模型：引擎进程内一次只有一个打轴 job（无 correlation id），所以隔离边界就是
+type pendingTiming struct {
+	job    *EngineTimingJob
+	params TimingParams
+}
+
+type pendingSuppress struct {
+	job    *EngineSuppressJob
+	params SuppressParams
+}
+
 // 进程——每个 job 独占一个引擎进程，通知天然归属所在进程绑定的 job。支持多视频
 // 并行（parallel=true 时同域多 job 各占一个进程）；serial（默认）保持老语义：同域
 // 单飞、新打轴替换全部旧任务。另留一个「备胎」空闲进程给 Ping 与下一个 job 领养，
@@ -41,12 +51,14 @@ type EngineManager struct {
 	ffmpegPath string
 	logsDir    string // 压制日志自动导出目录（数据目录下 logs/）；空 = 不落盘
 
-	mu            sync.Mutex // guards spare + job maps/orders + probeCache
+	mu            sync.Mutex // guards spare + job maps/orders + queues + probeCache
 	spare         *engineProc
 	timingJobs    map[string]*EngineTimingJob
 	timingOrder   []string
+	timingQueue   []pendingTiming
 	suppressJobs  map[string]*EngineSuppressJob
 	suppressOrder []string
+	suppressQueue []pendingSuppress
 
 	// suppress.probe 结果（可用编码器+推荐值）。首跑要对每个硬件编码器试编码
 	// （数秒），显卡不会中途更换，成功结果缓存整个后端生命周期。
@@ -60,9 +72,14 @@ type EngineManager struct {
 	shutdownErr  error
 }
 
-// 并行上限：放开同域并行任务数量限制，支持高并发多视频并行打轴与压制；
-// 保留的任务数也设大容量缓冲。
+// 并行上限与并发调度限制：
+// 为避免多任务同时压制时打满显卡编码会话（NVENC/VideoToolbox）或软编CPU线程互踩导致速度断崖式下跌，
+// 同一时间最多允许 2 个活跃执行的打轴与 2 个活跃执行的压制任务；超出部分自动排队进入队列，
+// 前序任务完成后自动无缝启动下一个。
 const (
+	maxActiveTimingJobs   = 2
+	maxActiveSuppressJobs = 2
+
 	maxRunningPerDomain = 128
 	maxKeptTimingJobs   = 256
 	maxKeptSuppressJobs = 256
@@ -584,6 +601,7 @@ type TimingParams struct {
 // StartTiming launches an auto-timing run in its own engine process and registers
 // the job. serial（parallel=false，老语义）：已有 running 即拒绝，且启动时替换掉全部
 // 旧任务；parallel：多任务并存，受 maxRunningPerDomain/maxKeptTimingJobs 约束。
+// 超出 maxActiveTimingJobs 的任务自动排队，前序任务完成后自动无缝启动。
 func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel bool) (*EngineTimingJob, error) {
 	job := &EngineTimingJob{TaskID: taskID, ScriptPath: p.ScriptPath, VideoPath: p.VideoPath, Status: "running"}
 
@@ -592,17 +610,19 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 		em.mu.Unlock()
 		return nil, ErrEngineShuttingDown
 	}
-	running := 0
+	active := 0
 	for _, j := range em.timingJobs {
 		if j.statusSnapshot() == "running" {
-			running++
+			active++
 		}
 	}
-	if running > 0 && !parallel {
+	queued := len(em.timingQueue)
+	totalWaitingOrRunning := active + queued
+	if totalWaitingOrRunning > 0 && !parallel {
 		em.mu.Unlock()
 		return nil, ErrTimingBusy
 	}
-	if parallel && running >= maxRunningPerDomain {
+	if parallel && totalWaitingOrRunning >= maxRunningPerDomain {
 		em.mu.Unlock()
 		return nil, fmt.Errorf("并行打轴数已达上限（%d），请等待或取消其他任务", maxRunningPerDomain)
 	}
@@ -618,6 +638,14 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 			delete(em.timingJobs, id)
 		}
 		em.timingOrder = nil
+		em.timingQueue = nil
+	}
+	shouldLaunch := active < maxActiveTimingJobs
+	if shouldLaunch {
+		job.Status = "running"
+	} else {
+		job.Status = "waiting"
+		em.timingQueue = append(em.timingQueue, pendingTiming{job: job, params: p})
 	}
 	em.timingJobs[taskID] = job
 	em.timingOrder = append(em.timingOrder, taskID)
@@ -632,8 +660,43 @@ func (em *EngineManager) StartTiming(taskID string, p TimingParams, parallel boo
 	// blocking the HTTP start that long would freeze the UI and, worse, leave it
 	// unable to cancel. A start failure instead surfaces through the job's terminal
 	// state, which the progress poll reads.
-	go em.launchTiming(job, p)
+	if shouldLaunch {
+		go em.launchTiming(job, p)
+	}
 	return job, nil
+}
+
+func (em *EngineManager) drainTimingQueue() {
+	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return
+	}
+	active := 0
+	for _, j := range em.timingJobs {
+		if j.statusSnapshot() == "running" {
+			active++
+		}
+	}
+	var toLaunch []pendingTiming
+	for active < maxActiveTimingJobs && len(em.timingQueue) > 0 {
+		item := em.timingQueue[0]
+		em.timingQueue = em.timingQueue[1:]
+		item.job.Mu.Lock()
+		if item.job.Status == "waiting" {
+			item.job.Status = "running"
+			item.job.Mu.Unlock()
+			toLaunch = append(toLaunch, item)
+			active++
+		} else {
+			item.job.Mu.Unlock()
+		}
+	}
+	em.mu.Unlock()
+
+	for _, item := range toLaunch {
+		go em.launchTiming(item.job, item.params)
+	}
 }
 
 func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
@@ -645,19 +708,25 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 	proc, err := em.takeProc()
 	if err != nil {
 		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动打轴失败: "+err.Error())
+		go em.drainTimingQueue()
 		return
 	}
 	if !proc.bind(
-		func(method string, params json.RawMessage) { routeTimingNotification(job, method, params) },
-		func() { failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested) },
+		func(method string, params json.RawMessage) { em.routeTimingNotification(job, method, params) },
+		func() {
+			failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested)
+			go em.drainTimingQueue()
+		},
 	) {
 		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "内核进程启动后立即退出")
+		go em.drainTimingQueue()
 		return
 	}
 	job.Mu.Lock()
 	if job.Status != "running" { // canceled while we were spawning
 		job.Mu.Unlock()
 		em.recycleProc(proc)
+		go em.drainTimingQueue()
 		return
 	}
 	job.proc = proc
@@ -683,6 +752,7 @@ func (em *EngineManager) launchTiming(job *EngineTimingJob, p TimingParams) {
 		job.proc = nil
 		job.Mu.Unlock()
 		em.recycleProc(pr)
+		go em.drainTimingQueue()
 		return
 	}
 	// A cancel that raced the start send has already marked the job canceled but
@@ -888,6 +958,8 @@ type SuppressParams struct {
 }
 
 // StartSuppress launches an encode run in its own engine process.
+// 超出 maxActiveSuppressJobs 的任务自动排队，前序任务完成后自动无缝启动下一个，
+// 避免多路 HEVC 并发导致显卡编码会话耗尽或软编CPU线程互踩。
 func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel bool) (*EngineSuppressJob, error) {
 	if p.FfmpegPath == "" {
 		p.FfmpegPath = em.ffmpegPath
@@ -908,24 +980,28 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 		em.mu.Unlock()
 		return nil, ErrEngineShuttingDown
 	}
-	running := 0
+	active := 0
 	for _, j := range em.suppressJobs {
-		if j.statusSnapshot() != "running" {
-			continue
+		st := j.statusSnapshot()
+		if st == "running" || st == "waiting" {
+			// 并行任务各自独占引擎进程，但输出文件仍是共享资源：两个 ffmpeg 写同一个
+			// 文件在 Windows 上不报错、产物直接损坏，启动前必须拦下。
+			if sameEngineOutputPath(j.OutputPath, p.OutputPath) {
+				em.mu.Unlock()
+				return nil, ErrSuppressOutputConflict
+			}
 		}
-		running++
-		// 并行任务各自独占引擎进程，但输出文件仍是共享资源：两个 ffmpeg 写同一个
-		// 文件在 Windows 上不报错、产物直接损坏，启动前必须拦下。
-		if sameEngineOutputPath(j.OutputPath, p.OutputPath) {
-			em.mu.Unlock()
-			return nil, ErrSuppressOutputConflict
+		if st == "running" {
+			active++
 		}
 	}
-	if running > 0 && !parallel {
+	queued := len(em.suppressQueue)
+	totalWaitingOrRunning := active + queued
+	if totalWaitingOrRunning > 0 && !parallel {
 		em.mu.Unlock()
 		return nil, ErrSuppressBusy
 	}
-	if parallel && running >= maxRunningPerDomain {
+	if parallel && totalWaitingOrRunning >= maxRunningPerDomain {
 		em.mu.Unlock()
 		return nil, fmt.Errorf("并行压制数已达上限（%d），请等待或取消其他任务", maxRunningPerDomain)
 	}
@@ -933,7 +1009,7 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 	for len(em.suppressJobs) >= maxKeptSuppressJobs && len(em.suppressOrder) > 0 {
 		oldest := ""
 		for _, id := range em.suppressOrder {
-			if j := em.suppressJobs[id]; j != nil && j.statusSnapshot() != "running" {
+			if j := em.suppressJobs[id]; j != nil && j.statusSnapshot() != "running" && j.statusSnapshot() != "waiting" {
 				oldest = id
 				break
 			}
@@ -949,14 +1025,60 @@ func (em *EngineManager) StartSuppress(taskID string, p SuppressParams, parallel
 			go em.releaseSuppressProc(pruned)
 		}
 	}
+	shouldLaunch := active < maxActiveSuppressJobs
+	if shouldLaunch {
+		job.Status = "running"
+	} else {
+		job.Status = "waiting"
+		job.Mu.Lock()
+		job.appendLogLocked("[SekaiText] 任务进入排队队列（等待前序压制完成释放硬件编码器）", false)
+		job.Mu.Unlock()
+		em.suppressQueue = append(em.suppressQueue, pendingSuppress{job: job, params: p})
+	}
 	em.suppressJobs[taskID] = job
 	em.suppressOrder = append(em.suppressOrder, taskID)
 	em.mu.Unlock()
 
 	// Async start (see StartTiming): return the taskId immediately so the UI stays
 	// responsive and cancelable; a start failure surfaces via the job's terminal state.
-	go em.launchSuppress(job, p)
+	if shouldLaunch {
+		go em.launchSuppress(job, p)
+	}
 	return job, nil
+}
+
+func (em *EngineManager) drainSuppressQueue() {
+	em.mu.Lock()
+	if em.shuttingDown {
+		em.mu.Unlock()
+		return
+	}
+	active := 0
+	for _, j := range em.suppressJobs {
+		if j.statusSnapshot() == "running" {
+			active++
+		}
+	}
+	var toLaunch []pendingSuppress
+	for active < maxActiveSuppressJobs && len(em.suppressQueue) > 0 {
+		item := em.suppressQueue[0]
+		em.suppressQueue = em.suppressQueue[1:]
+		item.job.Mu.Lock()
+		if item.job.Status == "waiting" {
+			item.job.Status = "running"
+			item.job.appendLogLocked("[SekaiText] 排队结束，正式启动压制", false)
+			item.job.Mu.Unlock()
+			toLaunch = append(toLaunch, item)
+			active++
+		} else {
+			item.job.Mu.Unlock()
+		}
+	}
+	em.mu.Unlock()
+
+	for _, item := range toLaunch {
+		go em.launchSuppress(item.job, item.params)
+	}
 }
 
 func sameEngineOutputPath(a, b string) bool {
@@ -992,12 +1114,14 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 	proc, err := em.takeProc()
 	if err != nil {
 		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动压制失败: "+err.Error())
+		go em.drainSuppressQueue()
 		return
 	}
 	if !proc.bind(
 		func(method string, params json.RawMessage) { em.routeSuppressNotification(job, method, params) },
 		func() {
 			failJobExit(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested)
+			go em.drainSuppressQueue()
 			// 引擎进程异常死亡拿不到 suppress.finished——把死亡记录进日志并导出，
 			// 否则最需要日志的崩溃场景反而什么都留不下。
 			if job.statusSnapshot() == "error" {
@@ -1013,12 +1137,14 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 		},
 	) {
 		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "内核进程启动后立即退出")
+		go em.drainSuppressQueue()
 		return
 	}
 	job.Mu.Lock()
 	if job.Status != "running" {
 		job.Mu.Unlock()
 		em.recycleProc(proc)
+		go em.drainSuppressQueue()
 		return
 	}
 	job.proc = proc
@@ -1036,6 +1162,7 @@ func (em *EngineManager) launchSuppress(job *EngineSuppressJob, p SuppressParams
 		}
 		em.failStart(&job.Mu, &job.Status, &job.Error, &job.FinishReason, &job.cancelRequested, "启动压制失败: "+err.Error())
 		em.releaseSuppressProc(job)
+		go em.drainSuppressQueue()
 		return
 	}
 	if claimSuppressStop(job) {
@@ -1096,7 +1223,8 @@ func (em *EngineManager) CloseSuppress(taskID string) error {
 		em.mu.Unlock()
 		return fmt.Errorf("task not found")
 	}
-	if job.statusSnapshot() == "running" {
+	st := job.statusSnapshot()
+	if st == "running" || st == "waiting" {
 		em.mu.Unlock()
 		return ErrSuppressCloseRunning
 	}
@@ -1116,7 +1244,7 @@ func (em *EngineManager) CloseSuppress(taskID string) error {
 
 // --- Control ---
 
-// Cancel stops a run. taskID 为空时取消该域当前唯一 running 任务（老插件兼容）。
+// Cancel stops a run. taskID 为空时取消该域当前唯一 running/waiting 任务（老插件兼容）。
 func (em *EngineManager) Cancel(domain, taskID string) error {
 	switch domain {
 	case "timing":
@@ -1126,9 +1254,14 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 		}
 		job.Mu.Lock()
 		proc := job.proc
+		isWaiting := job.Status == "waiting"
 		running := job.Status == "running"
 		stop := false
-		if running {
+		if isWaiting {
+			job.Status = "canceled"
+			job.FinishReason = "Canceled"
+			job.cancelRequested = true
+		} else if running {
 			job.cancelRequested = true
 			if proc == nil {
 				job.Status = "canceled"
@@ -1139,10 +1272,16 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 			}
 		}
 		job.Mu.Unlock()
+		if isWaiting {
+			go em.drainTimingQueue()
+			return nil
+		}
 		if !stop {
 			return nil
 		}
-		return stopTimingProc(proc, 30*time.Second)
+		err := stopTimingProc(proc, 30*time.Second)
+		go em.drainTimingQueue()
+		return err
 	case "suppress":
 		job := em.pickSuppressForCancel(taskID)
 		if job == nil {
@@ -1150,9 +1289,15 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 		}
 		job.Mu.Lock()
 		proc := job.proc
+		isWaiting := job.Status == "waiting"
 		running := job.Status == "running"
 		stop := false
-		if running {
+		if isWaiting {
+			job.Status = "canceled"
+			job.FinishReason = "Canceled"
+			job.cancelRequested = true
+			job.appendLogLocked("[SekaiText] 已取消排队", false)
+		} else if running {
 			job.cancelRequested = true
 			if proc == nil {
 				job.Status = "canceled"
@@ -1163,10 +1308,16 @@ func (em *EngineManager) Cancel(domain, taskID string) error {
 			}
 		}
 		job.Mu.Unlock()
+		if isWaiting {
+			go em.drainSuppressQueue()
+			return nil
+		}
 		if !stop {
 			return nil
 		}
-		return stopSuppressProc(proc, 30*time.Second)
+		err := stopSuppressProc(proc, 30*time.Second)
+		go em.drainSuppressQueue()
+		return err
 	default:
 		return fmt.Errorf("unknown domain: %s", domain)
 	}
@@ -1179,7 +1330,8 @@ func (em *EngineManager) pickTimingForCancel(taskID string) *EngineTimingJob {
 		return em.timingJobs[taskID]
 	}
 	for _, j := range em.timingJobs {
-		if j.statusSnapshot() == "running" {
+		st := j.statusSnapshot()
+		if st == "running" || st == "waiting" {
 			return j
 		}
 	}
@@ -1193,7 +1345,8 @@ func (em *EngineManager) pickSuppressForCancel(taskID string) *EngineSuppressJob
 		return em.suppressJobs[taskID]
 	}
 	for _, j := range em.suppressJobs {
-		if j.statusSnapshot() == "running" {
+		st := j.statusSnapshot()
+		if st == "running" || st == "waiting" {
 			return j
 		}
 	}
@@ -1288,6 +1441,8 @@ func (em *EngineManager) shutdown(ctx context.Context) error {
 	em.mu.Lock()
 	em.shuttingDown = true
 	em.spare = nil
+	em.timingQueue = nil
+	em.suppressQueue = nil
 	procs := make([]*engineProc, 0, len(em.procs))
 	for p := range em.procs {
 		procs = append(procs, p)
@@ -1306,7 +1461,7 @@ func (em *EngineManager) shutdown(ctx context.Context) error {
 	stopMethods := make(map[*engineProc]string)
 	for _, job := range timingJobs {
 		job.Mu.Lock()
-		if job.Status == "running" {
+		if job.Status == "running" || job.Status == "waiting" {
 			job.Status = "canceled"
 			job.FinishReason = "Canceled"
 		}
@@ -1317,7 +1472,7 @@ func (em *EngineManager) shutdown(ctx context.Context) error {
 	}
 	for _, job := range suppressJobs {
 		job.Mu.Lock()
-		if job.Status == "running" {
+		if job.Status == "running" || job.Status == "waiting" {
 			job.Status = "canceled"
 			job.FinishReason = "Canceled"
 		}
@@ -1491,7 +1646,7 @@ func (em *EngineManager) Tasks() ([]EngineTaskSnapshot, []EngineTaskSnapshot) {
 }
 
 // routeTimingNotification updates the bound job's progress state from an engine event.
-func routeTimingNotification(j *EngineTimingJob, method string, params json.RawMessage) {
+func (em *EngineManager) routeTimingNotification(j *EngineTimingJob, method string, params json.RawMessage) {
 	switch method {
 	case "subtitle.started":
 		var p struct{ DialogTotal, BannerTotal, MarkerTotal int }
@@ -1577,6 +1732,7 @@ func routeTimingNotification(j *EngineTimingJob, method string, params json.RawM
 		j.PreviewB64 = ""
 		j.cancelRequested = false
 		j.Mu.Unlock()
+		go em.drainTimingQueue()
 	case "subtitle.error":
 		var p struct{ Message string }
 		_ = json.Unmarshal(params, &p)
@@ -1642,6 +1798,7 @@ func (em *EngineManager) routeSuppressNotification(j *EngineSuppressJob, method 
 		}
 		// 终态即回收进程；在通知 goroutine 里做，异步避免与读循环互等。
 		go em.releaseSuppressProc(j)
+		go em.drainSuppressQueue()
 	}
 }
 

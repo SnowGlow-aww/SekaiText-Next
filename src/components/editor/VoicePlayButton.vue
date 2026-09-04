@@ -13,7 +13,7 @@ let playSeq = 0
 </script>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 import { Play, Square } from 'lucide-vue-next'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
@@ -96,6 +96,8 @@ async function play() {
     loading.value = false
   }
 }
+
+onBeforeUnmount(stop)
 </script>
 
 <template>

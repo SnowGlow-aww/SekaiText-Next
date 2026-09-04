@@ -26,17 +26,26 @@ async function loadCharDict() {
   } catch { /* dict load fail, leave names as-is */ }
 }
 
+function translateSingleName(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return trimmed
+  if (nameMap.has(trimmed)) return nameMap.get(trimmed)!
+  // Strip variant suffixes (e.g. 初音ミク_LeoN -> 初音ミク, KAITO_vivid -> KAITO)
+  const withoutSuffix = trimmed.replace(/_[A-Za-z0-9]+$/, '')
+  if (withoutSuffix !== trimmed && nameMap.has(withoutSuffix)) {
+    return nameMap.get(withoutSuffix)!
+  }
+  return trimmed
+}
+
 // Translate a Japanese speaker name to Chinese using the dictionary.
-// Handles compound names (split by ・) and variant suffixes (_LeoN, etc.).
+// Handles compound names (split by ・) and variant suffixes (_LeoN, _vivid, etc.).
 function translateSpeaker(jp: string): string {
   if (!jp) return jp
-  // Try exact match first
-  if (nameMap.has(jp)) return nameMap.get(jp)!
-  // Try split by ・ and translate parts
   if (jp.includes('・')) {
-    return jp.split('・').map(p => nameMap.get(p) || p).join('・')
+    return jp.split('・').map(translateSingleName).join('・')
   }
-  return jp
+  return translateSingleName(jp)
 }
 
 onMounted(async () => {

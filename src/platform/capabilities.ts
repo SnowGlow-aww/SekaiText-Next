@@ -28,7 +28,7 @@ export function capabilitiesFor(platform: SekaiPlatform) {
     // Browser/Vite historically exposes the same backend-backed feature surface
     // as desktop. Android is the only reduced shell.
     supportsPlugins: !isAndroid,
-    supportsAppUpdater: !isAndroid,
+    supportsAppUpdater: true,
     supportsDesktopDirectories: !isAndroid,
     supportsDetachedLive2DWindow: !isAndroid,
     supportsEngine: !isAndroid,

@@ -49,6 +49,23 @@ if (needsHostBridge) {
 const debug = useDebugLog()
 debug.initConsoleCapture()
 
+// Prevent Backspace outside of active text inputs from triggering browser history navigation.
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Backspace') {
+      const ae = document.activeElement
+      const isInput = ae instanceof HTMLElement && (
+        ae.tagName === 'INPUT' ||
+        ae.tagName === 'TEXTAREA' ||
+        ae.isContentEditable
+      )
+      if (!isInput) {
+        e.preventDefault()
+      }
+    }
+  })
+}
+
 app.config.errorHandler = (err, _instance, info) => {
   console.error('[Vue Error]', err, info)
 }

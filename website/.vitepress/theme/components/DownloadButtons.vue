@@ -5,6 +5,7 @@ declare const __APP_VERSION__: string
 
 const CDN = 'https://sakimizuki.accr.cc'
 const RELEASES = 'https://github.com/SnowGlow-aww/SekaiText-Next/releases'
+const ANDROID_RELEASES = 'https://github.com/SnowGlow-aww/SekaiText-Next-Android/releases'
 
 withDefaults(defineProps<{
   compact?: boolean
@@ -22,14 +23,19 @@ function githubUrl(v: string, suffix: string) {
   return RELEASES + '/download/v' + v + '/SekaiText.Next_' + v + '_' + suffix
 }
 
+function androidGithubUrl(v: string) {
+  return ANDROID_RELEASES + '/download/v' + v + '/SekaiText.Next_' + v + '_arm64-v8a.apk'
+}
+
 const version = ref(__APP_VERSION__)
 const downloads = ref({
-  // GitHub is the durable fallback. Hydration switches to CDN only after both
+  // GitHub is the durable fallback. Hydration switches to CDN only after
   // mirrored installers have been probed successfully.
   mac: githubUrl(__APP_VERSION__, 'aarch64.dmg'),
   win: githubUrl(__APP_VERSION__, 'x64-setup.exe'),
+  android: androidGithubUrl(__APP_VERSION__),
 })
-const os = ref<'mac' | 'win' | 'other'>('other')
+const os = ref<'mac' | 'win' | 'android' | 'other'>('other')
 const usingCdn = computed(() => downloads.value.mac.startsWith(CDN))
 
 function newer(a: string, b: string) {
@@ -44,7 +50,7 @@ function newer(a: string, b: string) {
 
 onMounted(async () => {
   const ua = navigator.userAgent
-  os.value = /Macintosh|Mac OS X/i.test(ua) ? 'mac' : /Windows/i.test(ua) ? 'win' : 'other'
+  os.value = /Android/i.test(ua) ? 'android' : /Macintosh|Mac OS X/i.test(ua) ? 'mac' : /Windows/i.test(ua) ? 'win' : 'other'
   try {
     const r = await fetch(CDN + '/sekaitext-plugins/app-release.json', { cache: 'no-store' })
     if (r.ok) {
@@ -53,6 +59,7 @@ onMounted(async () => {
         const next = {
           mac: j.downloads?.['darwin-aarch64'] || cdnUrl(j.version, 'aarch64.dmg'),
           win: j.downloads?.['windows-amd64'] || cdnUrl(j.version, 'x64-setup.exe'),
+          android: j.downloads?.['android-aarch64'] || cdnUrl(j.version, 'arm64-v8a.apk'),
         }
         const available = await Promise.all(
           Object.values(next).map(async (url) => (await fetch(url, { method: 'HEAD', cache: 'no-store' })).ok),
@@ -81,7 +88,15 @@ const buttons = computed(() => {
     sub: '64 位 · Windows 10+',
     href: downloads.value.win,
   }
-  return os.value === 'win' ? [win, mac] : [mac, win]
+  const android = {
+    key: 'android',
+    label: '下载 Android 版',
+    sub: 'ARM64 · Android 9.0+',
+    href: downloads.value.android,
+  }
+  if (os.value === 'android') return [android, mac, win]
+  if (os.value === 'win') return [win, mac, android]
+  return [mac, win, android]
 })
 </script>
 

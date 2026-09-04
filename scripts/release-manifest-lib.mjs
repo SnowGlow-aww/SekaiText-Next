@@ -251,6 +251,7 @@ function parseSemanticVersion(value) {
 function platformForAsset(name) {
   if (/\.dmg$/i.test(name)) return 'darwin-aarch64'
   if (/\.exe$/i.test(name)) return 'windows-amd64'
+  if (/\.apk$/i.test(name)) return 'android-aarch64'
   throw new Error(`unsupported release asset: ${name}`)
 }
 

@@ -10,7 +10,29 @@ import {
   Settings,
   Store,
   UserRound,
-  icons,
+  Clapperboard,
+  Drama,
+  Video,
+  Film,
+  Sparkles,
+  Music,
+  Headphones,
+  FileText,
+  Terminal,
+  Play,
+  Tv,
+  Boxes,
+  Palette,
+  Volume2,
+  Mic,
+  Languages,
+  Workflow,
+  Clock,
+  Layers,
+  Sliders,
+  Wand2,
+  List,
+  Folder,
 } from 'lucide-vue-next'
 import { useSettingsStore } from '../../stores/settings'
 import { useTeamStore } from '../../stores/team'
@@ -33,15 +55,45 @@ function handleResize() {
   wasNarrow = narrow
 }
 
-// PluginSidebarItem.icon is part of the public plugin contract: plugins pass a
-// lucide-vue-next export name and the host resolves it. Keep the complete icon
-// namespace here instead of a hand-maintained allow-list, otherwise every new
-// valid plugin icon silently turns into Puzzle until the host is rebuilt.
-const pluginIcons = icons as unknown as Record<string, Component>
+// Targeted plugin icon registry: includes all built-in and common media/editing
+// plugin icons, avoiding importing the entire 1,500+ lucide icon bundle.
+const pluginIcons: Record<string, Component> = {
+  Clapperboard,
+  Drama,
+  Puzzle,
+  Video,
+  Film,
+  Sparkles,
+  Music,
+  Headphones,
+  FileText,
+  Terminal,
+  Play,
+  Tv,
+  Boxes,
+  Palette,
+  Volume2,
+  Mic,
+  Languages,
+  Workflow,
+  Clock,
+  Layers,
+  Sliders,
+  Wand2,
+  List,
+  Folder,
+  Settings,
+  Store,
+  BookMarked,
+  Download,
+  FilePenLine,
+  UserRound,
+  Bug,
+}
 
 function pluginIcon(name: string) {
   const icon = pluginIcons[name]
-  return icon && (typeof icon === 'object' || typeof icon === 'function') ? icon : Puzzle
+  return icon || Puzzle
 }
 
 onMounted(() => {

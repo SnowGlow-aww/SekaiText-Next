@@ -15,16 +15,20 @@ const props = withDefaults(defineProps<{
   placeholder?: string
   disabled?: boolean
   size?: 'sm' | 'md'
+  filterable?: boolean
 }>(), {
   placeholder: '请选择',
   disabled: false,
   size: 'md',
+  filterable: undefined,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: string | number] }>()
 
 const root = ref<HTMLElement | null>(null)
 const panel = ref<HTMLElement | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
+const searchQuery = ref('')
 const open = ref(false)
 const activeIdx = ref(-1)
 
@@ -37,6 +41,19 @@ const pos = ref({ left: 0, top: 0, bottom: 0, minWidth: 0, placement: 'bottom' a
 const selected = computed(() => props.options.find(o => o.value === props.modelValue))
 const display = computed(() => selected.value?.label ?? props.placeholder)
 const isPlaceholder = computed(() => !selected.value)
+
+const shouldFilter = computed(() => props.filterable ?? props.options.length >= 8)
+const visibleOptions = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return props.options
+  return props.options.filter(o =>
+    o.label.toLowerCase().includes(q) || String(o.value).toLowerCase().includes(q)
+  )
+})
+
+watch(searchQuery, () => {
+  activeIdx.value = visibleOptions.value.length > 0 ? 0 : -1
+})
 
 function measure() {
   const el = root.value
@@ -68,15 +85,20 @@ function clampHoriz() {
 async function toggle() {
   if (props.disabled) return
   if (open.value) { close(); return }
+  searchQuery.value = ''
   measure()
   open.value = true
-  activeIdx.value = props.options.findIndex(o => o.value === props.modelValue)
+  activeIdx.value = visibleOptions.value.findIndex(o => o.value === props.modelValue)
   await nextTick()
   clampHoriz()
-  panel.value?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+  if (shouldFilter.value && searchInput.value) {
+    searchInput.value.focus()
+  } else {
+    panel.value?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+  }
 }
 
-function close() { open.value = false; activeIdx.value = -1 }
+function close() { open.value = false; activeIdx.value = -1; searchQuery.value = '' }
 
 function pick(opt: SkOption) {
   if (opt.disabled) return
@@ -85,12 +107,12 @@ function pick(opt: SkOption) {
 }
 
 function move(delta: number) {
-  const n = props.options.length
+  const n = visibleOptions.value.length
   if (!n) return
   let i = activeIdx.value
   for (let step = 0; step < n; step++) {
     i = (i + delta + n) % n
-    if (!props.options[i]?.disabled) { activeIdx.value = i; break }
+    if (!visibleOptions.value[i]?.disabled) { activeIdx.value = i; break }
   }
   nextTick(() => {
     panel.value?.querySelectorAll('[role=option]')[activeIdx.value]?.scrollIntoView({ block: 'nearest' })
@@ -106,9 +128,9 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.preventDefault(); close() }
   else if (e.key === 'ArrowDown') { e.preventDefault(); move(1) }
   else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1) }
-  else if (e.key === 'Enter' || e.key === ' ') {
+  else if (e.key === 'Enter' || (!searchQuery.value && e.key === ' ')) {
     e.preventDefault()
-    const opt = props.options[activeIdx.value]
+    const opt = visibleOptions.value[activeIdx.value]
     if (opt) pick(opt)
   }
 }
@@ -146,8 +168,18 @@ watch(() => props.disabled, (d) => { if (d) close() })
             ...(pos.placement === 'bottom' ? { top: pos.top + 'px' } : { bottom: pos.bottom + 'px' }),
           }"
         >
+          <div v-if="shouldFilter" class="sk-search-box" @click.stop>
+            <input
+              ref="searchInput"
+              v-model="searchQuery"
+              type="text"
+              class="sk-search-input"
+              placeholder="搜索..."
+              @keydown="onKeydown"
+            />
+          </div>
           <button
-            v-for="(opt, i) in options"
+            v-for="(opt, i) in visibleOptions"
             :key="opt.value"
             role="option"
             type="button"
@@ -161,6 +193,9 @@ watch(() => props.disabled, (d) => { if (d) close() })
             <span class="truncate">{{ opt.label }}</span>
             <Check v-if="opt.value === modelValue" :size="14" class="shrink-0" />
           </button>
+          <div v-if="visibleOptions.length === 0" class="sk-empty">
+            无匹配项
+          </div>
         </div>
       </Transition>
     </Teleport>
@@ -247,6 +282,35 @@ watch(() => props.disabled, (d) => { if (d) close() })
   .sk-panel { background: var(--color-surface); }
 }
 
+.sk-search-box {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 0.25rem 0.25rem 0.35rem 0.25rem;
+  background: color-mix(in oklch, var(--color-surface) 95%, transparent);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 0.25rem;
+}
+.sk-search-input {
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+  border-radius: calc(var(--radius-control) - 2px);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  outline: none;
+}
+.sk-search-input:focus {
+  border-color: var(--accent, var(--color-primary));
+}
+.sk-empty {
+  padding: 0.75rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
 .sk-opt {
   display: flex;
   align-items: center;
@@ -268,26 +332,18 @@ watch(() => props.disabled, (d) => { if (d) close() })
   color: var(--accent, var(--color-primary));
   font-weight: 600;
 }
-.sk-opt.selected.active {
-  background: color-mix(in oklch, var(--accent, var(--color-primary)) 14%, transparent);
-}
 .sk-opt.disabled {
-  color: var(--color-text-tertiary);
-  cursor: default;
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.pop-enter-active {
-  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
+.pop-enter-active,
 .pop-leave-active {
-  transition: opacity 0.1s ease, transform 0.1s ease;
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .pop-enter-from,
 .pop-leave-to {
   opacity: 0;
-  transform: translateY(-4px) scale(0.98);
-}
-@media (prefers-reduced-motion: reduce) {
-  .pop-enter-active, .pop-leave-active { transition: opacity 0.01ms !important; }
+  transform: scaleY(0.92);
 }
 </style>

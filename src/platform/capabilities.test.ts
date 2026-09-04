@@ -8,7 +8,7 @@ describe('platform capabilities', () => {
       isAndroid: true,
       hasEmbeddedBackend: true,
       supportsPlugins: false,
-      supportsAppUpdater: false,
+      supportsAppUpdater: true,
       supportsDetachedLive2DWindow: false,
       supportsEngine: false,
     })

@@ -227,7 +227,7 @@ func TestCancelRecordsIntentWithAssignedProcess(t *testing.T) {
 				return job.Status
 			},
 			finish: func(em *EngineManager) {
-				routeTimingNotification(em.timingJobs["task"], "subtitle.finished", []byte(`{"Reason":"Completed"}`))
+				em.routeTimingNotification(em.timingJobs["task"], "subtitle.finished", []byte(`{"Reason":"Completed"}`))
 			},
 		},
 		{

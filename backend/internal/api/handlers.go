@@ -756,6 +756,20 @@ func (h *Handler) Live2DProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Live2D-Source", "cdn")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+
+	// Write-through cache: persist validated asset to local mirror for subsequent instant offline hits
+	if h.cfg.Live2DLocalDir != "" {
+		if dst := live2dLocalPath(h.cfg.Live2DLocalDir, rawURL); dst != "" {
+			canonicalRoot := live2dRootKey(h.cfg.Live2DLocalDir)
+			canonicalParent := live2dRootKey(filepath.Dir(dst))
+			if live2dPathWithinRoot(canonicalRoot, canonicalParent) {
+				// If destination already exists or is a symlink, do not overwrite
+				if _, err := os.Lstat(dst); err != nil && errors.Is(err, os.ErrNotExist) {
+					_ = fsutil.WriteFileAtomic(dst, body, 0o644)
+				}
+			}
+		}
+	}
 }
 
 // live2dContentType picks a Content-Type for a locally-served Live2D asset.

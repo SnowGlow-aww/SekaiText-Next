@@ -56,7 +56,7 @@ var OfficialAppUpdatePublicKeysJSON string
 // CurrentAppVersion is compiled into the backend so update authorization has an
 // authoritative floor independent of the client-supplied current query value.
 // Release version bumps must update this alongside the package version.
-var CurrentAppVersion = "5.9.25"
+var CurrentAppVersion = "6.0.0"
 
 // AppReleaseManifest is the remote release document (see DefaultAppUpdateURL).
 type AppReleaseManifest struct {
@@ -754,8 +754,9 @@ const (
 )
 
 const (
-	cdnReleasePath    = "/sekaitext-releases/"
-	githubReleasePath = "/snowglow-aww/sekaitext-next/releases/download/"
+	cdnReleasePath           = "/sekaitext-releases/"
+	githubReleasePath        = "/snowglow-aww/sekaitext-next/releases/download/"
+	githubAndroidReleasePath = "/snowglow-aww/sekaitext-next-android/releases/download/"
 )
 
 // officialReleaseSource accepts only immutable release locations controlled by
@@ -773,7 +774,8 @@ func officialReleaseSource(rawurl string) releaseSource {
 			return releaseSourceCDN
 		}
 	case "github.com":
-		if hasReleaseAssetPath(u.Path, githubReleasePath, true) {
+		if hasReleaseAssetPath(u.Path, githubReleasePath, true) ||
+			hasReleaseAssetPath(u.Path, githubAndroidReleasePath, true) {
 			return releaseSourceGitHub
 		}
 	}

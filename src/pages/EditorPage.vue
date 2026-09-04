@@ -12,10 +12,10 @@ import { useConfirm } from '../composables/useConfirm'
 import { useFileDialog } from '../composables/useFileDialog'
 import { useAutoSave } from '../composables/useAutoSave'
 import { useUndo } from '../composables/useUndo'
-import { matchEvent, resolveCombo, formatCombo } from '../constants/shortcuts'
+import { matchEvent, resolveCombo, formatCombo, isMac } from '../constants/shortcuts'
 import { api } from '../api/client'
 import { Users, AlertTriangle, Info,
-  FolderOpen, Save, Eraser, Eye, Languages, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2 } from 'lucide-vue-next'
+  FolderOpen, Save, Eraser, Eye, Languages, Search, Columns2, ListChecks, BarChart3, FileInput, Undo2, Redo2, X } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import StoryNavigator from '../components/navigation/StoryNavigator.vue'
 import EditorWorkspace from '../components/editor/EditorWorkspace.vue'
@@ -149,19 +149,47 @@ function canonicalSavePath(): string | null {
   }
   return null
 }
+
+const searchInputRef = ref<HTMLInputElement | null>(null)
+function focusSearchInput() {
+  nextTick(() => {
+    searchInputRef.value?.focus()
+    searchInputRef.value?.select()
+  })
+}
+
 function onKeyDown(e: KeyboardEvent) {
   const el = document.activeElement
-  const inEditable = el instanceof HTMLElement &&
-    (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
-  // Inside contenteditable, let the browser handle native undo/redo.
-  if (el instanceof HTMLElement && el.isContentEditable) return
+  const inTextInput = el instanceof HTMLElement &&
+    (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+  const inContentEditable = el instanceof HTMLElement && el.isContentEditable
+  const inEditable = inTextInput || inContentEditable
 
   const sc = settings.settings.shortcuts
-  const hit = (id: string) => matchEvent(e, resolveCombo(sc, id))
+  const hit = (id: string) => {
+    if (id === 'redo' && isMac && e.metaKey && e.shiftKey && (e.key === 'z' || e.key === 'Z')) return true
+    return matchEvent(e, resolveCombo(sc, id))
+  }
+
+  // Inside editable fields (contenteditable or inputs), let native text editing handle
+  // intra-field undo/redo so typing doesn't revert whole document steps.
+  if (hit('undo')) {
+    if (!inEditable) { e.preventDefault(); doUndo() }
+    return
+  }
+  if (hit('redo')) {
+    if (!inEditable) { e.preventDefault(); doRedo() }
+    return
+  }
 
   if (hit('open')) { e.preventDefault(); handleOpen(); return }
   if (hit('save')) { e.preventDefault(); handleSave(); return }
-  if (hit('search')) { e.preventDefault(); app.searchOpen = true; return }
+  if (hit('search')) {
+    e.preventDefault()
+    app.searchOpen = !app.searchOpen
+    if (app.searchOpen) focusSearchInput()
+    return
+  }
   if (hit('importBaseline')) {
     if (app.editorMode === 2) { e.preventDefault(); handleImportBaseline() }
     return
@@ -178,10 +206,6 @@ function onKeyDown(e: KeyboardEvent) {
     if (app.searchOpen && !inEditable) { e.preventDefault(); searchNext() }
     return
   }
-  // In INPUT/TEXTAREA (译文标题/搜索框) let the browser do native undo/redo
-  // instead of hijacking the shortcut to roll back the whole document.
-  if (hit('undo') && !inEditable) { e.preventDefault(); doUndo(); return }
-  if (hit('redo') && !inEditable) { e.preventDefault(); doRedo(); return }
 }
 
 // The global keydown/resize listeners and the 30s autosave interval are bound
@@ -323,7 +347,10 @@ function measureSearchAlign() {
   if (w > 80) searchLeftWidth.value = Math.round(w)
 }
 watch(() => app.searchOpen, (open) => {
-  if (open) nextTick(measureSearchAlign)
+  if (open) {
+    nextTick(measureSearchAlign)
+    focusSearchInput()
+  }
 })
 
 async function setMode(key: number) {
@@ -355,11 +382,9 @@ async function setMode(key: number) {
   story.chapterTitle = editor.docMeta?.chapterTitle || ''
   if (editor.docMeta?.source) story.selectedSource = editor.docMeta.source
   app.setEditorMode(key as 0 | 1 | 2)
-  // The undo/redo stacks are a module-level singleton shared across all modes,
-  // but switchMode swaps the live talks for a different mode's content. Replaying
-  // an old mode's snapshot would overwrite the current mode's text, so clear the
-  // history whenever the mode actually changes (switchMode no-ops on same mode).
-  if (changed) undo.clear()
+  // Switch undo/redo history to this mode's dedicated stack so edits made in
+  // other modes remain recoverable when returning.
+  if (changed) undo.switchMode(key)
   // 校对/合意 default to compare-on (baseline rows visible); 翻译 has no compare.
   app.showCompare = key >= 1
   // Entering 合意: remind the workflow (translation first, then proofread draft).
@@ -686,6 +711,44 @@ function searchPrev() {
   app.searchActiveIndex = (app.searchActiveIndex - 1 + app.searchTotal) % app.searchTotal
 }
 
+async function handleReplaceCurrent() {
+  if (editor.documentBusy) return
+  const q = app.searchQuery.trim()
+  if (!q) return
+  await workspace.value?.flushPendingEdit()
+  const repl = app.searchReplace
+  let targetRow = -1
+  for (let i = 0; i < editor.talks.length; i++) {
+    const t = editor.talks[i]
+    if (t.save && t.text && t.text.includes(q)) {
+      targetRow = i
+      break
+    }
+  }
+  if (targetRow < 0) {
+    toast.show('没有可替换的译文', 'warn')
+    return
+  }
+  undo.pushSnapshot(editor.talks, editor.dstTalks)
+  const currentText = editor.talks[targetRow].text
+  const newText = currentText.replace(q, repl)
+  try {
+    const result = await api.changeText({
+      row: targetRow,
+      text: newText,
+      editorMode: app.editorMode,
+      talks: editor.talks,
+      dstTalks: editor.dstTalks,
+      referTalks: editor.referTalks,
+    })
+    editor.setTalks(result.talks, result.dstTalks, editor.referTalks)
+    editor.markUnsaved()
+    toast.show('已替换 1 处', 'success')
+  } catch (e: any) {
+    toast.show('替换失败: ' + (e?.message || '未知错误'), 'error')
+  }
+}
+
 async function handleReplaceAll() {
   if (editor.documentBusy) return
   const q = app.searchQuery.trim()
@@ -698,33 +761,49 @@ async function handleReplaceAll() {
   const hasMatch = editor.talks.some(t => t.text && t.text.includes(q) && t.save)
   if (!hasMatch) { toast.show('没有可替换的译文', 'warn'); return }
   undo.pushSnapshot(editor.talks, editor.dstTalks)
-  // Invalidate an already-dispatched line edit before its full-table response
-  // can land over this replacement. The replacement requests begin below.
   editor.markUnsaved()
   const committed = await commitDocumentMutation(
     () => ({ documentRevision: editor.documentRevision, mutationSeq: editor.mutationSeq }),
     async () => {
-      let talks = JSON.parse(JSON.stringify(editor.talks)) as typeof editor.talks
-      let dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
+      const talks = JSON.parse(JSON.stringify(editor.talks)) as typeof editor.talks
+      const dstTalks = JSON.parse(JSON.stringify(editor.dstTalks)) as typeof editor.dstTalks
       const referTalks = JSON.parse(JSON.stringify(editor.referTalks)) as typeof editor.referTalks
-      // Route each affected row through the backend, but keep intermediate full-
-      // table responses local. Only the final snapshot may commit to the store.
+
       for (let i = 0; i < talks.length; i++) {
         const talk = talks[i]
         if (talk.text && talk.text.includes(q) && talk.save) {
           const newText = talk.text.split(q).join(repl)
-          try {
-            const result = await api.changeText({
-              row: i, text: newText, editorMode: app.editorMode,
-              talks, dstTalks, referTalks,
-            })
-            talks = result.talks
-            dstTalks = result.dstTalks
-            changed++
-          } catch { /* skip row */ }
+          talks[i].text = newText
+          const di = talk.dstidx
+          if (di >= 0 && di < dstTalks.length) {
+            dstTalks[di].text = newText
+          }
+          changed++
         }
       }
-      return { talks, dstTalks }
+
+      if (app.editorMode >= 1) {
+        try {
+          const res = await api.compare({
+            referTalks,
+            checkTalks: dstTalks,
+            editorMode: app.editorMode,
+          })
+          return { talks: res.talks, dstTalks: res.dstTalks }
+        } catch {
+          return { talks, dstTalks }
+        }
+      } else {
+        try {
+          const checked = await api.checkLines({
+            sourceTalks: editor.sourceTalks,
+            loadedTalks: dstTalks,
+          })
+          return { talks, dstTalks: checked }
+        } catch {
+          return { talks, dstTalks }
+        }
+      }
     },
     result => editor.setTalks(result.talks, result.dstTalks, editor.referTalks),
   )
@@ -809,14 +888,32 @@ onUnmounted(deactivate) // safety net; under keep-alive onDeactivated does the r
                "搜索"-right divider. -->
           <div v-if="app.searchOpen" ref="searchBarRow" class="flex items-center gap-2 mt-2">
             <div class="flex items-center gap-2" :style="{ width: searchLeftWidth + 'px' }">
-              <input v-model="app.searchQuery" type="text" placeholder="查找(原文/译文/说话人)" class="app-input flex-1 min-w-0" @keydown.enter="searchNext" />
+              <input
+                ref="searchInputRef"
+                v-model="app.searchQuery"
+                type="text"
+                placeholder="查找(原文/译文/说话人)"
+                class="app-input flex-1 min-w-0"
+                @keydown.enter="searchNext"
+                @keydown.esc="app.searchOpen = false"
+              />
               <span class="text-xs text-[var(--color-text-secondary)] tabular-nums flex-shrink-0">{{ searchCount }}</span>
               <button @click="searchPrev" class="btn btn-xs btn-ghost">上一个</button>
               <button @click="searchNext" class="btn btn-xs btn-ghost">下一个</button>
             </div>
             <div class="w-px h-5 bg-[var(--color-border)]" />
-            <input v-model="app.searchReplace" type="text" placeholder="替换为(仅译文)" class="app-input w-56" />
+            <input
+              v-model="app.searchReplace"
+              type="text"
+              placeholder="替换为(仅译文)"
+              class="app-input w-56"
+              @keydown.esc="app.searchOpen = false"
+            />
+            <button @click="handleReplaceCurrent" class="btn btn-sm btn-ghost border border-[var(--color-border)]">替换当前</button>
             <button @click="handleReplaceAll" class="btn btn-sm btn-ghost border border-[var(--color-border)]">全部替换</button>
+            <button @click="app.searchOpen = false" class="btn btn-xs btn-ghost text-[var(--color-text-secondary)] hover:text-[var(--color-text)]" title="关闭搜索 (Esc)">
+              <X :size="14" />
+            </button>
           </div>
     </div>
     <main

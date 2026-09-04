@@ -563,8 +563,30 @@ function markQuery(html: string): string {
   return html.replace(new RegExp(`(${escQ})(?![^<]*>)`, 'gi'), '<mark class="bg-yellow-300 text-black rounded-sm">$1</mark>')
 }
 
+// Memoized rendering caches for read-only source text and speakers.
+// Avoids recompiling RegExps and traversing the Trie on every keystroke/render tick.
+const sourceRenderCache = new Map<string, string>()
+const speakerRenderCache = new Map<string, string>()
+const MAX_RENDER_CACHE_SIZE = 1500
+
+function clearRenderCache() {
+  sourceRenderCache.clear()
+  speakerRenderCache.clear()
+}
+
+watch(() => [app.searchQuery, app.showGlossary, editor.documentRevision], () => {
+  clearRenderCache()
+})
+
 function highlightSpeaker(speaker: string): string {
-  return markQuery(escapeHtml(speaker))
+  if (!speaker) return ''
+  const key = speaker + '\u0000' + app.searchQuery
+  const cached = speakerRenderCache.get(key)
+  if (cached !== undefined) return cached
+  const rendered = markQuery(escapeHtml(speaker))
+  if (speakerRenderCache.size >= MAX_RENDER_CACHE_SIZE) speakerRenderCache.clear()
+  speakerRenderCache.set(key, rendered)
+  return rendered
 }
 
 // Wrap matched glossary terms in the ALREADY-escaped source html with a
@@ -591,7 +613,14 @@ function markGlossary(html: string, rawText: string): string {
 
 // Render source text with search + glossary highlighting layered on.
 function renderSource(text: string): string {
-  return markGlossary(markQuery(escapeHtml(text)), text)
+  if (!text) return ''
+  const key = text + '\u0000' + app.searchQuery + '\u0000' + (app.showGlossary ? '1' : '0')
+  const cached = sourceRenderCache.get(key)
+  if (cached !== undefined) return cached
+  const rendered = markGlossary(markQuery(escapeHtml(text)), text)
+  if (sourceRenderCache.size >= MAX_RENDER_CACHE_SIZE) sourceRenderCache.clear()
+  sourceRenderCache.set(key, rendered)
+  return rendered
 }
 
 // Hover handler (event delegation on the source container): show the glossary
@@ -685,16 +714,23 @@ function focusNext(e: KeyboardEvent) {
   if (!container) return
   const editables = container.querySelectorAll<HTMLElement>('[contenteditable="true"]')
   const idx = Array.from(editables).indexOf(e.target as HTMLElement)
-  const next = editables[idx + 1]
-  if (next) {
-    next.focus()
-    next.scrollIntoView({ block: 'center' }) // Enter 逐行推进时保持当前编辑行居中
-    const range = document.createRange()
-    range.selectNodeContents(next)
-    range.collapse(false)
-    const sel = window.getSelection()
-    sel?.removeAllRanges()
-    sel?.addRange(range)
+  const targetIdx = e.shiftKey ? idx - 1 : idx + 1
+  const target = editables[targetIdx]
+  if (target) {
+    focusEditable(target)
+  }
+}
+
+function onEditableTab(e: KeyboardEvent) {
+  e.preventDefault()
+  const container = workspaceRef.value
+  if (!container) return
+  const editables = container.querySelectorAll<HTMLElement>('[contenteditable="true"]')
+  const idx = Array.from(editables).indexOf(e.target as HTMLElement)
+  const targetIdx = e.shiftKey ? idx - 1 : idx + 1
+  const target = editables[targetIdx]
+  if (target) {
+    focusEditable(target)
   }
 }
 
@@ -1003,6 +1039,7 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
                           @compositionstart="onCompositionStart(item.globalIdx)"
                           @compositionend="onCompositionEnd($event, item.globalIdx)"
                           @keydown.enter="focusNext"
+                          @keydown.tab="onEditableTab"
                           @keydown.esc="onEditableEsc($event, item.globalIdx)"
                           v-editable-html="renderHighlight(item.talk)"
                         ></div>
@@ -1179,6 +1216,12 @@ function onSourceEnter(e: MouseEvent, talk: DstTalk) {
   transition: color var(--dur-fast), background-color var(--dur-fast), border-color var(--dur-fast);
 }
 .row-action:hover { color: var(--accent, var(--color-primary)); border-color: var(--color-border); }
+
+/* 视口虚拟化：跳过不可见行的排版与样式计算，大幅加速长文档滚动与补丁性能 */
+.editor-row-group {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
+}
 
 /* 键盘导航选中行：内描边高亮，不与左侧 border-l 编辑指示条冲突。 */
 .row-selected {

@@ -186,9 +186,9 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 	// Only ever launch an installer file type, never an arbitrary executable that
 	// merely happens to sit under Downloads.
 	switch strings.ToLower(filepath.Ext(p)) {
-	case ".dmg", ".pkg", ".exe", ".msi":
+	case ".dmg", ".pkg", ".exe", ".msi", ".apk":
 	default:
-		writeError(w, http.StatusForbidden, "只允许打开安装包文件（.dmg/.pkg/.exe/.msi）")
+		writeError(w, http.StatusForbidden, "只允许打开安装包文件（.dmg/.pkg/.exe/.msi/.apk）")
 		return
 	}
 	if err := service.VerifyUpdateFile(p, digest, size); err != nil {
@@ -211,6 +211,8 @@ func (h *Handler) AppUpdateOpen(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("open", launchPath)
 	case "windows":
 		cmd = exec.Command("cmd", "/c", "start", "", launchPath)
+	case "android":
+		cmd = exec.Command("am", "start", "-a", "android.intent.action.VIEW", "-d", "file://"+launchPath, "-t", "application/vnd.android.package-archive")
 	default:
 		cmd = exec.Command("xdg-open", launchPath)
 	}
@@ -247,7 +249,11 @@ func (h *Handler) stageUpdateForLaunch(ctx context.Context, source, digest strin
 		return "", err
 	}
 	dest := filepath.Join(dir, filepath.Base(source))
-	if err := fsutil.CopyFileAtomic(ctx, source, dest, 0o600); err != nil {
+	perm := os.FileMode(0o600)
+	if strings.HasSuffix(strings.ToLower(source), ".apk") {
+		perm = 0o644
+	}
+	if err := fsutil.CopyFileAtomic(ctx, source, dest, perm); err != nil {
 		os.RemoveAll(dir)
 		return "", err
 	}
