@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -436,6 +438,7 @@ func TestResolveLabelDetailedClassifiesLegacyTitlesWithoutGuessingCards(t *testi
 func TestAreaTalkNavigationAndFiltering(t *testing.T) {
 	lm := &ListManager{
 		Events: []EventEntry{
+			{ID: 2, Title: "雨上がりの一番星"},
 			{ID: 45, Title: "祈りの先 願う明日は"},
 			{ID: 53, Title: "空白のキャンバスに描く私は"},
 		},
@@ -443,6 +446,7 @@ func TestAreaTalkNavigationAndFiltering(t *testing.T) {
 			{ID: 100, TalkID: "0001", AreaID: 3, ScenarioID: "areatalk02_129", Type: "normal", AddEventID: 1, CharacterIDs: []int{7, 8}},
 			{ID: 101, TalkID: "0002", AreaID: 4, ScenarioID: "areatalk02_130", Type: "normal", AddEventID: 1, CharacterIDs: []int{9}},
 			{ID: 200, TalkID: "0003", AreaID: 3, ScenarioID: "areatalk02_200", Type: "normal", AddEventID: 2, CharacterIDs: []int{7}},
+			{ID: 1244, TalkID: "1198", AreaID: 1, ScenarioID: "areatalk_ev_shuffle_15_001", Type: "normal", AddEventID: 45, CharacterIDs: []int{1}},
 			{ID: 1262, TalkID: "S0001", AreaID: 14, ScenarioID: "areatalk_ev_akuno_001", Type: "limited", AddEventID: 45, CharacterIDs: []int{22}},
 			{ID: 1359, TalkID: "S0017", AreaID: 14, ScenarioID: "areatalk_aprilfool2022_001", Type: "limited", AddEventID: 53, CharacterIDs: []int{1, 22}},
 		},
@@ -452,44 +456,101 @@ func TestAreaTalkNavigationAndFiltering(t *testing.T) {
 		},
 	}
 
-	// 1. Verify sort by time on Extra area talks returns real events, not "time"
+	// 1. Verify sort by time on Extra area talks synchronizes completely with event story indices
 	timeIndices := lm.GetStoryIndexList(StoryLabelAreaTalkExtra, "time")
-	if len(timeIndices) != 2 {
-		t.Fatalf("expected 2 event indices for extra talks, got %d (%+v)", len(timeIndices), timeIndices)
+	eventIndices := lm.GetStoryIndexList(StoryLabelEvent, "")
+	if len(timeIndices) != len(eventIndices) || len(timeIndices) != 3 {
+		t.Fatalf("expected %d event indices synchronized with events, got %d (%+v)", len(eventIndices), len(timeIndices), timeIndices)
 	}
-	if timeIndices[0].Value != "53" || timeIndices[0].Label != "53 空白のキャンバスに描く私は" {
-		t.Errorf("timeIndex[0] = %+v, want event 53", timeIndices[0])
-	}
-	if timeIndices[1].Value != "45" || timeIndices[1].Label != "45 祈りの先 願う明日は" {
-		t.Errorf("timeIndex[1] = %+v, want event 45", timeIndices[1])
+	for i := range timeIndices {
+		if timeIndices[i].Value != eventIndices[i].Value || timeIndices[i].Label != eventIndices[i].Label {
+			t.Errorf("timeIndex[%d] = %+v, want %+v", i, timeIndices[i], eventIndices[i])
+		}
 	}
 
-	// 2. Verify chapter filtering by time
+	// 2. Verify chapter filtering by time returns both normal and limited talks for an event
 	ch45 := lm.GetStoryChapterList(StoryLabelAreaTalkExtra, "time", "45")
-	if len(ch45) != 1 || ch45[0].Label != "S0001 areatalk_ev_akuno_001" {
-		t.Fatalf("ch45 = %+v, want S0001", ch45)
+	if len(ch45) != 2 || ch45[0].Label != "1198 areatalk_ev_shuffle_15_001" || ch45[1].Label != "S0001 areatalk_ev_akuno_001" {
+		t.Fatalf("ch45 = %+v, want 1198 and S0001", ch45)
 	}
-	path45 := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 0, "haruki")
+	path45 := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 1, "haruki")
 	expectedHarukiURL := "https://sekai-assets-bdf29c81.seiunx.net/jp-assets/startapp/scenario/actionset/group12/areatalk_ev_akuno_001.json"
 	if path45.URL != expectedHarukiURL {
 		t.Errorf("path45.URL = %q, want %q", path45.URL, expectedHarukiURL)
 	}
 
-	path45Moe := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 0, "moesekai-jp")
+	path45Moe := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", 1, "moesekai-jp")
 	expectedMoeURL := "https://storage.exmeaning.com/sekai-jp-assets/scenario/actionset/group12/areatalk_ev_akuno_001.json"
 	if path45Moe.URL != expectedMoeURL {
 		t.Errorf("path45Moe.URL = %q, want %q", path45Moe.URL, expectedMoeURL)
 	}
 
-	// 3. Verify chapter filtering by character (character 7 -> index "6")
+	// 3. Verify event with only normal additional talks returns its chapters
+	ch2 := lm.GetStoryChapterList(StoryLabelAreaTalkExtra, "time", "2")
+	if len(ch2) != 1 || ch2[0].Label != "0003 areatalk02_200" {
+		t.Fatalf("ch2 = %+v, want 0003", ch2)
+	}
+
+	// 4. Verify chapter filtering by character (character 7 -> index "6")
 	chChar6 := lm.GetStoryChapterList(StoryLabelAreaTalkInit, "character", "6")
 	if len(chChar6) != 1 || chChar6[0].Label != "0001 areatalk02_129" {
 		t.Fatalf("chChar6 = %+v, want 0001", chChar6)
 	}
 
-	// 4. Verify chapter filtering by area
+	// 5. Verify chapter filtering by area
 	chArea3 := lm.GetStoryChapterList(StoryLabelAreaTalkInit, "area", "3")
 	if len(chArea3) != 1 || chArea3[0].Label != "0001 areatalk02_129" {
 		t.Fatalf("chArea3 = %+v, want 0001", chArea3)
+	}
+}
+
+func TestAreaTalkTimeIndexSynchronizedWithEventsCatalog(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	catalogDir := filepath.Join(home, "Library", "Application Support", "com.snowglow-aww.sekaitext-next", "resources", "catalog")
+	if _, err := os.Stat(filepath.Join(catalogDir, "events.json")); err != nil {
+		t.Skip("real catalog not available in test environment")
+	}
+
+	lm := NewListManager(catalogDir)
+	timeIndices := lm.GetStoryIndexList(StoryLabelAreaTalkExtra, "time")
+	eventIndices := lm.GetStoryIndexList(StoryLabelEvent, "")
+
+	if len(timeIndices) == 0 {
+		t.Fatal("expected non-empty timeIndices")
+	}
+	if len(timeIndices) != len(eventIndices) {
+		t.Fatalf("timeIndices count (%d) must match eventIndices count (%d)", len(timeIndices), len(eventIndices))
+	}
+	for i := range timeIndices {
+		if timeIndices[i].Value != eventIndices[i].Value || timeIndices[i].Label != eventIndices[i].Label {
+			t.Fatalf("mismatch at %d: timeIndex=%+v eventIndex=%+v", i, timeIndices[i], eventIndices[i])
+		}
+	}
+
+	// Verify Event 45 chapters (which has both normal and limited talks)
+	ch45 := lm.GetStoryChapterList(StoryLabelAreaTalkExtra, "time", "45")
+	if len(ch45) != 42 {
+		t.Fatalf("expected 42 chapters for event 45 (26 normal + 16 limited), got %d", len(ch45))
+	}
+	for ci, ch := range ch45 {
+		path := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "45", ci, "haruki")
+		if path.URL == "" {
+			t.Fatalf("empty URL for event 45 chapter %d (%s)", ci, ch.Label)
+		}
+	}
+
+	// Verify Event 200 chapters (which has 4 normal talks)
+	ch200 := lm.GetStoryChapterList(StoryLabelAreaTalkExtra, "time", "200")
+	if len(ch200) != 4 {
+		t.Fatalf("expected 4 chapters for event 200, got %d", len(ch200))
+	}
+	for ci, ch := range ch200 {
+		path := lm.GetJsonPath(StoryLabelAreaTalkExtra, "time", "200", ci, "haruki")
+		if path.URL == "" {
+			t.Fatalf("empty URL for event 200 chapter %d (%s)", ci, ch.Label)
+		}
 	}
 }

@@ -406,43 +406,15 @@ func (lm *ListManager) GetStoryIndexList(storyType, sort string) []model.StoryIn
 				}
 			}
 		} else if sort == "time" {
-			eventMap := make(map[int]string, len(events))
-			for _, ev := range events {
-				eventMap[ev.ID] = ev.Title
-			}
-			seenEventIDs := make(map[int]struct{})
-			var eventIDs []int
-			for _, at := range lm.AreaTalks {
-				if at.ScenarioID == "none" || at.ScenarioID == "" || at.AddEventID <= 0 {
-					continue
-				}
-				if storyType == StoryLabelAreaTalkExtra && at.Type != "limited" {
-					continue
-				}
-				if storyType != StoryLabelAreaTalkExtra && at.Type == "limited" {
-					continue
-				}
-				if _, seen := seenEventIDs[at.AddEventID]; !seen {
-					seenEventIDs[at.AddEventID] = struct{}{}
-					eventIDs = append(eventIDs, at.AddEventID)
-				}
-			}
-			for i := 0; i < len(eventIDs); i++ {
-				for j := i + 1; j < len(eventIDs); j++ {
-					if eventIDs[i] < eventIDs[j] {
-						eventIDs[i], eventIDs[j] = eventIDs[j], eventIDs[i]
-					}
-				}
-			}
-			for _, eid := range eventIDs {
-				title := eventMap[eid]
-				label := strconv.Itoa(eid)
-				if title != "" {
-					label = label + " " + title
+			for i := len(events) - 1; i >= 0; i-- {
+				ev := events[i]
+				label := strconv.Itoa(ev.ID)
+				if ev.Title != "" {
+					label = label + " " + ev.Title
 				}
 				indices = append(indices, model.StoryIndex{
 					Label: label,
-					Value: strconv.Itoa(eid),
+					Value: strconv.Itoa(ev.ID),
 				})
 			}
 		} else if sort == "area" {
@@ -935,7 +907,7 @@ func (lm *ListManager) getAreaTalkEntries(storyType, sort, index string) []Chapt
 
 		isInit := talkType == "init" && at.AddEventID <= 1 && at.Type != "limited"
 		isUpgrade := talkType == "upgrade" && at.AddEventID > 1 && at.Type != "limited"
-		isExtra := talkType == "extra" && at.Type == "limited"
+		isExtra := talkType == "extra" && (at.Type == "limited" || (sort == "time" && at.AddEventID > 1))
 
 		if !isInit && !isUpgrade && !isExtra {
 			continue
