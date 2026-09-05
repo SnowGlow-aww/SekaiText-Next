@@ -56,7 +56,7 @@ var OfficialAppUpdatePublicKeysJSON string
 // CurrentAppVersion is compiled into the backend so update authorization has an
 // authoritative floor independent of the client-supplied current query value.
 // Release version bumps must update this alongside the package version.
-var CurrentAppVersion = "6.0.0"
+var CurrentAppVersion = "6.0.1"
 
 // AppReleaseManifest is the remote release document (see DefaultAppUpdateURL).
 type AppReleaseManifest struct {
